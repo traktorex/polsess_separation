@@ -1,0 +1,48 @@
+# Hyperparameter sweep for SB (Separate Both) task
+# Focus on parameters critical for PIT loss training
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: val_si_sdr
+  goal: maximize
+
+parameters:
+  # Base config file (model architecture comes from here)
+  config:
+    value: experiments/sb_task.yaml
+
+  # Task type
+  task:
+    value: SB
+
+  # Training epochs
+  epochs:
+    value: 10
+
+  # Weight decay - known to be critical from ES sweep
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+
+  # Gradient clipping - PIT-specific tuning
+  grad_clip_norm:
+    values: [5.0, 10.0, 15.0]
+
+  # AMP disabled for SB task (PIT loss requires float32)
+  use_amp:
+    value: false
+
+# Early termination for poorly performing runs
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  eta: 2
+  s: 3
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}

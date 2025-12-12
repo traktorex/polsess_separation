@@ -1,0 +1,64 @@
+# Klec et al. Replication Configuration
+# Paper: "A Solution for Developing Corpora for Polish Speech Enhancement in Complex Acoustic Environments"
+# Target: Replicate the ES (single speaker enhancement) experiment
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # Note: train_dual_corpus.py uses batch_size=2 (1 indoor + 1 outdoor)
+  task: ES
+  num_workers: 4
+
+model:
+  model_type: convtasnet
+
+  # ConvTasNet architecture matching Klec et al. specifications
+  convtasnet:
+    N: 256  # Encoder filters
+    B: 256  # Bottleneck channels
+    H: 512  # Conv block channels
+    P: 3    # Kernel size
+    X: 8    # Blocks per repeat
+    R: 4    # Number of repeats (R × X = 4 × 8 = 32 TCN blocks)
+    C: 1    # Output sources (1 for ES task)
+    norm_type: gLN
+    # Klec et al. specifies: "Input filter length: 20 samples"
+    kernel_size: 20  # Changed from default 16 to 20 (Klec et al. specification)
+    stride: 10       # 50% overlap (kernel_size / 2), standard ConvTasNet
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 50   # Klec et al.: "fifty epochs"
+  lr: 0.001        # Klec et al.: "initial learning rate set to 1e-3"
+  weight_decay: 6.697090800413423e-05
+  grad_clip_norm: 1.0
+  use_amp: true    # Automatic Mixed Precision
+  amp_eps: 0.0001  # SpeechBrain EPS patch for float16
+  device: cuda
+  save_dir: checkpoints/klec_replication
+
+  # LR scheduler: Klec et al. "multiplied by 0.95 if validation did not improve over two consecutive epochs"
+  lr_factor: 0.95
+  lr_patience: 2
+
+  seed: 42  # For reproducibility
+
+  # Logging
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_run_name: klec_replication
+  log_level: INFO
+
+# Notes:
+# - Dataset sizes are hardcoded in train_dual_corpus.py:
+#   * C_in train: 4000, C_out train: 4000
+#   * C_in val: 100, C_out val: 100
+#   * C_in test: 400, C_out test: 400
+# - Training uses both indoor (C_in) and outdoor (C_out) corpora
+# - Each batch contains 1 indoor + 1 outdoor sample (batch_size=2)
+# - MM-IPC augmentation applied randomly per sample
+# - Validation uses SER variant for C_in, SE variant for C_out
+
+# Expected result:
+# - Klec et al. reported: 8.3 dB SI-SDR on SER test set
+# - Current baseline achieved: 9.84 dB SI-SDR (but with different setup)

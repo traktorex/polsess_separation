@@ -1,0 +1,43 @@
+# Baseline Configuration
+# This is the configuration that achieved 9.84 dB SI-SDR
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  task: ES
+  num_workers: 1
+  train_max_samples: 100
+  # CSV filenames are auto-derived from data_root (uses env var POLSESS_DATA_ROOT or defaults)
+
+model:
+  model_type: convtasnet
+
+  # ConvTasNet model-specific parameters (8.64M parameters)
+  convtasnet:
+    N: 256  # Encoder filters
+    B: 256  # Bottleneck channels
+    H: 512  # Conv block channels
+    P: 3    # Kernel size
+    X: 8    # Blocks per repeat
+    R: 4    # Number of repeats
+    C: 1    # Output sources (1 for ES task)
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 10
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  use_amp: true  # Automatic Mixed Precision
+  amp_eps: 0.0001  # SpeechBrain EPS patch for float16
+  device: cuda
+  save_dir: checkpoints
+
+  # Logging
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO

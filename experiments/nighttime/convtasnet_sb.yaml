@@ -1,0 +1,67 @@
+# SB (Separate Both) Task Configuration
+# Two-speaker separation using PIT loss
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  task: SB  # Separate Both speakers
+  num_workers: 1
+  train_max_samples: null
+  val_max_samples: null
+  # CSV filenames are auto-derived from data_root
+
+model:
+  model_type: convtasnet
+
+  # ConvTasNet architecture optimized from focused sweep
+  convtasnet:
+    N: 256  # Encoder filters
+    B: 256  # Bottleneck channels (best from sweep)
+    H: 512  # Conv block channels (best from sweep)
+    P: 3    # Kernel size
+    X: 8    # Blocks per repeat
+    R: 4    # Number of repeats
+    C: 2    # Output sources (2 for SB task - will be auto-set)
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 10
+  lr: 0.001
+  weight_decay: 5.839967886489544e-06  # Will be tuned by sweep results
+  grad_clip_norm: 5.0    # Best from sweep
+  use_amp: false
+  amp_eps: 0.0001
+  device: cuda
+  save_dir: checkpoints/nighttime/convtasnet_sb
+
+  # Logging
+  use_wandb: true
+  wandb_project: nighttime
+  log_level: INFO
+  
+  wandb_run_name: convtasnet-sb
+
+  # Learning rate scheduler
+  lr_factor: 0.5
+  lr_patience: 2
+
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C"]
+    - epoch: 2
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "S", "SR"]
+    - epoch: 4
+      variants: ["C", "R", "S", "SR", "E"]
+    - epoch: 5
+      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

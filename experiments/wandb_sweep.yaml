@@ -1,0 +1,57 @@
+# W&B Hyperparameter Sweep Configuration
+# Optimizes parameters NOT specified by Klec et al. (2024)
+#
+# Usage:
+#   1. Create sweep: wandb sweep experiments/wandb_sweep.yaml
+#   2. Run agent: wandb agent <sweep-id>
+#   3. Run multiple agents in parallel (optional): wandb agent <sweep-id>
+#
+# The sweep will intelligently explore the hyperparameter space using
+# Bayesian optimization, prioritizing promising regions.
+
+program: train_sweep.py
+method: bayes  # Bayesian optimization (smarter than grid/random)
+metric:
+  name: val_si_sdr
+  goal: maximize
+
+# Early stopping to save compute on bad runs
+early_terminate:
+  type: hyperband
+  min_iter: 10  # Run at least 10 epochs
+  eta: 2
+  s: 2
+
+parameters:
+  # Base configuration (fixed parameters from Klec et al.)
+  config:
+    value: experiments/baseline.yaml
+
+  # Fixed by Klec et al. (don't sweep)
+  epochs:
+    value: 50
+  lr:
+    value: 0.001
+
+  # Parameters to sweep (NOT specified by Klec et al.)
+
+  # 1. Model capacity - sweep B and H
+  # Klec only specified 32 TCN blocks (R×X=32), not B/H
+  model_B:
+    values: [128, 256, 512]
+  model_H:
+    values: [256, 512, 1024]
+
+  # 2. Weight decay (not mentioned in paper)
+  weight_decay:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.001
+
+  # 3. Gradient clipping (not mentioned in paper)
+  grad_clip_norm:
+    values: [1.0, 5.0, 10.0, 20.0]
+
+  # 4. Batch size (not specified in paper)
+  batch_size:
+    values: [2, 4, 8]

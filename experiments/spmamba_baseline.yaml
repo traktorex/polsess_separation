@@ -1,0 +1,75 @@
+# SPMamba Baseline Configuration
+# Based on: "SPMamba: State-space model is all you need in speech separation"
+# Paper configuration adapted for PolSESS dataset
+
+data:
+  dataset_type: polsess
+  batch_size: 1  # Start with 4, can increase if memory allows
+  num_workers: 1
+  prefetch_factor: 2
+  task: ES  # Single speaker enhancement
+  train_max_samples: 1000
+  val_max_samples: null
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"  # Will use environment variable or default
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64  # Not used, kept for compatibility
+    n_srcs: 1  # Will be set by task in config post_init
+    n_fft: 256  # Paper uses 256
+    stride: 64  # Paper uses 64
+    window: "hann"
+    n_layers: 6  # Paper uses 6 GridNet blocks
+    lstm_hidden_units: 256  # Misleading name, hidden dimension for Mamba
+    attn_n_head: 4  # 4 attention heads
+    attn_approx_qk_dim: 512  # Q/K dimension
+    emb_dim: 16  # Embedding dimension
+    emb_ks: 4  # Embedding kernel size (was 8 in paper for LibriMix)
+    emb_hs: 1  # Embedding hop size
+    activation: "prelu"
+    eps: 1.0e-5
+    sample_rate: 16000
+
+training:
+  # Optimizer settings
+  lr: 0.001  # Paper uses 0.001
+  weight_decay: 0.0  # Paper uses 0
+  grad_clip_norm: 5.0
+
+  # Learning rate scheduler (ReduceLROnPlateau from paper)
+  lr_factor: 0.5  # Paper uses 0.5
+  lr_patience: 10  # Paper uses 10 epochs patience
+
+  # Training configuration
+  num_epochs: 10  # Paper uses 500, start with 100
+  use_amp: true
+  amp_eps: 1.0e-4
+
+  # Checkpointing and logging
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  wandb_entity: null
+  wandb_run_name: "spmamba_es_baseline"
+  log_file: null
+  log_level: "INFO"
+
+  # Hardware
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  # Validation and curriculum learning
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R"]
+    - epoch: 2
+      variants: ["R", "SR", "S"]
+    - epoch: 3
+      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      lr_scheduler: start

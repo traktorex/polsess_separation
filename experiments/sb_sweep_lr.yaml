@@ -1,0 +1,44 @@
+# SB Task - Learning Rate Sweep
+# Critical: Find LR that escapes "dereverbed mix" local minimum
+
+program: train.py
+method: grid  # Grid search to systematically test each LR
+metric:
+  name: val_si_sdr
+  goal: maximize
+
+parameters:
+  config:
+    value: experiments/sb_task.yaml
+
+  task:
+    value: SB
+
+  epochs:
+    value: 20  # Longer training to see if it escapes local min
+
+  # CRITICAL: Learning rate sweep
+  lr:
+    values: [0.0003, 0.0005, 0.001, 0.002, 0.003, 0.005, 0.007]
+
+  # Fix other hyperparameters (best from your previous sweep)
+  weight_decay:
+    value: 0.000003  # Best from your runs
+
+  grad_clip_norm:
+    value: 5.0  # Best from your runs
+
+  batch_size:
+    value: 2  
+
+# No early termination - let all runs complete
+# early_terminate:
+#   type: hyperband
+#   min_iter: 15
+#   eta: 2
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}

@@ -1,0 +1,38 @@
+# EB Task Configuration
+# Enhance Both speakers (remove noise, keep both speakers)
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  task: EB  # Both speakers
+  num_workers: 1
+
+model:
+  model_type: convtasnet
+
+  convtasnet:
+    N: 256
+    B: 256
+    H: 512
+    P: 3
+    X: 8
+    R: 4
+    C: 1  # Still 1 output (both speakers combined)
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  use_amp: true
+  amp_eps: 0.0001
+  device: cuda
+  save_dir: checkpoints/eb_task
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO

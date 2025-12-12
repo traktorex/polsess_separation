@@ -1,0 +1,63 @@
+# DPRNN baseline configuration for PolSESS
+# Based on "Dual-path RNN: efficient long sequence modeling for
+# time-domain single-channel speech separation" (Luo et al. 2020)
+# Paper: https://arxiv.org/abs/1910.06379
+
+data:
+  dataset_type: polsess
+  batch_size: 8  # DPRNN is more memory efficient than transformers
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB  # Speech enhancement task (clean speech)
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: dprnn
+  dprnn:
+    N: 64  # Encoder channels (paper uses 64 for best efficiency)
+    kernel_size: 16  # Encoder kernel size
+    stride: 8  # Encoder stride
+    C: 2  # Output sources (2 for SB task)
+    num_layers: 6  # Number of dual-path blocks (paper uses 6)
+    chunk_size: 100  # Chunk length K (paper uses 100 for window=16)
+    rnn_type: LSTM  # RNN type
+    hidden_size: 128  # Hidden units per direction (output=256 for bidirectional)
+    num_rnn_layers: 1  # RNN depth within each block
+    dropout: 0.0  # Dropout probability
+    bidirectional: true  # Bidirectional inter-chunk RNN
+    norm_type: ln  # Layer normalization
+
+training:
+  lr: 0.00015  # Paper uses 1.5e-4
+  weight_decay: 0.0  # Paper uses 0
+  grad_clip_norm: 5.0  # Paper uses 5
+  lr_factor: 0.98  # Paper decays by 0.98 every 2 epochs
+  lr_patience: 2
+  num_epochs: 100  # Paper trains for 100 epochs
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints  # Trainer adds model_type/task automatically
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: dprnn-baseline-es
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C"]
+    - epoch: 3
+      variants: ["C", "R"]
+    - epoch: 6
+      variants: ["C", "R", "S", "SR"]
+    - epoch: 8
+      variants: ["C", "R", "S", "SR", "E"]
+    - epoch: 10
+      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

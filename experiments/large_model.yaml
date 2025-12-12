@@ -1,0 +1,39 @@
+# Large Model Configuration
+# Larger capacity model for potentially better performance
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # Smaller batch due to larger model
+  task: ES
+  num_workers: 4
+
+model:
+  model_type: convtasnet
+
+  # Large ConvTasNet architecture (~34M parameters)
+  convtasnet:
+    N: 512
+    B: 512
+    H: 1024
+    P: 3
+    X: 8
+    R: 5  # More repeats
+    C: 1
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 50
+  lr: 0.0005  # Lower LR for larger model
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  use_amp: true
+  amp_eps: 0.0001
+  device: cuda
+  save_dir: checkpoints/large_model
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
