@@ -1,0 +1,74 @@
+# SPMamba Reduced Configuration
+# Memory-optimized version for 12GB GPU
+# Reduced model size to fit in memory without AMP
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 1000
+  val_max_samples: null
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64  # Not used, kept for compatibility
+    n_srcs: 2  # Will be set by task in config post_init
+    n_fft: 256  # Paper uses 256
+    stride: 64  # Paper uses 64
+    window: "hann"
+    n_layers: 4  # Reduced from 6 (saves ~33% memory)
+    lstm_hidden_units: 192  # Reduced from 256 (saves ~25% memory)
+    attn_n_head: 2  # Reduced from 4 (saves 50% attention memory)
+    attn_approx_qk_dim: 256  # Reduced from 512 (saves 50% Q/K memory)
+    emb_dim: 16  # Keep same
+    emb_ks: 4  # Keep same
+    emb_hs: 1  # Keep same
+    activation: "prelu"
+    eps: 1.0e-4  # Increased for numerical stability
+    sample_rate: 8000
+
+training:
+  # Optimizer settings
+  lr: 0.001
+  weight_decay: 1.0e-5  # Small value for stability
+  grad_clip_norm: 2.0  # More aggressive clipping
+
+  # Learning rate scheduler (ReduceLROnPlateau from paper)
+  lr_factor: 0.5
+  lr_patience: 2
+
+  # Training configuration
+  num_epochs: 10
+  use_amp: true  # Disabled - use float32 for stability
+
+  # Checkpointing and logging
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  wandb_entity: null
+  wandb_run_name: "spmamba_sb_reduced"
+  log_file: null
+  log_level: "INFO"
+
+  # Hardware
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  # Validation and curriculum learning
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      lr_scheduler: start
