@@ -43,7 +43,7 @@ training:
   lr_patience: 2  # Paper uses 10 epochs patience
 
   # Training configuration
-  num_epochs: 10  # Paper uses 500, start with 100
+  num_epochs: 100  # Paper uses 500, start with 100
   use_amp: true  
 
   # Checkpointing and logging

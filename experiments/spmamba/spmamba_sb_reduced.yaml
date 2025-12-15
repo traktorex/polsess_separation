@@ -8,7 +8,7 @@ data:
   num_workers: 1
   prefetch_factor: 2
   task: SB
-  train_max_samples: 1000
+  train_max_samples: null
   val_max_samples: null
   polsess:
     data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
@@ -43,7 +43,7 @@ training:
   lr_patience: 2
 
   # Training configuration
-  num_epochs: 10
+  num_epochs: 100
   use_amp: true  # Disabled - use float32 for stability
 
   # Checkpointing and logging
