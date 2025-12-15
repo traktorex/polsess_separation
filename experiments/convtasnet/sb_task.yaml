@@ -3,7 +3,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 1
+  batch_size: 8
   task: SB  # Separate Both speakers
   num_workers: 1
   train_max_samples: null

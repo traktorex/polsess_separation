@@ -20,7 +20,7 @@ from datasets import (
 )
 from models import get_model
 from config import Config, load_config_from_yaml
-from utils import apply_eps_patch
+from utils import apply_eps_patch, load_checkpoint_file, count_parameters
 
 
 def load_model(checkpoint_path: str, config: Config, device: str = "cuda"):
@@ -30,7 +30,7 @@ def load_model(checkpoint_path: str, config: Config, device: str = "cuda"):
     """
     print(f"Loading model from {checkpoint_path}...")
 
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = load_checkpoint_file(checkpoint_path, device)
 
     if "config" in checkpoint:
         print("Using model config from checkpoint")
@@ -80,8 +80,7 @@ def load_model(checkpoint_path: str, config: Config, device: str = "cuda"):
     if "val_sisdr" in checkpoint:
         print(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
 
-    # Count parameters
-    num_params = sum(p.numel() for p in model.parameters())
+    num_params = count_parameters(model)
     print(f"  Parameters: {num_params / 1e6:.2f}M")
 
     return model

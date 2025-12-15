@@ -3,7 +3,6 @@
 import time
 import torch
 import logging
-import os
 import yaml
 from pathlib import Path
 from tqdm import tqdm
@@ -11,7 +10,12 @@ from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
 from typing import Optional, Any
 from config import Config
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
-from utils import unwrap_compiled_model, dataclass_to_dict, ensure_dir
+from utils import (
+    unwrap_compiled_model,
+    dataclass_to_dict,
+    ensure_dir,
+    load_model_from_checkpoint,
+)
 
 DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
 
@@ -70,6 +74,7 @@ class Trainer:
 
         self.best_val_sisdr = -float("inf")
         self.current_epoch = 0
+        self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
 
         # Curriculum learning setup
         self.curriculum_schedule = config.training.curriculum_learning
@@ -142,55 +147,49 @@ class Trainer:
         Handles both compiled and non-compiled models by unwrapping
         torch.compile() wrapper if needed.
         """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        checkpoint = load_model_from_checkpoint(checkpoint_path, self.model, self.device)
 
-        # Get underlying model if compiled with torch.compile()
-        model_to_load = unwrap_compiled_model(self.model)
-
-        model_to_load.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.current_epoch = checkpoint["epoch"] + 1  # Resume from next epoch
         self.best_val_sisdr = checkpoint.get(
             "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
         )
         self.logger.info(
-            f"Resumed from epoch {checkpoint['epoch']}, best SI-SDR: {self.best_val_sisdr:.2f} dB"
+            f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
+            f"resuming at epoch {self.current_epoch}"
         )
 
     def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir):
         """Save model checkpoint with best validation SI-SDR.
 
-        Structure: checkpoints/{model}/{task}/{experiment_name}/{run_id}/best_model.pt
-        Also creates/updates symlink: checkpoints/{model}/{task}/{experiment_name}/latest/
+        Structure: checkpoints/{model_name}/{task}/{run_name}/best_model.pt
         """
         base_dir = Path(save_dir)
 
-        # Determine experiment name and run_id
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
-
-        # Get experiment name from wandb_run_name or config
-        experiment_name = getattr(self.config.training, 'experiment_name', None)
-        if not experiment_name and self.config.training.wandb_run_name:
-            # Use wandb_run_name as experiment name (e.g., "spmamba_sb_baseline")
-            experiment_name = self.config.training.wandb_run_name
-        if not experiment_name:
-            experiment_name = "default"
-
-        # Create run_id from timestamp or wandb run name
+        # Determine run_name (stable for this training run)
         if (
             self.wandb_logger
             and self.wandb_logger.enabled
             and self.wandb_logger.run
             and self.wandb_logger.run.name
         ):
-            run_id = f"{self.wandb_logger.run.name}_{timestamp}"
+            # Use wandb run name
+            run_name = self.wandb_logger.run.name
         else:
-            run_id = f"run_{timestamp}"
+            # Use experiment_name if available, otherwise "run_" + timestamp
+            experiment_name = getattr(self.config.training, 'experiment_name', None)
+            if not experiment_name and self.config.training.wandb_run_name:
+                experiment_name = self.config.training.wandb_run_name
 
-        # New structure: checkpoints/{model}/{task}/{experiment_name}/{run_id}/
-        model_type = self.config.model.model_type
+            if experiment_name:
+                run_name = experiment_name
+            else:
+                run_name = f"run_{self.run_start_timestamp}"
+
+        # Structure: checkpoints/{model_name}/{task}/{run_name}/
+        model_name = self.config.model.model_type
         task = self.config.data.task
-        checkpoint_dir = base_dir / model_type / task / experiment_name / run_id
+        checkpoint_dir = base_dir / model_name / task / run_name
         ensure_dir(checkpoint_dir)
 
         checkpoint_path = checkpoint_dir / "best_model.pt"
@@ -221,28 +220,10 @@ class Trainer:
         with open(config_path, 'w') as f:
             yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
-        # Create/update 'latest' symlink within experiment folder
-        latest_link = base_dir / model_type / task / experiment_name / "latest"
-        if latest_link.exists() or latest_link.is_symlink():
-            latest_link.unlink()
-
-        # Create relative symlink (more portable)
-        try:
-            if os.name == 'nt':  # Windows
-                # Windows requires admin for symlinks, use junction instead
-                import subprocess
-                subprocess.run(['mklink', '/J', str(latest_link), str(checkpoint_dir.name)],
-                             shell=True, check=False, capture_output=True)
-            else:  # Unix/Linux
-                latest_link.symlink_to(run_id, target_is_directory=True)
-        except Exception as e:
-            self.logger.warning(f"Could not create 'latest' symlink: {e}")
-
         self.logger.info(
             f"Saved best model (SI-SDR: {val_sisdr:.2f} dB) to: {checkpoint_path}"
         )
-        self.logger.info(f"  Run ID: {run_id}")
-        self.logger.info(f"  Latest link: {latest_link}")
+        self.logger.info(f"  Run name: {run_name}")
 
         if self.wandb_logger:
             self.wandb_logger.log_metrics(
