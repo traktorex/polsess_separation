@@ -1,4 +1,4 @@
-speechbrain>=1.0.0
+git+https://github.com/speechbrain/speechbrain.git@develop#egg=speechbrain
 torch>=2.0.0
 torchaudio>=2.0.0
 pandas>=2.0.0
@@ -13,8 +13,6 @@ tabulate>=0.9.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
 pytest-ui>=0.3.0
+asteroid>=0.7.0
 
-# SPMamba dependencies (Linux + CUDA only)
-# Note: These will only install on Linux with CUDA support
-# For Windows users, use WSL2 with Ubuntu
 mamba-ssm>=2.0.0; platform_system=="Linux"
