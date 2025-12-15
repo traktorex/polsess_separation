@@ -336,7 +336,8 @@ def save_results_csv(results: dict, output_path: str):
     print(f"\nResults saved to: {output_path}")
 
 
-def main():
+def create_evaluation_parser() -> argparse.ArgumentParser:
+    """Create and configure argument parser for evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate speech separation model")
     parser.add_argument(
         "--checkpoint", type=str, required=True, help="Path to model checkpoint"
@@ -414,14 +415,11 @@ def main():
         "--output", type=str, default=None, help="Output CSV file for results"
     )
 
-    args = parser.parse_args()
+    return parser
 
-    # Validate dataset-specific arguments
-    if args.dataset == "librimix" and not args.librimix_root:
-        parser.error("--librimix-root is required when --dataset=librimix")
-    if args.dataset == "polsess" and not args.data_root and not args.config:
-        parser.error("--data-root or --config is required when --dataset=polsess")
 
+def load_config_and_apply_overrides(args: argparse.Namespace) -> tuple[Config, int]:
+    """Load config from file or create default, apply CLI overrides."""
     if args.config:
         print(f"Loading config from: {args.config}")
         config = load_config_from_yaml(args.config)
@@ -433,45 +431,51 @@ def main():
         if config.data.dataset_type == "polsess":
             if config.data.polsess is None:
                 from config import PolSESSParams
-
                 config.data.polsess = PolSESSParams()
             config.data.polsess.data_root = args.data_root
     if args.task:
         config.data.task = args.task
-    if args.batch_size:
-        batch_size = args.batch_size
-    else:
-        batch_size = config.data.batch_size
 
-    device = args.device if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
+    batch_size = args.batch_size if args.batch_size else config.data.batch_size
 
-    apply_eps_patch(1e-4)
+    return config, batch_size
 
-    model = load_model(args.checkpoint, config, device)
 
-    # Evaluate on selected dataset
+def create_librimix_dataloader(
+    args: argparse.Namespace, batch_size: int
+) -> DataLoader:
+    """Create DataLoader for Libri2Mix evaluation."""
+    dataset = Libri2MixDataset(
+        data_root=args.librimix_root,
+        subset=args.librimix_subset,
+        sample_rate=8000,
+        mode="min",
+        max_samples=args.max_samples,
+    )
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=libri2mix_collate_fn,
+    )
+
+
+def run_evaluation(
+    model,
+    config: Config,
+    args: argparse.Namespace,
+    device: str,
+    batch_size: int,
+) -> dict:
+    """Run evaluation on selected dataset."""
     if args.dataset == "librimix":
-        # Libri2Mix evaluation
         print(f"\n{'='*80}")
         print(f"LIBRI2MIX CROSS-DATASET EVALUATION")
         print(f"{'='*80}")
 
-        dataset = Libri2MixDataset(
-            data_root=args.librimix_root,
-            subset=args.librimix_subset,
-            sample_rate=8000,
-            mode="min",
-            max_samples=args.max_samples,
-        )
-
-        dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=4,
-            collate_fn=libri2mix_collate_fn,
-        )
+        dataloader = create_librimix_dataloader(args, batch_size)
 
         librimix_results = evaluate_model(
             model,
@@ -479,15 +483,12 @@ def main():
             device=device,
             compute_pesq=not args.no_pesq,
             compute_stoi=not args.no_stoi,
-            use_amp=False,  # Disable AMP for evaluation
+            use_amp=False,
         )
 
-        # Format results for print_summary
-        results = {f"Libri2Mix_{args.librimix_subset}": librimix_results}
-
+        return {f"Libri2Mix_{args.librimix_subset}": librimix_results}
     else:
-        # PolSESS evaluation (existing code)
-        results = evaluate_by_variant(
+        return evaluate_by_variant(
             model,
             config,
             device=device,
@@ -496,6 +497,28 @@ def main():
             compute_stoi=not args.no_stoi,
             specific_variant=args.variant,
         )
+
+
+def main():
+    parser = create_evaluation_parser()
+    args = parser.parse_args()
+
+    # Validate dataset-specific arguments
+    if args.dataset == "librimix" and not args.librimix_root:
+        parser.error("--librimix-root is required when --dataset=librimix")
+    if args.dataset == "polsess" and not args.data_root and not args.config:
+        parser.error("--data-root or --config is required when --dataset=polsess")
+
+    config, batch_size = load_config_and_apply_overrides(args)
+
+    device = args.device if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+
+    apply_eps_patch(1e-4)
+
+    model = load_model(args.checkpoint, config, device)
+
+    results = run_evaluation(model, config, args, device, batch_size)
 
     print_summary(results)
 
