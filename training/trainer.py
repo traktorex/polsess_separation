@@ -159,42 +159,61 @@ class Trainer:
             f"resuming at epoch {self.current_epoch}"
         )
 
-    def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir):
-        """Save model checkpoint with best validation SI-SDR.
-
-        Structure: checkpoints/{model_name}/{task}/{run_name}/best_model.pt
-        """
-        base_dir = Path(save_dir)
-
-        # Determine run_name (stable for this training run)
+    def _get_run_name(self) -> str:
+        """Determine run name from wandb or config."""
+        # Use wandb run name if available
         if (
             self.wandb_logger
             and self.wandb_logger.enabled
             and self.wandb_logger.run
             and self.wandb_logger.run.name
         ):
-            # Use wandb run name
-            run_name = self.wandb_logger.run.name
-        else:
-            # Use experiment_name if available, otherwise "run_" + timestamp
-            experiment_name = getattr(self.config.training, 'experiment_name', None)
-            if not experiment_name and self.config.training.wandb_run_name:
-                experiment_name = self.config.training.wandb_run_name
+            return self.wandb_logger.run.name
 
-            if experiment_name:
-                run_name = experiment_name
-            else:
-                run_name = f"run_{self.run_start_timestamp}"
+        # Fall back to experiment_name from config
+        experiment_name = getattr(self.config.training, 'experiment_name', None)
+        if not experiment_name and self.config.training.wandb_run_name:
+            experiment_name = self.config.training.wandb_run_name
 
-        # Structure: checkpoints/{model_name}/{task}/{run_name}/
+        if experiment_name:
+            return experiment_name
+
+        # Default: use timestamp from training start
+        return f"run_{self.run_start_timestamp}"
+
+    def _create_checkpoint_paths(self, save_dir: str, run_name: str) -> tuple[Path, Path]:
+        """Create checkpoint directory structure and return file paths.
+
+        Args:
+            save_dir: Base directory for checkpoints.
+            run_name: Name for this training run.
+
+        Returns:
+            Tuple of (checkpoint_path, config_path).
+        """
+        base_dir = Path(save_dir)
         model_name = self.config.model.model_type
         task = self.config.data.task
+
+        # Structure: checkpoints/{model_name}/{task}/{run_name}/
         checkpoint_dir = base_dir / model_name / task / run_name
         ensure_dir(checkpoint_dir)
 
         checkpoint_path = checkpoint_dir / "best_model.pt"
         config_path = checkpoint_dir / "config.yaml"
 
+        return checkpoint_path, config_path
+
+    def _serialize_checkpoint_data(self, epoch: int, val_sisdr: float) -> dict:
+        """Prepare checkpoint data for saving.
+
+        Args:
+            epoch: Current training epoch.
+            val_sisdr: Validation SI-SDR score.
+
+        Returns:
+            Dictionary containing all checkpoint data.
+        """
         config_dict = {
             "model": dataclass_to_dict(self.config.model),
             "data": dataclass_to_dict(self.config.data),
@@ -204,27 +223,37 @@ class Trainer:
         # Get state dict from unwrapped model if using torch.compile
         model_to_save = unwrap_compiled_model(self.model)
 
-        # Save checkpoint
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model_to_save.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "val_sisdr": val_sisdr,
-                "config": config_dict,
-            },
-            checkpoint_path,
-        )
+        return {
+            "epoch": epoch,
+            "model_state_dict": model_to_save.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "val_sisdr": val_sisdr,
+            "config": config_dict,
+        }
+
+    def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir: str):
+        """Save model checkpoint with best validation SI-SDR."""
+        # Determine run name and create directory structure
+        run_name = self._get_run_name()
+        checkpoint_path, config_path = self._create_checkpoint_paths(save_dir, run_name)
+
+        # Prepare checkpoint data
+        checkpoint_data = self._serialize_checkpoint_data(epoch, val_sisdr)
+
+        # Save checkpoint file
+        torch.save(checkpoint_data, checkpoint_path)
 
         # Save config as YAML for easy viewing
         with open(config_path, 'w') as f:
-            yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+            yaml.dump(checkpoint_data["config"], f, default_flow_style=False, sort_keys=False)
 
+        # Log checkpoint save
         self.logger.info(
             f"Saved best model (SI-SDR: {val_sisdr:.2f} dB) to: {checkpoint_path}"
         )
         self.logger.info(f"  Run name: {run_name}")
 
+        # Log to wandb if enabled
         if self.wandb_logger:
             self.wandb_logger.log_metrics(
                 {"best_val_sisdr": val_sisdr}, step=self.current_epoch

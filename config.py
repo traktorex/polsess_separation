@@ -357,12 +357,11 @@ def save_config_to_yaml(config: Config, yaml_path: str):
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
 
-def get_config_from_args():
-    """Parse command-line arguments and create configuration.
+def create_config_parser() -> "argparse.ArgumentParser":
+    """Create argument parser for config CLI.
 
-    Note: Most parameters should be set in YAML config files.
-    CLI args are for quick switches and overrides only.
-    W&B sweeps use load_config_for_run() instead, not these CLI args.
+    Returns:
+        Configured ArgumentParser for training configuration.
     """
     import argparse
 
@@ -424,15 +423,19 @@ def get_config_from_args():
         help="Disable W&B logging",
     )
 
-    args = parser.parse_args()
+    return parser
 
-    # Load from YAML if provided, otherwise use defaults
-    if args.config:
-        print(f"Loading config from: {args.config}")
-        config = load_config_from_yaml(args.config)
-    else:
-        config = Config()
 
+def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
+    """Apply CLI argument overrides to config object.
+
+    Args:
+        config: Base configuration object.
+        args: Parsed command-line arguments.
+
+    Returns:
+        Config object with CLI overrides applied.
+    """
     # Apply CLI overrides (only if explicitly provided)
     if args.model_type:
         config.model.model_type = args.model_type
@@ -452,6 +455,34 @@ def get_config_from_args():
         config.training.resume_from = args.resume
     if args.no_wandb:
         config.training.use_wandb = False
+
+    return config
+
+
+def get_config_from_args() -> Config:
+    """Parse command-line arguments and create configuration.
+
+    Main entry point that orchestrates config loading from CLI.
+
+    Note: Most parameters should be set in YAML config files.
+    CLI args are for quick switches and overrides only.
+    W&B sweeps use load_config_for_run() instead, not these CLI args.
+
+    Returns:
+        Validated Config object with CLI overrides applied.
+    """
+    parser = create_config_parser()
+    args = parser.parse_args()
+
+    # Load from YAML if provided, otherwise use defaults
+    if args.config:
+        print(f"Loading config from: {args.config}")
+        config = load_config_from_yaml(args.config)
+    else:
+        config = Config()
+
+    # Apply CLI overrides
+    config = apply_cli_overrides(config, args)
 
     # Validate and return
     config.__post_init__()
