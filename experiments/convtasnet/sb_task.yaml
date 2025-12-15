@@ -36,7 +36,7 @@ training:
   use_amp: false
   amp_eps: 0.0001
   device: cuda
-  save_dir: checkpoints/sb_task
+  save_dir: checkpoints
 
   # Logging
   use_wandb: true
