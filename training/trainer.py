@@ -9,9 +9,9 @@ from pathlib import Path
 from tqdm import tqdm
 from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
 from typing import Optional, Any
-from dataclasses import is_dataclass, asdict
 from config import Config
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
+from utils import unwrap_compiled_model, dataclass_to_dict, ensure_dir
 
 DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
 
@@ -145,7 +145,7 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
 
         # Get underlying model if compiled with torch.compile()
-        model_to_load = self.model._orig_mod if hasattr(self.model, '_orig_mod') else self.model
+        model_to_load = unwrap_compiled_model(self.model)
 
         model_to_load.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -191,28 +191,19 @@ class Trainer:
         model_type = self.config.model.model_type
         task = self.config.data.task
         checkpoint_dir = base_dir / model_type / task / experiment_name / run_id
-        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        ensure_dir(checkpoint_dir)
 
         checkpoint_path = checkpoint_dir / "best_model.pt"
         config_path = checkpoint_dir / "config.yaml"
 
-        def to_dict(obj):
-            """Convert dataclass or SimpleNamespace to dict."""
-            if is_dataclass(obj):
-                return asdict(obj)
-            elif hasattr(obj, "__dict__"):
-                return vars(obj)
-            else:
-                return obj
-
         config_dict = {
-            "model": to_dict(self.config.model),
-            "data": to_dict(self.config.data),
-            "training": to_dict(self.config.training),
+            "model": dataclass_to_dict(self.config.model),
+            "data": dataclass_to_dict(self.config.data),
+            "training": dataclass_to_dict(self.config.training),
         }
 
         # Get state dict from unwrapped model if using torch.compile
-        model_to_save = self.model._orig_mod if hasattr(self.model, '_orig_mod') else self.model
+        model_to_save = unwrap_compiled_model(self.model)
 
         # Save checkpoint
         torch.save(

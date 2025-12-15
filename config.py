@@ -5,6 +5,7 @@ import yaml
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+from utils import ensure_dir
 
 
 @dataclass
@@ -14,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "F:\\PolSMSE\\EksperymentyMOWA\\BAZY\\MOWA\\PolSESS_C_both\\PolSESS_C_both",
+            "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
         )
     )
 
@@ -350,7 +351,7 @@ def save_config_to_yaml(config: Config, yaml_path: str):
     }
 
     yaml_path = Path(yaml_path)
-    yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(yaml_path.parent)
 
     with open(yaml_path, "w") as f:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)

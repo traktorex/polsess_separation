@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 from typing import Optional
+from .file_utils import ensure_dir
 
 try:
     import coloredlogs
@@ -49,7 +50,7 @@ def setup_logger(
 
     if log_file:
         log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(log_path.parent)
 
         file_handler = logging.FileHandler(log_file)
         plain_formatter = logging.Formatter(log_format, datefmt=date_format)
