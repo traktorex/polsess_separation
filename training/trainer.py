@@ -137,9 +137,17 @@ class Trainer:
         return loss, sisdr
 
     def load_checkpoint(self, checkpoint_path: str):
-        """Load checkpoint to resume training."""
+        """Load checkpoint to resume training.
+
+        Handles both compiled and non-compiled models by unwrapping
+        torch.compile() wrapper if needed.
+        """
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        # Get underlying model if compiled with torch.compile()
+        model_to_load = self.model._orig_mod if hasattr(self.model, '_orig_mod') else self.model
+
+        model_to_load.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.current_epoch = checkpoint["epoch"] + 1  # Resume from next epoch
         self.best_val_sisdr = checkpoint.get(
@@ -152,13 +160,23 @@ class Trainer:
     def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir):
         """Save model checkpoint with best validation SI-SDR.
 
-        New structure: checkpoints/{model}/{task}/{run_id}/best_model.pt
-        Also creates/updates symlink: checkpoints/{model}/{task}/latest/
+        Structure: checkpoints/{model}/{task}/{experiment_name}/{run_id}/best_model.pt
+        Also creates/updates symlink: checkpoints/{model}/{task}/{experiment_name}/latest/
         """
         base_dir = Path(save_dir)
 
-        # Create run_id from timestamp or wandb run name
+        # Determine experiment name and run_id
         timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+
+        # Get experiment name from wandb_run_name or config
+        experiment_name = getattr(self.config.training, 'experiment_name', None)
+        if not experiment_name and self.config.training.wandb_run_name:
+            # Use wandb_run_name as experiment name (e.g., "spmamba_sb_baseline")
+            experiment_name = self.config.training.wandb_run_name
+        if not experiment_name:
+            experiment_name = "default"
+
+        # Create run_id from timestamp or wandb run name
         if (
             self.wandb_logger
             and self.wandb_logger.enabled
@@ -169,10 +187,10 @@ class Trainer:
         else:
             run_id = f"run_{timestamp}"
 
-        # New structure: checkpoints/{model}/{task}/{run_id}/
+        # New structure: checkpoints/{model}/{task}/{experiment_name}/{run_id}/
         model_type = self.config.model.model_type
         task = self.config.data.task
-        checkpoint_dir = base_dir / model_type / task / run_id
+        checkpoint_dir = base_dir / model_type / task / experiment_name / run_id
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         checkpoint_path = checkpoint_dir / "best_model.pt"
@@ -212,8 +230,8 @@ class Trainer:
         with open(config_path, 'w') as f:
             yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
 
-        # Create/update 'latest' symlink
-        latest_link = base_dir / model_type / task / "latest"
+        # Create/update 'latest' symlink within experiment folder
+        latest_link = base_dir / model_type / task / experiment_name / "latest"
         if latest_link.exists() or latest_link.is_symlink():
             latest_link.unlink()
 

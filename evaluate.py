@@ -38,60 +38,51 @@ def load_model(checkpoint_path: str, config: Config, device: str = "cuda"):
         model_type = ckpt_config.get("model", {}).get("model_type", "convtasnet")
         model_class = get_model(model_type)
 
-        # Handle both old flat config and new nested config
-        if "convtasnet" in ckpt_config.get("model", {}):
-            # New nested config
-            model_config = ckpt_config["model"]["convtasnet"]
-        else:
-            # Old flat config
-            model_config = ckpt_config["model"]
+        # Get model-specific parameters from nested config
+        model_params_dict = ckpt_config.get("model", {}).get(model_type, {})
 
-        model = model_class(
-            N=model_config["N"],
-            B=model_config["B"],
-            H=model_config["H"],
-            P=model_config["P"],
-            X=model_config["X"],
-            R=model_config["R"],
-            C=model_config["C"],
-            norm_type=model_config["norm_type"],
-            causal=model_config.get("causal", False),
-            mask_nonlinear=model_config.get("mask_nonlinear", "relu"),
-            kernel_size=model_config["kernel_size"],
-            stride=model_config["stride"],
-        )
+        # If nested config doesn't exist, try flat config (legacy)
+        if not model_params_dict:
+            model_params_dict = ckpt_config.get("model", {})
+
+        # Create model with parameters
+        print(f"Creating {model_type} model from checkpoint config")
+        model = model_class(**model_params_dict)
     else:
         print("Using provided config (checkpoint doesn't contain config)")
-        model_class = get_model(config.model.model_type)
+        model_type = config.model.model_type
+        model_class = get_model(model_type)
 
-        if config.model.model_type == "convtasnet":
-            params = config.model.convtasnet
-            model = model_class(
-                N=params.N,
-                B=params.B,
-                H=params.H,
-                P=params.P,
-                X=params.X,
-                R=params.R,
-                C=params.C,
-                norm_type=params.norm_type,
-                causal=params.causal,
-                mask_nonlinear=params.mask_nonlinear,
-                kernel_size=params.kernel_size,
-                stride=params.stride,
-            )
-        else:
+        # Get model-specific parameters
+        model_params = getattr(config.model, model_type, None)
+
+        if model_params is None:
             raise ValueError(
-                f"Model {config.model.model_type} not yet supported in evaluate.py"
+                f"Config doesn't contain parameters for model type '{model_type}'. "
+                f"Expected config.model.{model_type} to exist."
             )
+
+        # Convert params to dict
+        if hasattr(model_params, "__dict__"):
+            model_params_dict = vars(model_params)
+        else:
+            raise ValueError(f"Invalid model params for {model_type}")
+
+        print(f"Creating {model_type} model from provided config")
+        model = model_class(**model_params_dict)
 
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(device)
     model.eval()
 
-    print(f"Model loaded (epoch {checkpoint.get('epoch', 'unknown')})")
+    print(f"Model loaded: {model_type}")
+    print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
     if "val_sisdr" in checkpoint:
-        print(f"Checkpoint validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
+        print(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
+
+    # Count parameters
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"  Parameters: {num_params / 1e6:.2f}M")
 
     return model
 
@@ -102,10 +93,27 @@ def evaluate_model(
     device: str = "cuda",
     compute_pesq: bool = True,
     compute_stoi: bool = True,
-    use_amp: bool = True,
+    use_amp: bool = False,
+    task: str = "ES",
 ) -> dict:
-    """Evaluate model on a dataset."""
+    """Evaluate model on a dataset.
+
+    Args:
+        model: Model to evaluate
+        dataloader: DataLoader for evaluation
+        device: Device to use
+        compute_pesq: Whether to compute PESQ
+        compute_stoi: Whether to compute STOI
+        use_amp: Whether to use AMP (disabled by default for stability)
+        task: Task type ("ES", "EB", "SB") for proper metric computation
+    """
+    from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
+
     si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
+
+    # For SB task, use PIT-based SI-SDR
+    if task == "SB":
+        pit_sisdr = PITLossWrapper(pairwise_neg_sisdr, pit_from="pw_mtx").to(device)
 
     pesq_metric = None
     stoi_metric = None
@@ -137,21 +145,38 @@ def evaluate_model(
             estimates = estimates[..., :min_len]
             clean = clean[..., :min_len]
 
-            si_sdr = si_sdr_metric(estimates, clean)
-            si_sdr_scores.append(si_sdr.item())
+            # Compute SI-SDR based on task
+            if task == "SB":
+                # Speaker separation: use PIT-based SI-SDR
+                # clean: [B, 2, T], estimates: [B, 2, T]
+                loss = pit_sisdr(estimates, clean)
+                si_sdr = -loss  # Convert negative loss back to positive SI-SDR
+                si_sdr_scores.append(si_sdr.item())
+            else:
+                # Enhancement: standard SI-SDR
+                # Handle both [B, T] and [B, 1, T] formats
+                if clean.dim() == 3 and clean.shape[1] == 1:
+                    clean = clean.squeeze(1)
+                if estimates.dim() == 3 and estimates.shape[1] == 1:
+                    estimates = estimates.squeeze(1)
 
-            if pesq_metric:
-                for est, ref in zip(estimates, clean):
-                    try:
-                        pesq = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
-                        if not torch.isnan(pesq) and not torch.isinf(pesq):
-                            pesq_scores.append(pesq.item())
-                    except Exception:
-                        pass
+                si_sdr = si_sdr_metric(estimates, clean)
+                si_sdr_scores.append(si_sdr.item())
 
-            if stoi_metric:
-                stoi = stoi_metric(estimates, clean)
-                stoi_scores.append(stoi.item())
+            # PESQ and STOI only for enhancement tasks (single channel)
+            if task != "SB":
+                if pesq_metric:
+                    for est, ref in zip(estimates, clean):
+                        try:
+                            pesq = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
+                            if not torch.isnan(pesq) and not torch.isinf(pesq):
+                                pesq_scores.append(pesq.item())
+                        except Exception:
+                            pass
+
+                if stoi_metric:
+                    stoi = stoi_metric(estimates, clean)
+                    stoi_scores.append(stoi.item())
 
     results = {
         "si_sdr": sum(si_sdr_scores) / len(si_sdr_scores) if si_sdr_scores else 0,
@@ -226,7 +251,8 @@ def evaluate_by_variant(
             device,
             compute_pesq=compute_pesq,
             compute_stoi=compute_stoi,
-            use_amp=True,
+            use_amp=False,  # Disabled for stability
+            task=config.data.task,
         )
 
         results[variant] = variant_results
@@ -336,8 +362,8 @@ def main():
         "--task",
         type=str,
         default=None,
-        choices=["ES", "EB"],
-        help="Task: ES (single speaker) or EB (both speakers)",
+        choices=["ES", "EB", "SB"],
+        help="Task: ES (single speaker), EB (both speakers), or SB (separate both)",
     )
     parser.add_argument(
         "--variant",

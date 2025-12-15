@@ -9,6 +9,25 @@ from training.trainer import Trainer
 from config import Config, DataConfig, ModelConfig, TrainingConfig
 
 
+def _find_run_dir(task_dir):
+    """Helper to find run directory in new hierarchical structure.
+
+    New structure: task_dir/experiment_name/run_*/
+    """
+    # Find experiment directory
+    experiment_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name != "latest"]
+    if not experiment_dirs:
+        return None
+
+    # Find run directory within experiment
+    for experiment_dir in experiment_dirs:
+        run_dirs = [d for d in experiment_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
+        if run_dirs:
+            return run_dirs[0]
+
+    return None
+
+
 class TestCheckpointSaving:
     """Test checkpoint saving functionality."""
 
@@ -54,15 +73,20 @@ class TestCheckpointSaving:
             # Save checkpoint
             mock_trainer._save_checkpoint(epoch=5, val_sisdr=10.5, save_dir=save_dir)
 
-            # Check hierarchical structure exists: checkpoints/convtasnet/ES/run_*/best_model.pt
+            # Check hierarchical structure exists: checkpoints/convtasnet/ES/experiment_name/run_*/best_model.pt
             model_dir = save_dir / "convtasnet"
             task_dir = model_dir / "ES"
 
             assert model_dir.exists(), "Model directory should exist"
             assert task_dir.exists(), "Task directory should exist"
 
+            # Find experiment directory (should be 'default' if no wandb_run_name)
+            experiment_dirs = [d for d in task_dir.iterdir() if d.is_dir()]
+            assert len(experiment_dirs) >= 1, "At least one experiment directory should exist"
+            experiment_dir = experiment_dirs[0]
+
             # Find run directory
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
+            run_dirs = [d for d in experiment_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
             assert len(run_dirs) >= 1, "At least one run directory should exist"
 
             # Check checkpoint file exists
@@ -88,10 +112,11 @@ class TestCheckpointSaving:
 
             # Find run directory
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
+            run_dir = _find_run_dir(task_dir)
+            assert run_dir is not None, "Run directory should exist"
 
             # Check config.yaml exists
-            config_file = run_dirs[0] / "config.yaml"
+            config_file = run_dir / "config.yaml"
             assert config_file.exists(), "config.yaml should exist"
 
             # Verify it's valid YAML
@@ -115,11 +140,11 @@ class TestCheckpointSaving:
             mock_trainer._save_checkpoint(epoch=1, val_sisdr=5.0, save_dir=save_dir)
 
             # Directory structure should now exist
-            model_dir = save_dir / "convtasnet" / "ES"
-            assert model_dir.exists()
+            task_dir = save_dir / "convtasnet" / "ES"
+            assert task_dir.exists()
 
-            run_dirs = [d for d in model_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            assert len(run_dirs) >= 1
+            run_dir = _find_run_dir(task_dir)
+            assert run_dir is not None, "Run directory should exist"
 
     def test_save_checkpoint_includes_config(self, mock_trainer):
         """Test that checkpoint includes serialized config."""
@@ -130,8 +155,8 @@ class TestCheckpointSaving:
 
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            checkpoint_file = run_dirs[0] / "best_model.pt"
+            run_dir = _find_run_dir(task_dir)
+            checkpoint_file = run_dir / "best_model.pt"
 
             checkpoint = torch.load(checkpoint_file)
 
@@ -233,8 +258,8 @@ class TestCheckpointLoading:
 
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            checkpoint_file = run_dirs[0] / "best_model.pt"
+            run_dir = _find_run_dir(task_dir)
+            checkpoint_file = run_dir / "best_model.pt"
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -259,8 +284,8 @@ class TestCheckpointLoading:
 
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            checkpoint_file = run_dirs[0] / "best_model.pt"
+            run_dir = _find_run_dir(task_dir)
+            checkpoint_file = run_dir / "best_model.pt"
 
             # Load and modify to legacy format
             checkpoint = torch.load(checkpoint_file)
@@ -288,8 +313,8 @@ class TestCheckpointLoading:
 
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            checkpoint_file = run_dirs[0] / "best_model.pt"
+            run_dir = _find_run_dir(task_dir)
+            checkpoint_file = run_dir / "best_model.pt"
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -358,8 +383,8 @@ class TestCheckpointIntegration:
 
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
-            run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-            checkpoint_file = run_dirs[0] / "best_model.pt"
+            run_dir = _find_run_dir(task_dir)
+            checkpoint_file = run_dir / "best_model.pt"
 
             # Load checkpoint
             trainer.load_checkpoint(str(checkpoint_file))
@@ -414,7 +439,19 @@ class TestCheckpointSymlinks:
             trainer._save_checkpoint(epoch=1, val_sisdr=10.0, save_dir=save_dir)
 
             # Check 'latest' link exists (may fail on Windows without admin)
-            latest_link = save_dir / "convtasnet" / "ES" / "latest"
+            # New structure: checkpoints/model/task/experiment_name/latest
+            task_dir = save_dir / "convtasnet" / "ES"
+
+            # Find experiment directory
+            experiment_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name != "latest"]
+            assert len(experiment_dirs) >= 1, "At least one experiment directory should exist"
+            experiment_dir = experiment_dirs[0]
+
+            # Check run directory exists
+            run_dirs = [d for d in experiment_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
+            assert len(run_dirs) >= 1, "Run directory should exist even if symlink fails"
+
+            latest_link = experiment_dir / "latest"
 
             # On Windows without admin rights, symlink creation may fail silently
             # Check either: symlink exists OR warning was logged
@@ -422,10 +459,6 @@ class TestCheckpointSymlinks:
                 # Success - verify structure
                 assert latest_link.is_dir() or latest_link.is_symlink()
             else:
-                # Failed - should have logged a warning
-                log_messages = [str(call) for call in mock_logger.warning.call_args_list]
-                # Either warning was logged or we're on a system that supports symlinks
-                # Just verify checkpoint was saved successfully
-                task_dir = save_dir / "convtasnet" / "ES"
-                run_dirs = [d for d in task_dir.iterdir() if d.is_dir() and d.name.startswith("run_")]
-                assert len(run_dirs) >= 1, "Run directory should exist even if symlink fails"
+                # Failed - should have logged a warning or we're on Windows without admin
+                # Run directory was already verified to exist above
+                pass

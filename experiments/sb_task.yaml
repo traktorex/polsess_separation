@@ -6,7 +6,7 @@ data:
   batch_size: 1
   task: SB  # Separate Both speakers
   num_workers: 1
-  train_max_samples: 1000
+  train_max_samples: null
   val_max_samples: null
   # CSV filenames are auto-derived from data_root
 
@@ -47,27 +47,14 @@ training:
   lr_factor: 0.5
   lr_patience: 2
 
-  # validation_variants: ["C"]
-
-  # # Curriculum learning schedule
-  # curriculum_learning:
-  #   - epoch: 1
-  #     variants: ["C"]
-  #     lr_scheduler: start
-
-
   validation_variants: ["SER", "SE"]
 
   # Curriculum learning schedule
   curriculum_learning:
     - epoch: 1
-      variants: ["C"]
-    - epoch: 3
       variants: ["C", "R"]
-    - epoch: 4
-      variants: ["C", "R", "S", "SR"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
     - epoch: 5
-      variants: ["C", "R", "S", "SR", "E"]
-    - epoch: 6
-      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start
