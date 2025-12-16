@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Audio playback for mix, clean, and estimate
 
 - **Hierarchical Checkpoint Structure**: Improved checkpoint organization
-  - New structure: `checkpoints/{model}/{task}/{run_id}/best_model.pt`
+  - New structure: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
   - Separate `config.yaml` saved alongside each checkpoint
   - Automatic symlink creation for `latest` checkpoint per model/task
   - Windows junction fallback for cross-platform compatibility
@@ -127,7 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 2. **Checkpoint Structure**:
    - Old checkpoints: `checkpoints/{task}_{model}_{timestamp}.pt`
-   - New checkpoints: `checkpoints/{model}/{task}/{run_id}/best_model.pt`
+   - New checkpoints: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
    - Old checkpoints still loadable but not auto-discovered in interactive notebook
    - Use symlink `checkpoints/{model}/{task}/latest/` to access most recent model
 

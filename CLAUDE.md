@@ -94,19 +94,19 @@ python train_sweep.py --config experiments/wandb_sweep.yaml
 
 ```bash
 # Evaluate on all MM-IPC variants (using latest symlink)
-python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/best_model.pt
+python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/model.pt
 
 # Evaluate specific variant only
-python evaluate.py --checkpoint checkpoints/spmamba/ES/latest/best_model.pt --variant SER
+python evaluate.py --checkpoint checkpoints/spmamba/ES/latest/model.pt --variant SER
 
 # Fast evaluation (skip PESQ and STOI)
-python evaluate.py --checkpoint checkpoints/sepformer/EB/latest/best_model.pt --no-pesq --no-stoi
+python evaluate.py --checkpoint checkpoints/sepformer/EB/latest/model.pt --no-pesq --no-stoi
 
 # Save results to CSV
-python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/best_model.pt --output results.csv
+python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/model.pt --output results.csv
 
 # Or use specific run_id instead of latest
-python evaluate.py --checkpoint checkpoints/spmamba/ES/run_2024-12-11_14-30-00/best_model.pt
+python evaluate.py --checkpoint checkpoints/spmamba/ES/run_2024-12-11_14-30-00/model.pt
 ```
 
 **Testing:**
@@ -178,7 +178,7 @@ The project follows a modular architecture with clear separation of concerns:
 5. Instantiates `Trainer` with model, dataloaders, config
 6. Trainer handles: AMP, checkpointing, logging, curriculum learning
 7. Curriculum learning: can progressively add data variants over epochs
-8. Checkpoints saved to: `checkpoints/{model}/{task}/{run_id}/best_model.pt`
+8. Checkpoints saved to: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
 9. Symlink created at: `checkpoints/{model}/{task}/latest/` for easy access
 
 **Key Technical Details:**
@@ -197,7 +197,7 @@ The project follows a modular architecture with clear separation of concerns:
 
 - **Hierarchical Checkpoint Structure:** Organized checkpoint storage
 
-  - Structure: `checkpoints/{model}/{task}/{run_id}/best_model.pt`
+  - Structure: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
   - Each checkpoint directory includes `config.yaml` for easy viewing
   - Automatic symlink creation at `checkpoints/{model}/{task}/latest/`
   - Windows fallback uses junction instead of symlink
@@ -417,7 +417,7 @@ PolSESS/
 
 7. **torch.compile checkpoint loading:** Old checkpoints from compiled models may have `_orig_mod.` prefix issues. New trainer automatically handles this.
 
-8. **Checkpoint path changes:** New hierarchical structure uses `checkpoints/{model}/{task}/{run_id}/best_model.pt`. Use `latest` symlink for convenience.
+8. **Checkpoint path changes:** New hierarchical structure uses `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`. Use `latest` symlink for convenience.
 
 9. **WSL2 CUDA setup:** Ensure CUDA toolkit is installed in WSL2, not just on Windows host. Check with `nvcc --version` inside WSL.
 
@@ -452,7 +452,7 @@ source .venv/bin/activate
    - Use dropdown widgets to select checkpoint (including `latest` symlink)
    - Choose task, variant, and sample ID
    - Get real-time SI-SDR metrics and audio playback
-5. Evaluate checkpoints: `python evaluate.py --checkpoint checkpoints/{model}/{task}/latest/best_model.pt`
+5. Evaluate checkpoints: `python evaluate.py --checkpoint checkpoints/{model}/{task}/latest/model.pt`
 6. Run tests after code changes: `pytest`
 7. For new features: add tests in `tests/`, update README.md, CHANGELOG.md and docs in `docs/` if needed
 

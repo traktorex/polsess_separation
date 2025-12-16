@@ -115,16 +115,16 @@ See [experiments/README.md](experiments/README.md) for details.
 
 ```bash
 # Evaluate on all MM-IPC variants
-python evaluate.py --checkpoint checkpoints/best_model.pt
+python evaluate.py --checkpoint checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt
 
 # Evaluate on specific variant only
-python evaluate.py --checkpoint checkpoints/best_model.pt --variant SER
+python evaluate.py --checkpoint checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt --variant SER
 
 # Fast evaluation (skip PESQ and STOI)
-python evaluate.py --checkpoint checkpoints/best_model.pt --no-pesq --no-stoi
+python evaluate.py --checkpoint checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt --no-pesq --no-stoi
 
 # Save results to CSV
-python evaluate.py --checkpoint checkpoints/best_model.pt --output results.csv
+python evaluate.py --checkpoint checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt --output results.csv
 
 # See all options
 python evaluate.py --help

@@ -1,5 +1,19 @@
 # Todo list
 
-1. think of a better way to name the saved checkpoints
-3. some better way to test models in test_model.ipynb - copying the directory and model timestamp is cumbersome
-4. SPMamba resuming from checkpoint
+1. new architectures?
+    - MossFormer2
+    - DPTNet
+    
+2. script for running models and saving enhanced/separated audio
+    - we don't want to copy the original unseparated files
+    - structure should be like this:
+        - saved
+            - sample_1
+                - speaker_1.wav
+                - speaker_2.wav
+                - metadata containing:
+                    - original_file_path
+                    - model_name
+                    - everything needed to know how the separation was done
+
+

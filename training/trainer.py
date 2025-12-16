@@ -195,11 +195,12 @@ class Trainer:
         model_name = self.config.model.model_type
         task = self.config.data.task
 
-        # Structure: checkpoints/{model_name}/{task}/{run_name}/
-        checkpoint_dir = base_dir / model_name / task / run_name
+        # Structure: checkpoints/{model_name}/{task}/{run_name}_{timestamp}/
+        run_dir_name = f"{run_name}_{self.run_start_timestamp}"
+        checkpoint_dir = base_dir / model_name / task / run_dir_name
         ensure_dir(checkpoint_dir)
 
-        checkpoint_path = checkpoint_dir / "best_model.pt"
+        checkpoint_path = checkpoint_dir / "model.pt"
         config_path = checkpoint_dir / "config.yaml"
 
         return checkpoint_path, config_path

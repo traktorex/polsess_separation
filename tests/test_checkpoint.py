@@ -66,7 +66,7 @@ class TestCheckpointSaving:
             # Save checkpoint
             mock_trainer._save_checkpoint(epoch=5, val_sisdr=10.5, save_dir=save_dir)
 
-            # Check hierarchical structure exists: checkpoints/convtasnet/ES/run_*/best_model.pt
+            # Check hierarchical structure exists: checkpoints/convtasnet/ES/run_*/model.pt
             model_dir = save_dir / "convtasnet"
             task_dir = model_dir / "ES"
 
@@ -79,7 +79,7 @@ class TestCheckpointSaving:
             run_dir = run_dirs[0]
 
             # Check checkpoint file exists
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
             assert checkpoint_file.exists(), "Checkpoint file should exist"
 
             # Load and verify checkpoint contents
@@ -145,7 +145,7 @@ class TestCheckpointSaving:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
 
             checkpoint = torch.load(checkpoint_file)
 
@@ -248,7 +248,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -274,7 +274,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
 
             # Load and modify to legacy format
             checkpoint = torch.load(checkpoint_file)
@@ -303,7 +303,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -373,7 +373,7 @@ class TestCheckpointIntegration:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "best_model.pt"
+            checkpoint_file = run_dir / "model.pt"
 
             # Load checkpoint
             trainer.load_checkpoint(str(checkpoint_file))

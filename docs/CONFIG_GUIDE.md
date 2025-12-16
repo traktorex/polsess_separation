@@ -238,16 +238,16 @@ python train.py \
 
 ```bash
 # Basic evaluation
-python evaluate.py --checkpoint checkpoints/best_model.pt
+python evaluate.py --checkpoint checkpoints/model.pt
 
 # With YAML config
 python evaluate.py \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/model.pt \
     --config experiments/baseline.yaml
 
 # With custom settings
 python evaluate.py \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/model.pt \
     --data-root /path/to/data \
     --variant SER \
     --batch-size 8 \
@@ -472,17 +472,17 @@ python train.py --config experiments/lr_sweep.yaml --batch-size 8
 ```bash
 # Fast evaluation (SI-SDR only)
 python evaluate.py \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/model.pt \
     --no-pesq --no-stoi
 
 # Full evaluation with all metrics
 python evaluate.py \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/model.pt \
     --output full_results.csv
 
 # Test specific challenging variant
 python evaluate.py \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/model.pt \
     --variant R \
     --output reverb_only_results.csv
 ```

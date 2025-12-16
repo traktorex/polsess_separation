@@ -319,7 +319,7 @@ python train.py --config experiments/best_params.yaml
 ### 3. Evaluate:
 
 ```bash
-python evaluate.py --checkpoint checkpoints/best_model.pt
+python evaluate.py --checkpoint checkpoints/model.pt
 ```
 
 ---

@@ -181,7 +181,7 @@ def main():
         })
 
     # 5. Save model artifact
-    wandb.save('checkpoints/best_model.pt')
+    wandb.save('checkpoints/model.pt')
 
     wandb.finish()
 ```
@@ -449,7 +449,7 @@ def main():
             wandb.log({'best_val_sisdr': val_sisdr})
 
     # Log final artifacts
-    wandb.save('checkpoints/best_model.pt')
+    wandb.save('checkpoints/model.pt')
     wandb.save('training.log')
 
     # Create summary
