@@ -18,6 +18,21 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_cuda_cache():
+    """Clear CUDA cache before each test to prevent memory overflow.
+    
+    SPMamba tests are memory-intensive. When running all tests, previous tests
+    may leave GPU memory allocated, causing overflow. This fixture ensures
+    a clean slate for each SPMamba test.
+    """
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 @pytest.fixture
 def device():
     """GPU device for SPMamba tests."""

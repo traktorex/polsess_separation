@@ -98,9 +98,14 @@ def test_dprnn_different_hidden_sizes():
 
 
 def test_dprnn_with_dropout():
-    """Test DPRNN with dropout enabled."""
+    """Test DPRNN with dropout enabled.
+    
+    Note: Dropout only applies between RNN layers. DPRNN uses num_rnn_layers
+    to control layers in the internal RNN blocks, so we need num_rnn_layers >= 2.
+    """
     model = DPRNN(
-        N=64, C=1, hidden_size=128, dropout=0.2, kernel_size=16, stride=8
+        N=64, C=1, hidden_size=128, num_rnn_layers=2, dropout=0.2, 
+        kernel_size=16, stride=8
     )
     
     assert model is not None

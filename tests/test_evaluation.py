@@ -4,8 +4,7 @@ import pytest
 import torch
 from pathlib import Path
 from unittest.mock import Mock, patch
-from evaluation import load_model_from_checkpoint_for_eval
-from evaluation.formatting import print_summary, save_results_csv
+from evaluate import load_model_from_checkpoint, print_summary, save_results_csv
 
 
 class TestEvaluationLoading:
@@ -52,7 +51,7 @@ class TestEvaluationLoading:
         )
         
         # Test loading
-        loaded_model = load_model_from_checkpoint_for_eval(
+        loaded_model = load_model_from_checkpoint(
             str(checkpoint_path), config=None, device="cpu"
         )
         
@@ -77,7 +76,7 @@ class TestEvaluationLoading:
         
         # Should raise error when no config provided
         with pytest.raises(ValueError, match="No config in checkpoint"):
-            load_model_from_checkpoint_for_eval(
+            load_model_from_checkpoint(
                 str(checkpoint_path), config=None, device="cpu"
             )
 
@@ -115,7 +114,7 @@ class TestEvaluationLoading:
             checkpoint_path,
         )
         
-        loaded_model = load_model_from_checkpoint_for_eval(
+        loaded_model = load_model_from_checkpoint(
             str(checkpoint_path), config=None, device="cpu"
         )
         
@@ -146,7 +145,7 @@ class TestEvaluationLoading:
     #     config.model.convtasnet.H = 128
     #     config.model.convtasnet.P = 3  # Must be odd
     #     
-    #     loaded_model = load_model_from_checkpoint_for_eval(
+    #     loaded_model = load_model_from_checkpoint(
     #         str(checkpoint_path), config=config, device="cpu"
     #     )
     #     
@@ -156,7 +155,7 @@ class TestEvaluationLoading:
     def test_load_model_nonexistent_file_raises_error(self):
         """Test loading from nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            load_model_from_checkpoint_for_eval(
+            load_model_from_checkpoint(
                 "/nonexistent/path.pt", config=None, device="cpu"
             )
 
