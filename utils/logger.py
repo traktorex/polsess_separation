@@ -1,9 +1,10 @@
-"""Python logging utility with colored console output."""
+"""Logger setup for consistent formatting."""
 
+import os
 import logging
 from pathlib import Path
-from typing import Optional
-from .file_utils import ensure_dir
+from typing import Union, Optional
+from .common import ensure_dir
 
 try:
     import coloredlogs

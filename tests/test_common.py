@@ -180,3 +180,375 @@ class TestSetupFunctions:
         
         # Restore original
         conv_tasnet_module.EPS = original_eps
+"""Tests for file utility functions."""
+
+import pytest
+from pathlib import Path
+from utils.common import ensure_dir
+
+
+def test_ensure_dir_creates_directory(tmp_path):
+    """Test ensure_dir creates directory."""
+    new_dir = tmp_path / "test" / "nested" / "path"
+    
+    assert not new_dir.exists()
+    
+    result = ensure_dir(new_dir)
+    
+    assert new_dir.exists()
+    assert new_dir.is_dir()
+    assert result == new_dir
+
+
+def test_ensure_dir_creates_parent_directories(tmp_path):
+    """Test ensure_dir creates parent directories."""
+    nested_dir = tmp_path / "level1" / "level2" / "level3"
+    
+    result = ensure_dir(nested_dir)
+    
+    assert (tmp_path / "level1").exists()
+    assert (tmp_path / "level1" / "level2").exists()
+    assert nested_dir.exists()
+    assert result == nested_dir
+
+
+def test_ensure_dir_existing_directory_no_error(tmp_path):
+    """Test ensure_dir handles existing directory without error."""
+    existing_dir = tmp_path / "existing"
+    existing_dir.mkdir()
+    
+    # Should not raise error
+    result = ensure_dir(existing_dir)
+    
+    assert result == existing_dir
+    assert existing_dir.exists()
+
+
+def test_ensure_dir_returns_path_object(tmp_path):
+    """Test ensure_dir returns Path object."""
+    new_dir = tmp_path / "test"
+    
+    result = ensure_dir(new_dir)
+    
+    assert isinstance(result, Path)
+
+
+def test_ensure_dir_accepts_string_path(tmp_path):
+    """Test ensure_dir accepts string paths."""
+    new_dir = tmp_path / "string_test"
+    new_dir_str = str(new_dir)
+    
+    result = ensure_dir(new_dir_str)
+    
+    assert new_dir.exists()
+    assert isinstance(result, Path)
+    assert result == new_dir
+
+
+def test_ensure_dir_idempotent(tmp_path):
+    """Test ensure_dir can be called multiple times safely."""
+    new_dir = tmp_path / "idempotent"
+    
+    result1 = ensure_dir(new_dir)
+    result2 = ensure_dir(new_dir)
+    result3 = ensure_dir(new_dir)
+    
+    assert result1 == result2 == result3
+    assert new_dir.exists()
+
+"""Tests for config utility functions."""
+
+import pytest
+from dataclasses import dataclass
+from types import SimpleNamespace
+from utils.common import dataclass_to_dict
+
+
+@dataclass
+class SampleDataclass:
+    """Sample dataclass for testing."""
+    name: str
+    value: int
+    flag: bool = True
+
+
+@dataclass
+class NestedDataclass:
+    """Nested dataclass for testing."""
+    inner: SampleDataclass
+    count: int
+
+
+def test_dataclass_to_dict_simple():
+    """Test converting simple dataclass to dict."""
+    obj = SampleDataclass(name="test", value=42, flag=False)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result, dict)
+    assert result["name"] == "test"
+    assert result["value"] == 42
+    assert result["flag"] is False
+
+
+def test_dataclass_to_dict_with_defaults():
+    """Test dataclass with default values."""
+    obj = SampleDataclass(name="default_test", value=100)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result["name"] == "default_test"
+    assert result["value"] == 100
+    assert result["flag"] is True  # Default value
+
+
+def test_dataclass_to_dict_nested():
+    """Test converting nested dataclass."""
+    inner = SampleDataclass(name="inner", value=10)
+    outer = NestedDataclass(inner=inner, count=5)
+    
+    result = dataclass_to_dict(outer)
+    
+    assert isinstance(result, dict)
+    assert result["count"] == 5
+    assert isinstance(result["inner"], dict)
+    assert result["inner"]["name"] == "inner"
+    assert result["inner"]["value"] == 10
+
+
+def test_dataclass_to_dict_with_config_params():
+    """Test with actual config dataclasses."""
+    from config import ConvTasNetParams
+    
+    params = ConvTasNetParams(N=128, B=256, H=512)
+    
+    result = dataclass_to_dict(params)
+    
+    assert result["N"] == 128
+    assert result["B"] == 256
+    assert result["H"] == 512
+    assert result["P"] == 3  # Default value
+
+
+def test_dataclass_to_dict_simplenamespace():
+    """Test converting SimpleNamespace to dict."""
+    obj = SimpleNamespace(name="test", value=42, flag=True)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result, dict)
+    assert result["name"] == "test"
+    assert result["value"] == 42
+    assert result["flag"] is True
+
+
+def test_dataclass_to_dict_non_dataclass_non_namespace():
+    """Test that non-dataclass/non-namespace objects are returned as-is."""
+    obj = "regular_string"
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result == "regular_string"
+
+
+def test_dataclass_to_dict_dict_passthrough():
+    """Test that dicts are returned as-is."""
+    obj = {"key": "value", "number": 123}
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result == obj
+
+
+def test_dataclass_to_dict_preserves_types():
+    """Test that value types are preserved."""
+    obj = SampleDataclass(name="type_test", value=999, flag=False)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result["name"], str)
+    assert isinstance(result["value"], int)
+    assert isinstance(result["flag"], bool)
+
+
+
+def test_ensure_dir_creates_directory(tmp_path):
+    """Test ensure_dir creates directory."""
+    new_dir = tmp_path / "test" / "nested" / "path"
+    
+    assert not new_dir.exists()
+    
+    result = ensure_dir(new_dir)
+    
+    assert new_dir.exists()
+    assert new_dir.is_dir()
+    assert result == new_dir
+
+
+def test_ensure_dir_creates_parent_directories(tmp_path):
+    """Test ensure_dir creates parent directories."""
+    nested_dir = tmp_path / "level1" / "level2" / "level3"
+    
+    result = ensure_dir(nested_dir)
+    
+    assert (tmp_path / "level1").exists()
+    assert (tmp_path / "level1" / "level2").exists()
+    assert nested_dir.exists()
+    assert result == nested_dir
+
+
+def test_ensure_dir_existing_directory_no_error(tmp_path):
+    """Test ensure_dir handles existing directory without error."""
+    existing_dir = tmp_path / "existing"
+    existing_dir.mkdir()
+    
+    # Should not raise error
+    result = ensure_dir(existing_dir)
+    
+    assert result == existing_dir
+    assert existing_dir.exists()
+
+
+def test_ensure_dir_returns_path_object(tmp_path):
+    """Test ensure_dir returns Path object."""
+    new_dir = tmp_path / "test"
+    
+    result = ensure_dir(new_dir)
+    
+    assert isinstance(result, Path)
+
+
+def test_ensure_dir_accepts_string_path(tmp_path):
+    """Test ensure_dir accepts string paths."""
+    new_dir = tmp_path / "string_test"
+    new_dir_str = str(new_dir)
+    
+    result = ensure_dir(new_dir_str)
+    
+    assert new_dir.exists()
+    assert isinstance(result, Path)
+    assert result == new_dir
+
+
+def test_ensure_dir_idempotent(tmp_path):
+    """Test ensure_dir can be called multiple times safely."""
+    new_dir = tmp_path / "idempotent"
+    
+    result1 = ensure_dir(new_dir)
+    result2 = ensure_dir(new_dir)
+    result3 = ensure_dir(new_dir)
+    
+    assert result1 == result2 == result3
+    assert new_dir.exists()
+"""Tests for config utility functions."""
+
+import pytest
+from dataclasses import dataclass
+from types import SimpleNamespace
+
+
+@dataclass
+class SampleDataclass:
+    """Sample dataclass for testing."""
+    name: str
+    value: int
+    flag: bool = True
+
+
+@dataclass
+class NestedDataclass:
+    """Nested dataclass for testing."""
+    inner: SampleDataclass
+    count: int
+
+
+def test_dataclass_to_dict_simple():
+    """Test converting simple dataclass to dict."""
+    obj = SampleDataclass(name="test", value=42, flag=False)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result, dict)
+    assert result["name"] == "test"
+    assert result["value"] == 42
+    assert result["flag"] is False
+
+
+def test_dataclass_to_dict_with_defaults():
+    """Test dataclass with default values."""
+    obj = SampleDataclass(name="default_test", value=100)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result["name"] == "default_test"
+    assert result["value"] == 100
+    assert result["flag"] is True  # Default value
+
+
+def test_dataclass_to_dict_nested():
+    """Test converting nested dataclass."""
+    inner = SampleDataclass(name="inner", value=10)
+    outer = NestedDataclass(inner=inner, count=5)
+    
+    result = dataclass_to_dict(outer)
+    
+    assert isinstance(result, dict)
+    assert result["count"] == 5
+    assert isinstance(result["inner"], dict)
+    assert result["inner"]["name"] == "inner"
+    assert result["inner"]["value"] == 10
+
+
+def test_dataclass_to_dict_with_config_params():
+    """Test with actual config dataclasses."""
+    from config import ConvTasNetParams
+    
+    params = ConvTasNetParams(N=128, B=256, H=512)
+    
+    result = dataclass_to_dict(params)
+    
+    assert result["N"] == 128
+    assert result["B"] == 256
+    assert result["H"] == 512
+    assert result["P"] == 3  # Default value
+
+
+def test_dataclass_to_dict_simplenamespace():
+    """Test converting SimpleNamespace to dict."""
+    obj = SimpleNamespace(name="test", value=42, flag=True)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result, dict)
+    assert result["name"] == "test"
+    assert result["value"] == 42
+    assert result["flag"] is True
+
+
+def test_dataclass_to_dict_non_dataclass_non_namespace():
+    """Test that non-dataclass/non-namespace objects are returned as-is."""
+    obj = "regular_string"
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result == "regular_string"
+
+
+def test_dataclass_to_dict_dict_passthrough():
+    """Test that dicts are returned as-is."""
+    obj = {"key": "value", "number": 123}
+    
+    result = dataclass_to_dict(obj)
+    
+    assert result == obj
+
+
+def test_dataclass_to_dict_preserves_types():
+    """Test that value types are preserved."""
+    obj = SampleDataclass(name="type_test", value=999, flag=False)
+    
+    result = dataclass_to_dict(obj)
+    
+    assert isinstance(result["name"], str)
+    assert isinstance(result["value"], int)
+    assert isinstance(result["flag"], bool)

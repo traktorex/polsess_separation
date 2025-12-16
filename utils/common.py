@@ -3,7 +3,9 @@
 import random
 import warnings
 import os
-from typing import Dict, Any
+from dataclasses import is_dataclass, asdict
+from pathlib import Path
+from typing import Dict, Any, Union
 
 import numpy as np
 import torch
@@ -47,3 +49,20 @@ def setup_device_and_amp(config, summary_info: Dict[str, Any]) -> str:
     summary_info["device"] = device
 
     return device
+
+
+def ensure_dir(path: Union[str, Path]) -> Path:
+    """Ensure directory exists, create if needed."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def dataclass_to_dict(obj: Any) -> dict:
+    """Convert dataclass or SimpleNamespace to dict recursively."""
+    if is_dataclass(obj):
+        return asdict(obj)
+    elif hasattr(obj, "__dict__"):
+        return vars(obj)
+    else:
+        return obj
