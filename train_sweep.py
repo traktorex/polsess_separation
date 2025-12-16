@@ -1,11 +1,11 @@
 """Training script for W&B hyperparameter sweeps."""
 
 import wandb
+from torch.utils.data import DataLoader
 
 from config import load_config_for_run
 from models.factory import create_model_from_config
-from datasets import get_dataset
-from datasets.factory import create_dataloader
+from datasets import get_dataset, polsess_collate_fn
 from training.trainer import Trainer
 from utils import (
     set_seed,
@@ -37,7 +37,7 @@ def main():
     summary_info = {"seed": config.training.seed}
     device = setup_device_and_amp(config, summary_info)
 
-    # Create dataloaders - call create_dataloader twice (once for train, once for val)
+    # Create dataloaders
     dataset_class = get_dataset(config.data.dataset_type)
     
     # Get dataset root
@@ -51,15 +51,38 @@ def main():
     if config.training.curriculum_learning:
         train_variants = config.training.curriculum_learning[0].get("variants")
     
-    # Create train and val dataloaders
-    train_loader = create_dataloader(
-        dataset_class, data_root, "train", config.data,
-        allowed_variants=train_variants, shuffle=True
+    # Create train dataset
+    train_dataset = dataset_class(
+        data_root,
+        subset="train",
+        task=config.data.task,
+        max_samples=config.data.train_max_samples,
+        allowed_variants=train_variants,
     )
-    val_loader = create_dataloader(
-        dataset_class, data_root, "val", config.data,
-        allowed_variants=config.training.validation_variants, 
-        shuffle=False
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.data.batch_size,
+        shuffle=True,
+        num_workers=config.data.num_workers,
+        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+        collate_fn=polsess_collate_fn,
+    )
+    
+    # Create val dataset
+    val_dataset = dataset_class(
+        data_root,
+        subset="val",
+        task=config.data.task,
+        max_samples=config.data.val_max_samples,
+        allowed_variants=config.training.validation_variants,
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config.data.batch_size,
+        shuffle=False,
+        num_workers=config.data.num_workers,
+        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+        collate_fn=polsess_collate_fn,
     )
     
     # Update summary info

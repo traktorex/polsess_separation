@@ -1,12 +1,9 @@
-"""Tests for factory pattern modules (model and dataloader factories)."""
+"""Tests for model factory pattern."""
 
 import pytest
 import torch
-from pathlib import Path
 from config import Config, ModelConfig
 from models.factory import create_model_from_config
-from datasets.factory import create_dataloader
-from datasets import get_dataset
 
 
 class TestModelFactory:
@@ -112,112 +109,3 @@ class TestModelFactory:
         actual_params = sum(p.numel() for p in model.parameters()) / 1e6
         
         assert abs(summary["model_params_millions"] - actual_params) < 0.01
-
-
-class TestDataloaderFactory:
-    """Test dataloader factory creation."""
-
-    @pytest.fixture
-    def sample_config(self):
-        """Provide sample config for dataloader tests."""
-        config = Config()
-        return config
-
-    def test_create_dataloader_signature(self, sample_config):
-        """Test create_dataloader has correct signature."""
-        from inspect import signature
-        
-        sig = signature(create_dataloader)
-        params = list(sig.parameters.keys())
-        
-        assert "dataset_class" in params
-        assert "data_root" in params
-        assert "subset" in params
-        assert "config" in params
-        assert "allowed_variants" in params
-        assert "shuffle" in params
-
-    @pytest.mark.skipif(
-        not Path("/home/user/datasets/PolSESS_C_both/PolSESS_C_both").exists(),
-        reason="Dataset not available",
-    )
-    def test_create_dataloader_train(self, sample_config):
-        """Test creating train dataloader via factory."""
-        dataset_class = get_dataset("polsess")
-        
-        loader = create_dataloader(
-            dataset_class,
-            data_root=sample_config.data.polsess.data_root,
-            subset="train",
-            config=sample_config.data,
-            shuffle=True,
-        )
-        
-        assert loader is not None
-        assert loader.batch_size == sample_config.data.batch_size
-        assert len(loader.dataset) > 0
-
-    @pytest.mark.skipif(
-        not Path("/home/user/datasets/PolSESS_C_both/PolSESS_C_both").exists(),
-        reason="Dataset not available",
-    )
-    def test_create_dataloader_with_variants(self, sample_config):
-        """Test dataloader with allowed_variants filtering."""
-        dataset_class = get_dataset("polsess")
-        
-        loader = create_dataloader(
-            dataset_class,
-            data_root=sample_config.data.polsess.data_root,
-            subset="test",
-            config=sample_config.data,
-            allowed_variants=["C", "S"],
-            shuffle=False,
-        )
-        
-        assert loader is not None
-        # Check that variants are filtered
-        assert loader.dataset.allowed_variants == ["C", "S"]
-
-    @pytest.mark.skipif(
-        not Path("/home/user/datasets/PolSESS_C_both/PolSESS_C_both").exists(),
-        reason="Dataset not available",
-    )
-    def test_dataloader_shuffle_param(self, sample_config):
-        """Test shuffle parameter is respected."""
-        dataset_class = get_dataset("polsess")
-        
-        # Create with shuffle=True
-        loader_shuffled = create_dataloader(
-            dataset_class,
-            data_root=sample_config.data.polsess.data_root,
-            subset="train",
-            config=sample_config.data,
-            shuffle=True,
-        )
-        
-        # Create with shuffle=False
-        loader_not_shuffled = create_dataloader(
-            dataset_class,
-            data_root=sample_config.data.polsess.data_root,
-            subset="val",
-            config=sample_config.data,
-            shuffle=False,
-        )
-        
-        # Can't directly check shuffle property in DataLoader,
-        # but we can verify they were created successfully
-        assert loader_shuffled is not None
-        assert loader_not_shuffled is not None
-
-    def test_create_dataloader_max_samples(self, sample_config):
-        """Test max_samples parameter limits dataset size."""
-        # This test would need dataset available or mocking
-        # Just verify the factory accepts the parameter
-        dataset_class = get_dataset("polsess")
-        
-        # Set max samples
-        sample_config.data.train_max_samples = 10
-        
-        # Should not raise error even if dataset doesn't exist
-        # (will fail on dataset creation, not factory)
-        assert callable(create_dataloader)
