@@ -181,12 +181,13 @@ class Trainer:
         # Default: use timestamp from training start
         return f"run_{self.run_start_timestamp}"
 
-    def _create_checkpoint_paths(self, save_dir: str, run_name: str) -> tuple[Path, Path]:
+    def _create_checkpoint_paths(self, save_dir: str, run_name: str, epoch: int) -> tuple[Path, Path]:
         """Create checkpoint directory structure and return file paths.
 
         Args:
             save_dir: Base directory for checkpoints.
             run_name: Name for this training run.
+            epoch: Current epoch number.
 
         Returns:
             Tuple of (checkpoint_path, config_path).
@@ -195,12 +196,14 @@ class Trainer:
         model_name = self.config.model.model_type
         task = self.config.data.task
 
-        # Structure: checkpoints/{model_name}/{task}/{run_name}_{timestamp}/
-        run_dir_name = f"{run_name}_{self.run_start_timestamp}"
-        checkpoint_dir = base_dir / model_name / task / run_dir_name
+        # Structure: checkpoints/{model_name}/{task}/{run_name}/
+        # run_name already includes timestamp from _get_run_name() 
+        checkpoint_dir = base_dir / model_name / task / run_name
         ensure_dir(checkpoint_dir)
 
-        checkpoint_path = checkpoint_dir / "model.pt"
+        # Checkpoint file: {model}_{task}_epoch{epoch}.pt
+        checkpoint_filename = f"{model_name}_{task}_epoch{epoch+1}.pt"
+        checkpoint_path = checkpoint_dir / checkpoint_filename
         config_path = checkpoint_dir / "config.yaml"
 
         return checkpoint_path, config_path
@@ -236,7 +239,7 @@ class Trainer:
         """Save model checkpoint with best validation SI-SDR."""
         # Determine run name and create directory structure
         run_name = self._get_run_name()
-        checkpoint_path, config_path = self._create_checkpoint_paths(save_dir, run_name)
+        checkpoint_path, config_path = self._create_checkpoint_paths(save_dir, run_name, epoch)
 
         # Prepare checkpoint data
         checkpoint_data = self._serialize_checkpoint_data(epoch, val_sisdr)

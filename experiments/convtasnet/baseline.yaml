@@ -6,7 +6,7 @@ data:
   batch_size: 1
   task: ES
   num_workers: 1
-  train_max_samples: 100
+  train_max_samples: null
   # CSV filenames are auto-derived from data_root (uses env var POLSESS_DATA_ROOT or defaults)
 
 model:

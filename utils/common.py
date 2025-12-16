@@ -30,11 +30,69 @@ def apply_eps_patch(eps_value: float = 1e-4) -> None:
 
 
 def setup_warnings():
-    """Suppress common warnings."""
+    """Configure warning filters for cleaner output.
+    
+    Suppresses known warnings that don't affect functionality:
+    - SpeechBrain/torchaudio deprecation warnings (future library changes)
+    - TorchMetrics pkg_resources deprecation (setuptools migration)
+    - Torch dynamo/inductor warnings (compilation optimizations)
+    - ComplexHalf experimental warning (used in SPMamba STFT)
+    """
+    import warnings
+    
+    # SpeechBrain torchaudio backend deprecation (transition to TorchCodec)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*torchaudio._backend.list_audio_backends.*",
+        category=UserWarning,
+    )
+    
+    # TorchAudio load deprecation (transition to TorchCodec)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*this function's implementation will be changed.*torchcodec.*",
+        category=UserWarning,
+    )
+    
+    # TorchMetrics pkg_resources deprecation (setuptools migration)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*pkg_resources is deprecated.*",
+        category=UserWarning,
+    )
+    
+    # Torch dynamo warnings for pybind functions (SPMamba selective scan)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*Dynamo does not know how to trace.*selective_scan_cuda.*",
+        category=UserWarning,
+    )
+    
+    # ComplexHalf experimental support (used in SPMamba STFT)
+    warnings.filterwarnings(
+        "ignore",
+        message=".*ComplexHalf support is experimental.*",
+        category=UserWarning,
+    )
+    
+    # Suppress pybind deprecation warnings from frozen importlib
+    warnings.filterwarnings(
+        "ignore",
+        message=".*SwigPy.*has no __module__ attribute.*",
+        category=DeprecationWarning,
+    )
+    warnings.filterwarnings(
+        "ignore",
+        message=".*swigvarlink.*has no __module__ attribute.*",
+        category=DeprecationWarning,
+    )
     warnings.filterwarnings("ignore", category=UserWarning, module="inspect")
     warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
     warnings.filterwarnings("ignore", message=".*speechbrain.pretrained.*")
     os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
+    
+    # Suppress torch inductor SM warnings (logged to stderr)
+    os.environ["TORCHINDUCTOR_WARNINGS"] = "0"
 
 
 def setup_device_and_amp(config, summary_info: Dict[str, Any]) -> str:

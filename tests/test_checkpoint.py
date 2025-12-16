@@ -79,7 +79,9 @@ class TestCheckpointSaving:
             run_dir = run_dirs[0]
 
             # Check checkpoint file exists
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
             assert checkpoint_file.exists(), "Checkpoint file should exist"
 
             # Load and verify checkpoint contents
@@ -145,7 +147,9 @@ class TestCheckpointSaving:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
 
             checkpoint = torch.load(checkpoint_file)
 
@@ -248,7 +252,9 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -274,7 +280,9 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
 
             # Load and modify to legacy format
             checkpoint = torch.load(checkpoint_file)
@@ -303,7 +311,9 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
 
             # Load checkpoint
             mock_trainer.load_checkpoint(str(checkpoint_file))
@@ -373,7 +383,9 @@ class TestCheckpointIntegration:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_file = run_dir / "model.pt"
+            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            assert len(checkpoint_files) > 0, "Should have checkpoint files"
+            checkpoint_file = checkpoint_files[0]
 
             # Load checkpoint
             trainer.load_checkpoint(str(checkpoint_file))
