@@ -6,9 +6,68 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a speech processing research repository focused on speech separation and enhancement for Polish speech datasets. The main active project is in `MAG2/polsess_separation/`.
 
+## 🎓 Master's Thesis Context
+
+**CRITICAL: This project is part of a master's thesis submission.**
+
+### Primary Goals (in order of priority):
+
+1. **Code Clarity & Readability** - The code will be reviewed by academic supervisors and potentially published. Every line should be clean, well-documented, and easy to understand.
+
+2. **Simplicity over Cleverness** - Prefer straightforward, explicit implementations over complex abstractions. The thesis examiner should be able to follow the logic without deep software engineering expertise.
+
+3. **Reproducibility** - All experiments must be fully reproducible. Configuration, random seeds, and environment details must be meticulously documented.
+
+4. **Academic Standards** - Follow research code conventions (similar to conference paper repositories) rather than production software patterns.
+
+### What This Means in Practice:
+
+**DO:**
+- ✅ Write self-documenting code with clear variable/function names
+- ✅ Add docstrings explaining the "why" not just the "what"
+- ✅ Keep functions focused and short (prefer 20-30 lines over 100+)
+- ✅ Use explicit, direct implementations that match paper descriptions
+- ✅ Consolidate related utilities to reduce file count
+- ✅ Maintain comprehensive tests for reproducibility verification
+- ✅ Document design decisions inline when they deviate from papers
+
+**DON'T:**
+- ❌ Over-engineer with excessive abstraction layers
+- ❌ Create factory patterns unless handling 4+ variants (we have model factory for 4 models - justified)
+- ❌ Split simple functions into separate files "for organization"
+- ❌ Use clever tricks that require explanation
+- ❌ Add features "for future extensibility" - implement what's needed now
+- ❌ Create deep inheritance hierarchies
+
+### Recent Simplifications (Based on Thesis Best Practices):
+
+1. **Evaluation Module** - Merged split modules back into single `evaluate.py` (498→420 lines)
+   - *Rationale*: All top speech separation papers use single evaluation scripts
+   
+2. **Dataset Factory Removed** - Direct DataLoader instantiation
+   - *Rationale*: Only 2 datasets, factory pattern unnecessary for thesis scope
+   
+3. **Utils Consolidated** - Reduced from 7→4 files by merging tiny utilities
+   - *Rationale*: Fewer files = easier navigation for reviewers
+
+4. **Model Factory Retained** - Kept for 4 model architectures
+   - *Rationale*: Config-driven model selection is standard for multi-model comparison papers
+
+### Code Review Mindset:
+
+When writing or reviewing code, ask:
+1. "Would a thesis examiner understand this without my explanation?"
+2. "Is this the simplest way to achieve the goal?"
+3. "Does this match how it's done in the cited papers?"
+4. "Could I explain this in 2 sentences in the thesis?"
+
+If the answer to any is "no", simplify.
+
 ## Primary Project: PolSESS Speech Separation
 
 Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speech enhancement using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
+
+**Thesis Focus**: Comparing 4 speech separation architectures on the PolSESS dataset with Mix Modification by Inverted Phase Cancellation (MM-IPC) augmentation for Polish speech enhancement.
 
 ### Key Commands
 

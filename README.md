@@ -16,6 +16,58 @@ PyTorch implementation of speech enhancement on the PolSESS dataset using ConvTa
 - **Configurable:** CLI arguments or config file
 - **Modular Architecture:** Clean separation of concerns
 
+## Project Architecture
+
+```
+polsess_separation/
+├── models/                    # Model architectures
+│   ├── factory.py            # Model factory (4 architectures)
+│   ├── conv_tasnet.py        # Conv-TasNet implementation
+│   ├── dprnn.py              # Dual-Path RNN
+│   ├── sepformer.py          # SepFormer (Transformer-based)
+│   └── spmamba.py            # SPMamba (State-space model)
+│
+├── datasets/                  # Dataset handling
+│   ├── polsess_dataset.py    # PolSESS with MM-IPC augmentation
+│   ├── libri2mix_dataset.py  # LibriMix for comparison
+│   └── __init__.py           # Dataset registry
+│
+├── training/                  # Training infrastructure
+│   └── trainer.py            # Training loop with curriculum learning
+│
+├── utils/                     # Utilities
+│   ├── common.py             # Seed, EPS patch, device setup
+│   ├── model_utils.py        # Parameter counting, checkpointing
+│   ├── wandb_logger.py       # Experiment tracking
+│   └── logger.py             # Logging setup
+│
+├── config.py                  # Configuration dataclasses
+├── train.py                   # Training entry point
+├── evaluate.py                # Evaluation entry point (420 lines)
+├── experiments/               # YAML experiment configs
+│   ├── baseline.yaml
+│   ├── convtasnet/
+│   ├── dprnn/
+│   ├── sepformer/
+│   └── spmamba/
+│
+└── tests/                     # Comprehensive test suite (228 tests)
+    ├── test_model.py         # Model architecture tests
+    ├── test_model_factory.py # Factory pattern tests
+    ├── test_dataset.py       # Dataset tests
+    ├── test_mmipc.py         # MM-IPC augmentation tests
+    ├── test_evaluation.py    # Evaluation pipeline tests
+    └── ...
+```
+
+### Key Design Decisions
+
+- **Model Factory Pattern**: Justified for comparing 4 different architectures
+- **Direct DataLoader Creation**: Explicit and easy to modify (no dataset factory)
+- **Single `evaluate.py`**: All evaluation logic in one file (standard research pattern)
+- **Comprehensive Tests**: 228 tests ensuring correctness and reproducibility
+- **Config-Driven**: YAML configs for reproducible experiments
+
 ## Quick Start
 
 ### Installation
