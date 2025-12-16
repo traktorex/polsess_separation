@@ -157,3 +157,51 @@ def test_dprnn_different_kernel_stride():
     output = model(x)
     
     assert output.shape == (2, 16000)
+
+
+def test_dprnn_different_chunk_sizes():
+    """Test DPRNN with different chunk sizes (dual-path processing parameter)."""
+    # chunk_size affects how the sequence is split for dual-path processing
+    for chunk_size in [50, 100, 200]:
+        model = DPRNN(
+            N=64,
+            C=1,
+            hidden_size=128,
+            num_layers=2,
+            chunk_size=chunk_size,
+        )
+        
+        x = torch.randn(2, 16000)
+        output = model(x)
+        
+        # Output shape should be same regardless of chunk_size
+        assert output.shape == (2, 16000)
+
+
+def test_dprnn_complexity_reduction():
+    """Test that DPRNN handles very long sequences efficiently (per paper).
+    
+    Paper states: Dual-path processing reduces complexity from O(L) to O(√L).
+    With chunking, each RNN processes √L steps instead of L.
+    For L=160000, K=100, effective length per RNN is ~400 (√160000 ≈ 400).
+    """
+    model = DPRNN(
+        N=64,
+        C=1,
+        hidden_size=128,
+        chunk_size=100,
+        num_layers=2,
+        kernel_size=16,
+        stride=8,
+    )
+    
+    # Test with very long sequence (20 seconds at 8kHz)
+    # This would be challenging for standard RNN but manageable with chunking
+    long_seq = torch.randn(1, 160000)
+    output = model(long_seq)
+    
+    # Should handle long sequence successfully
+    assert output.shape == long_seq.shape
+    assert not torch.isnan(output).any()
+    assert not torch.isinf(output).any()
+

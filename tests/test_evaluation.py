@@ -161,6 +161,67 @@ class TestEvaluationLoading:
             )
 
 
+class TestMetricComputation:
+    """Test evaluation metric computation."""
+
+    def test_sisdr_computation_with_known_values(self):
+        """Test SI-SDR computation with synthetic signals."""
+        from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
+        
+        si_sdr_metric = ScaleInvariantSignalDistortionRatio()
+        
+        # Test 1: Perfect reconstruction (SI-SDR should be very high)
+        clean = torch.randn(16000)
+        estimate = clean.clone()
+        
+        sisdr = si_sdr_metric(estimate.unsqueeze(0), clean.unsqueeze(0))
+        
+        # Perfect reconstruction should give very high SI-SDR (>40 dB)
+        assert sisdr.item() > 40.0
+        
+    def test_sisdr_zero_signal(self):
+        """Test SI-SDR handles zero signals gracefully."""
+        from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
+        
+        si_sdr_metric = ScaleInvariantSignalDistortionRatio()
+        
+        clean = torch.randn(16000)
+        estimate = torch.zeros(16000)
+        
+        # Should not crash and return a finite value
+        sisdr = si_sdr_metric(estimate.unsqueeze(0), clean.unsqueeze(0))
+        assert torch.isfinite(sisdr)
+        
+    def test_sisdr_scaled_signal(self):
+        """Test SI-SDR is scale-invariant."""
+        from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
+        
+        si_sdr_metric = ScaleInvariantSignalDistortionRatio()
+        
+        clean = torch.randn(16000)
+        estimate = clean * 2.5  # Scaled version
+        
+        sisdr = si_sdr_metric(estimate.unsqueeze(0), clean.unsqueeze(0))
+        
+        # Scale-invariant metric should still be very high
+        assert sisdr.item() > 40.0
+        
+    def test_sisdr_noisy_signal(self):
+        """Test SI-SDR with added noise."""
+        from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
+        
+        si_sdr_metric = ScaleInvariantSignalDistortionRatio()
+        
+        clean = torch.randn(16000)
+        noise = torch.randn(16000) * 0.1
+        estimate = clean + noise
+        
+        sisdr = si_sdr_metric(estimate.unsqueeze(0), clean.unsqueeze(0))
+        
+        # Should be positive but not perfect
+        assert 0 < sisdr.item() < 30.0
+
+
 class TestEvaluationFormatting:
     """Test evaluation result formatting."""
 

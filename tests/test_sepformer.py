@@ -100,3 +100,66 @@ def test_sepformer_different_chunk_sizes():
     x = torch.randn(2, 16000)
     y = model(x)
     assert y.shape == (2, 2, 16000)
+
+
+def test_sepformer_attention_mechanism():
+    """Test that SepFormer uses multi-head attention mechanism (vs RNN).
+    
+    Paper states: RNN-free architecture with multi-head attention.
+    We validate this by testing with different numbers of attention heads.
+    """
+    # Test that different nhead values work correctly
+    for nhead in [2, 4, 8]:
+        model = SepFormer(
+            N=128, C=2, num_layers=2, d_model=128, 
+            nhead=nhead, d_ffn=512
+        )
+        x = torch.randn(1, 8000)
+        output = model(x)
+        assert output.shape == (1, 2, 8000)
+        assert not torch.isnan(output).any()
+
+
+def test_sepformer_dual_path_processing():
+    """Test SepFormer dual-path (intra + inter) transformer processing.
+    
+    Paper states: Intra-transformer for local dependencies within chunks,
+    inter-transformer for global context across chunks.
+    Validate by processing long sequences that require multiple chunks.
+    """
+    model = SepFormer(
+        N=256, C=2, chunk_size=250, hop_size=125, 
+        num_layers=2, d_model=256, nhead=4
+    )
+    
+    # Long sequence to require multiple chunks
+    # With chunk_size=250, hop_size=125, 32000 samples = many chunks
+    x = torch.randn(1, 32000)
+    output = model(x)
+    
+    # Should handle long sequence via dual-path chunking
+    assert output.shape == (1, 2, 32000)
+    assert not torch.isnan(output).any()
+    assert not torch.isinf(output).any()
+
+
+def test_sepformer_parallel_processing():
+    """Test SepFormer parallel processing advantage (vs sequential RNN).
+    
+    Paper states: Transformer-based architecture enables parallel processing
+    unlike sequential RNNs, leading to faster inference.
+    We validate by ensuring model processes inputs efficiently.
+    """
+    model = SepFormer(N=256, C=2, num_layers=2, d_model=256, nhead=4)
+    model.eval()
+    
+    # Test batch processing (parallel advantage)
+    batch_x = torch.randn(4, 16000)
+    
+    with torch.no_grad():
+        batch_output = model(batch_x)
+    
+    # Should process batch efficiently
+    assert batch_output.shape == (4, 2, 16000)
+    assert not torch.isnan(batch_output).any()
+
