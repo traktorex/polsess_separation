@@ -3,10 +3,10 @@
 
 data:
   dataset_type: polsess
-  batch_size: 1  # Transformers use more memory
+  batch_size: 2  # Transformers use more memory
   num_workers: 1
   prefetch_factor: 2
-  task: ES  # SepFormer designed for speaker separation
+  task: SB  # SepFormer designed for speaker separation
   train_max_samples: null
   val_max_samples: null
 
@@ -16,7 +16,7 @@ model:
     N: 256  # Encoder channels
     kernel_size: 16
     stride: 8
-    C: 1  # Number of speakers to separate
+    C: 2  # Number of speakers to separate
     causal: false
     num_blocks: 2  # Number of times to repeat SepFormer block
     num_layers: 8  # Transformer layers in both IntraT and InterT
@@ -32,7 +32,7 @@ training:
   weight_decay: 0.0  
   grad_clip_norm: 5.0  
   lr_factor: 0.5  
-  lr_patience: 3  
+  lr_patience: 2  
   num_epochs: 200  
   use_amp: true
   amp_eps: 0.0001
@@ -50,9 +50,9 @@ training:
   # Curriculum learning schedule
   curriculum_learning:
     - epoch: 1
-      variants: ["R"]
+      variants: ["C", "R"]
     - epoch: 3
-      variants: ["R", "SR", "S"]
+      variants: ["C", "R", "SR", "S"]
     - epoch: 5
-      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
       lr_scheduler: start

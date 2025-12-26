@@ -1,0 +1,41 @@
+# Baseline Experiment: SepFormer on SB Task
+#
+# Purpose: Establish baseline performance for SepFormer
+# Runs: 3 (seeds: 42, 123, 456)
+# Epochs: 50 (slower training, ~12 min/epoch)
+# Architecture: Paper specification (perfect match)
+
+program: train_sweep.py
+method: grid
+
+metric:
+  name: val_sisdr
+  goal: maximize
+
+parameters:
+  # Base configuration
+  config:
+    value: experiments/sepformer/sepformer_baseline.yaml
+  
+  # Override epochs (slower training)
+  num_epochs:
+    value: 50
+  
+  # Curriculum learning (standardized)
+  curriculum_learning:
+    value:
+      - epoch: 1
+        variants: ["C", "R"]
+      - epoch: 3
+        variants: ["C", "R", "SR", "S"]
+      - epoch: 5
+        variants: ["C", "R", "SR", "S", "SE", "ER", "E", "SER"]
+        lr_scheduler: start
+  
+  # Multi-seed for statistical validity
+  seed:
+    values: [42, 123, 456]
+
+# W&B configuration
+project: polsess-thesis-experiments
+name: 1-baseline-SB-sepformer

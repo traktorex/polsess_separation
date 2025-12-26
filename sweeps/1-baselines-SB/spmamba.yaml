@@ -1,0 +1,46 @@
+# Baseline Experiment: SPMamba on SB Task
+#
+# Purpose: Establish baseline performance for SPMamba
+# Runs: 3 (seeds: 42, 123, 456)
+# Epochs: 30 (very slow training, ~60 min/epoch)
+# Architecture: Reduced (memory-constrained, not paper spec)
+# NOTE: Using reduced architecture for 12GB GPU compatibility
+
+program: train_sweep.py
+method: grid
+
+metric:
+  name: val_sisdr
+  goal: maximize
+
+parameters:
+  # Base configuration
+  config:
+    value: experiments/spmamba/spmamba_sb_reduced.yaml
+  
+  # Override epochs (very slow training ~60 min/epoch)
+  num_epochs:
+    value: 30
+  
+  # Override to match other baselines
+  weight_decay:
+    value: 0.0
+  
+  # Curriculum learning (standardized)
+  curriculum_learning:
+    value:
+      - epoch: 1
+        variants: ["C", "R"]
+      - epoch: 3
+        variants: ["C", "R", "SR", "S"]
+      - epoch: 5
+        variants: ["C", "R", "SR", "S", "SE", "ER", "E", "SER"]
+        lr_scheduler: start
+  
+  # Multi-seed for statistical validity
+  seed:
+    values: [42, 123, 456]
+
+# W&B configuration
+project: polsess-thesis-experiments
+name: 1-baseline-SB-spmamba

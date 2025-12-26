@@ -1,0 +1,44 @@
+# Baseline Experiment: ConvTasNet on SB Task
+# 
+# Purpose: Establish baseline performance for ConvTasNet
+# Runs: 3 (seeds: 42, 123, 456)
+# Epochs: 100
+
+program: train_sweep.py
+method: grid
+
+metric:
+  name: val_sisdr
+  goal: maximize
+
+parameters:
+  # Base configuration
+  config:
+    value: experiments/convtasnet/sb_task.yaml
+  
+  # Override num_epochs for baseline
+  num_epochs:
+    value: 50
+  
+  # Override weight_decay to paper spec (base config has old sweep value)
+  weight_decay:
+    value: 0.0
+  
+  # Standardized curriculum learning (override base config)
+  curriculum_learning:
+    value:
+      - epoch: 1
+        variants: ["C", "R"]
+      - epoch: 3
+        variants: ["C", "R", "SR", "S"]
+      - epoch: 5
+        variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+        lr_scheduler: start
+  
+  # Multi-seed for statistical validity
+  seed:
+    values: [42, 123, 456]
+
+# W&B configuration
+project: polsess-thesis-experiments
+name: 1-baseline-SB-convtasnet

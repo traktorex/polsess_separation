@@ -5,7 +5,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 8  # DPRNN is more memory efficient than transformers
+  batch_size: 16  # DPRNN is more memory efficient than transformers
   num_workers: 1
   prefetch_factor: 2
   task: SB  # Speech enhancement task (clean speech)
@@ -45,6 +45,7 @@ training:
   log_file: null
   log_level: INFO
   resume_from: null
+  early_stopping_patience: 10
 
   validation_variants: ["SER", "SE"]
 
