@@ -161,6 +161,7 @@ class TrainingConfig:
     resume_from: Optional[str] = None
     validation_variants: Optional[List[str]] = None
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
+    early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
 
 
 @dataclass
@@ -500,7 +501,9 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     and then apply common sweep overrides found in the sweep config.
 
     Supported sweep override keys: model_B, model_H, weight_decay,
-    grad_clip_norm, batch_size, lr, epochs, device
+    grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
+    task, model_type, lr_factor, lr_patience, curriculum_learning,
+    validation_variants
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -510,24 +513,56 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     config = load_config_from_yaml(base_config_path)
 
     # Apply common overrides (if present in sweep config)
+    
+    # Model architecture overrides
     if "model_B" in sweep_config:
         config.model.convtasnet.B = sweep_config.model_B
     if "model_H" in sweep_config:
         config.model.convtasnet.H = sweep_config.model_H
+    
+    # Task and model type
+    if "task" in sweep_config:
+        config.data.task = sweep_config.task
+    if "model_type" in sweep_config:
+        config.model.model_type = sweep_config.model_type
+    
+    # Training hyperparameters
     if "weight_decay" in sweep_config:
         config.training.weight_decay = sweep_config.weight_decay
     if "grad_clip_norm" in sweep_config:
         config.training.grad_clip_norm = sweep_config.grad_clip_norm
-    if "batch_size" in sweep_config:
-        config.data.batch_size = sweep_config.batch_size
     if "lr" in sweep_config:
         config.training.lr = sweep_config.lr
+    
+    # Learning rate scheduler
+    if "lr_factor" in sweep_config:
+        config.training.lr_factor = sweep_config.lr_factor
+    if "lr_patience" in sweep_config:
+        config.training.lr_patience = sweep_config.lr_patience
+    
+    # Epochs (support both "epochs" and "num_epochs")
     if "epochs" in sweep_config:
         config.training.num_epochs = sweep_config.epochs
+    if "num_epochs" in sweep_config:
+        config.training.num_epochs = sweep_config.num_epochs
+    
+    # Data config
+    if "batch_size" in sweep_config:
+        config.data.batch_size = sweep_config.batch_size
+    
+    # Curriculum learning and validation
+    if "curriculum_learning" in sweep_config:
+        config.training.curriculum_learning = sweep_config.curriculum_learning
+    if "validation_variants" in sweep_config:
+        config.training.validation_variants = sweep_config.validation_variants
+    
+    # Hardware and reproducibility
     if "device" in sweep_config:
         config.training.device = sweep_config.device
     if "use_amp" in sweep_config:
         config.training.use_amp = sweep_config.use_amp
+    if "seed" in sweep_config:
+        config.training.seed = sweep_config.seed
 
     # Validate and return
     config.__post_init__()

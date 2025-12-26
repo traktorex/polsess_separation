@@ -1,12 +1,14 @@
-# PolSESS Speech Enhancement with ConvTasNet
+# PolSESS Speech Separation for Polish ASR Preprocessing
 
-PyTorch implementation of speech enhancement on the PolSESS dataset using ConvTasNet with MM-IPC augmentation.
+PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, SPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
 
-## Performance
+**Key Feature**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + events), unlike synthetic-only datasets (LibriMix), leading to better generalization on real speech.
 
-- **Best SI-SDR:** 9.84 dB (ES task, test set)
+## Current Performance
+
+- **Best SI-SDR:** 9.84 dB (ES task, test set, ConvTasNet)
 - **Training time:** ~0.3s per batch with AMP enabled
-- **Model size:** 8.64M parameters
+- **Model sizes:** 1.8M - 25M parameters
 
 ## Features
 

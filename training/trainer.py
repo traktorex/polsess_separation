@@ -377,62 +377,125 @@ class Trainer:
         avg_sisdr = total_sisdr / total_samples
         return avg_sisdr
 
-    def train(self, num_epochs: int, save_dir: str = "checkpoints"):
-        """Main training loop."""
+    def train(self, num_epochs: int, save_dir: str = "checkpoints", early_stopping_patience: int = None):
+        """Main training loop with OOM error handling."""
         save_dir = Path(save_dir)
         save_dir.mkdir(exist_ok=True)
         val_sisdr_history = []
+        
+        # Early stopping tracking (only if enabled)
+        epochs_without_improvement = 0 if early_stopping_patience else None
 
-        final_epoch = self.current_epoch + num_epochs
-        for epoch in range(self.current_epoch, self.current_epoch + num_epochs):
-            self.current_epoch = epoch + 1
-            self.logger.info(f"Epoch {self.current_epoch}/{final_epoch}")
+        try:
+            final_epoch = self.current_epoch + num_epochs
+            for epoch in range(self.current_epoch, self.current_epoch + num_epochs):
+                self.current_epoch = epoch + 1
+                self.logger.info(f"Epoch {self.current_epoch}/{final_epoch}")
 
-            # Update training variants based on curriculum schedule
-            self._update_training_variants(self.current_epoch)
+                # Update training variants based on curriculum schedule
+                self._update_training_variants(self.current_epoch)
 
-            train_sisdr = self.train_epoch()
-            self.logger.info(f"Train - SI-SDR: {train_sisdr:.2f} dB")
+                train_sisdr = self.train_epoch()
+                self.logger.info(f"Train - SI-SDR: {train_sisdr:.2f} dB")
 
-            val_sisdr = self.validate()
-            self.logger.info(f"Val - SI-SDR: {val_sisdr:.2f} dB")
+                val_sisdr = self.validate()
+                self.logger.info(f"Val - SI-SDR: {val_sisdr:.2f} dB")
 
-            val_sisdr_history.append(val_sisdr)
+                val_sisdr_history.append(val_sisdr)
 
-            # Get current learning rate
-            current_lr = self.optimizer.param_groups[0]["lr"]
-
-            # Update learning rate based on validation performance (only if enabled)
-            old_lr = current_lr
-            if self.lr_scheduler_enabled:
-                self.scheduler.step(val_sisdr)
+                # Get current learning rate
                 current_lr = self.optimizer.param_groups[0]["lr"]
 
-            if current_lr != old_lr:
-                self.logger.info(
-                    f"Learning rate decreased: {old_lr:.2e} -> {current_lr:.2e}"
-                )
-            else:
-                self.logger.info(f"Learning rate: {current_lr:.2e}")
+                # Update learning rate based on validation performance (only if enabled)
+                old_lr = current_lr
+                if self.lr_scheduler_enabled:
+                    self.scheduler.step(val_sisdr)
+                    current_lr = self.optimizer.param_groups[0]["lr"]
 
-            if self.wandb_logger:
-                self.wandb_logger.log_metrics(
-                    {
-                        "epoch": self.current_epoch,
-                        "train_si_sdr": train_sisdr,
-                        "val_si_sdr": val_sisdr,
-                        "train_lr": current_lr,
-                    },
-                    step=self.current_epoch,
-                )
+                if current_lr != old_lr:
+                    self.logger.info(
+                        f"Learning rate decreased: {old_lr:.2e} -> {current_lr:.2e}"
+                    )
+                else:
+                    self.logger.info(f"Learning rate: {current_lr:.2e}")
 
-            if val_sisdr > self.best_val_sisdr:
-                self.best_val_sisdr = val_sisdr
-                self._save_checkpoint(epoch, val_sisdr, save_dir)
+                # Prepare metrics
+                metrics = {
+                    "epoch": self.current_epoch,
+                    "train_si_sdr": train_sisdr,
+                    "val_si_sdr": val_sisdr,
+                    "train_lr": current_lr,
+                }
+                
+                # Add early stopping metric if enabled
+                if early_stopping_patience:
+                    metrics["epochs_no_improvement"] = epochs_without_improvement
+                
+                if self.wandb_logger:
+                    self.wandb_logger.log_metrics(metrics, step=self.current_epoch)
 
-        self.logger.info("\nTraining Summary:")
-        self.logger.info(f"Batch size: {self.train_loader.batch_size}")
-        self.logger.info(f"Number of epochs: {num_epochs}")
-        self.logger.info("\nValidation SI-SDR history:")
-        for idx, val_sisdr in enumerate(val_sisdr_history, 1):
-            self.logger.info(f"  Epoch {idx}: Val SI-SDR = {val_sisdr:.2f} dB")
+                # Check for improvement
+                if val_sisdr > self.best_val_sisdr:
+                    self.best_val_sisdr = val_sisdr
+                    if early_stopping_patience:
+                        epochs_without_improvement = 0  # Reset counter
+                    self._save_checkpoint(epoch, val_sisdr, save_dir)
+                else:
+                    if early_stopping_patience:
+                        epochs_without_improvement += 1
+                        self.logger.info(f"No improvement for {epochs_without_improvement} epoch(s)")
+                    
+                # Early stopping check (only if enabled)
+                if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
+                    self.logger.warning("=" * 80)
+                    self.logger.warning("EARLY STOPPING")
+                    self.logger.warning("=" * 80)
+                    self.logger.warning(f"No improvement for {early_stopping_patience} epochs")
+                    self.logger.warning(f"Best Val SI-SDR: {self.best_val_sisdr:.2f} dB")
+                    self.logger.warning(f"Stopping at epoch {self.current_epoch}/{final_epoch}")
+                    
+                    if self.wandb_logger:
+                        self.wandb_logger.log_metrics({
+                            "early_stopped": 1,
+                            "early_stop_epoch": self.current_epoch,
+                        })
+                    
+                    break  # Exit training loop
+
+            self.logger.info("\nTraining Summary:")
+            self.logger.info(f"Batch size: {self.train_loader.batch_size}")
+            self.logger.info(f"Number of epochs: {num_epochs}")
+            self.logger.info("\nValidation SI-SDR history:")
+            for idx, val_sisdr in enumerate(val_sisdr_history, 1):
+                self.logger.info(f"  Epoch {idx}: Val SI-SDR = {val_sisdr:.2f} dB")
+
+        except torch.cuda.OutOfMemoryError as e:
+            self.logger.error("=" * 80)
+            self.logger.error("CUDA OUT OF MEMORY ERROR")
+            self.logger.error("=" * 80)
+            self.logger.error(f"Error details: {str(e)}")
+            self.logger.error(f"Failed at epoch: {self.current_epoch}")
+            self.logger.error(f"Model: {self.config.model.model_type}")
+            self.logger.error(f"Batch size: {self.config.data.batch_size}")
+            
+            # Log to W&B if available
+            if self.wandb_logger and self.wandb_logger.enabled:
+                import wandb
+                self.wandb_logger.log_metrics({
+                    "oom_error": 1,
+                    "oom_epoch": self.current_epoch,
+                })
+                self.logger.info("Logged OOM error to W&B")
+                wandb.finish(exit_code=1)
+            
+            self.logger.error("Terminating run gracefully to continue sweep...")
+            self.logger.error("=" * 80)
+            
+            # Clean up GPU memory
+            import gc
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Exit gracefully (sweep will continue with next run)
+            raise SystemExit(1)
+

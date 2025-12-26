@@ -65,9 +65,30 @@ If the answer to any is "no", simplify.
 
 ## Primary Project: PolSESS Speech Separation
 
-Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speech enhancement using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
+Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
 
-**Thesis Focus**: Comparing 4 speech separation architectures on the PolSESS dataset with Mix Modification by Inverted Phase Cancellation (MM-IPC) augmentation for Polish speech enhancement.
+**Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
+
+### Research Pipeline:
+
+**Phase 1** (Current): Train and evaluate separation models on **PolSESS**
+- 4 architectures: ConvTasNet, DPRNN, SepFormer, SPMamba
+- Evaluate with SI-SDR, PESQ, STOI
+- Use MM-IPC augmentation (Mix Modification by Inverted Phase Cancellation)
+- **Key advantage**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + sound events), unlike LibriMix which has only clean/reverb speech
+
+**Phase 2** (Future): Use trained models for **ASR preprocessing on CLARIN**
+- Apply separation models to real conversational Polish speech (CLARIN corpus)
+- Feed separated audio to pre-trained Polish ASR
+- Evaluate ASR accuracy (WER/CER) against ground truth transcriptions
+- **Research contribution**: Determine which separation architecture produces best ASR performance on real Polish conversations
+
+### PolSESS Dataset Advantages:
+
+- **Realistic conditions**: Reverb, scene sounds (e.g., street noise), and sound events (e.g., phone ringing)
+- **Polish speech specific**: Optimized for Polish phonetics and prosody
+- **MM-IPC augmentation**: Multi-modal augmentation variants (Clean, Reverb, Scene, Events, combinations)
+- **Better generalization**: Models trained on PolSESS should perform better on real CLARIN data vs. models trained on synthetic-only datasets
 
 ### Key Commands
 
