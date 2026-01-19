@@ -3,11 +3,10 @@
 
 data:
   dataset_type: polsess
-  batch_size: 1
+  batch_size: 16
   task: ES
   num_workers: 1
   train_max_samples: null
-  # CSV filenames are auto-derived from data_root (uses env var POLSESS_DATA_ROOT or defaults)
 
 model:
   model_type: convtasnet
@@ -28,9 +27,9 @@ model:
     mask_nonlinear: relu
 
 training:
-  num_epochs: 10
+  num_epochs: 50
   lr: 0.001
-  weight_decay: 0.0001
+  weight_decay: 5.839967886489544e-06
   grad_clip_norm: 5.0
   use_amp: true  # Automatic Mixed Precision
   amp_eps: 0.0001  # SpeechBrain EPS patch for float16
@@ -41,3 +40,16 @@ training:
   use_wandb: true
   wandb_project: polsess-separation
   log_level: INFO
+
+  # Learning rate scheduler
+  lr_factor: 0.95
+  lr_patience: 2
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

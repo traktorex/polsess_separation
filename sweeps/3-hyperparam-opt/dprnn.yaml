@@ -1,0 +1,54 @@
+# DPRNN Hyperparameter Optimization Sweep
+# Series 3: Training hyperparameters only (architecture fixed at paper spec)
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 20  # DPRNN trains slower, allow more epochs
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/dprnn/dprnn_baseline.yaml
+  
+  num_epochs:
+    value: 100
+  
+  seed:
+    values: [42]  # Single seed for hyperparameter search
+  
+  early_stopping_patience:
+    value: 10
+  
+  # Hyperparameters to optimize
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-2
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 1.0
+    max: 10.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.8
+
+# Run configuration
+count: 25  # More runs due to RNN complexity
+
+project: polsess-thesis-experiments
+name: 3-dprnn-hyperparameter-opt

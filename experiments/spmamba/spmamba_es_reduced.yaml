@@ -7,7 +7,7 @@ data:
   batch_size: 1
   num_workers: 1
   prefetch_factor: 2
-  task: SB
+  task: ES
   train_max_samples: null
   val_max_samples: null
   polsess:
@@ -17,7 +17,7 @@ model:
   model_type: spmamba
   spmamba:
     input_dim: 64  # Not used, kept for compatibility
-    n_srcs: 2  # Will be set by task in config post_init
+    n_srcs: 1  # Will be set by task in config post_init
     n_fft: 256  # Paper uses 256
     stride: 64  # Paper uses 64
     window: "hann"
@@ -25,7 +25,7 @@ model:
     lstm_hidden_units: 192  # Reduced from 256 (saves ~25% memory)
     attn_n_head: 2  # Reduced from 4 (saves 50% attention memory)
     attn_approx_qk_dim: 256  # Reduced from 512 (saves 50% Q/K memory)
-    emb_dim: 16  # Keep same
+    emb_dim: 16  # Keep samee
     emb_ks: 4  # Keep same
     emb_hs: 1  # Keep same
     activation: "prelu"
@@ -65,9 +65,7 @@ training:
   # Curriculum learning schedule
   curriculum_learning:
     - epoch: 1
-      variants: ["C", "R"]
+      variants: ["R", "SR", "S"]
     - epoch: 3
-      variants: ["C", "R", "SR", "S"]
-    - epoch: 5
       variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start

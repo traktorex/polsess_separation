@@ -563,6 +563,10 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         config.training.use_amp = sweep_config.use_amp
     if "seed" in sweep_config:
         config.training.seed = sweep_config.seed
+    
+    # Early stopping
+    if "early_stopping_patience" in sweep_config:
+        config.training.early_stopping_patience = sweep_config.early_stopping_patience
 
     # Validate and return
     config.__post_init__()

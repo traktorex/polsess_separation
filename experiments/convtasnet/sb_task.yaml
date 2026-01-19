@@ -3,7 +3,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 8
+  batch_size: 16
   task: SB  # Separate Both speakers
   num_workers: 1
   train_max_samples: null
@@ -33,7 +33,7 @@ training:
   lr: 0.001
   weight_decay: 5.839967886489544e-06  # Will be tuned by sweep results
   grad_clip_norm: 5.0    # Best from sweep
-  use_amp: false
+  use_amp: true
   amp_eps: 0.0001
   device: cuda
   save_dir: checkpoints
