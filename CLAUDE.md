@@ -69,15 +69,49 @@ Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speec
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
+## Current State (January 2026)
+
+### Baseline Experiments Complete (SB Task):
+
+| Model | Avg SI-SDR | Best Run | Status |
+|-------|------------|----------|--------|
+| **SPMamba** 🏆 | **5.56 dB** | 5.68 dB | ✅ Baseline complete |
+| SepFormer | 5.10 dB | 5.26 dB | ✅ Baseline complete |
+| DPRNN | 3.03 dB | 3.20 dB | ✅ Baseline complete |
+| ConvTasNet | 2.95 dB | 3.28 dB | ✅ Baseline complete |
+
+**Total GPU Time**: ~187 hours across all baseline experiments  
+**Full Results**: See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md)
+
 ### Research Pipeline:
 
-**Phase 1** (Current): Train and evaluate separation models on **PolSESS**
+**✅ Phase 1A Complete** - Baseline Performance Established
+- Trained all 4 architectures for 3 seeds each (~187 GPU hours)
+- Identified SPMamba as best model (5.56 dB average SI-SDR)
+- Full experimental log at `sweeps/EXPERIMENT_LOG.md`
+
+**🔄 Phase 1B In Progress** - Hyperparameter Optimization
+- Bayesian sweeps for lr, weight_decay, grad_clip_norm, lr_factor
+- Target: +0.2-0.5 dB improvement per model
+- Estimated completion: ~2-3 weeks
+
+**📋 Phase 1C Planned** - Architecture Variants
+- Test larger SPMamba configurations (5-6 layers vs current 4)
+- Evaluate performance vs model size trade-offs
+
+**⏳ Phase 2 Pending** - ASR Integration
+- Apply best separation model to CLARIN corpus
+- Measure WER/CER improvements for downstream ASR
+
+### Phase 1 Details:
+
+**Train and evaluate separation models on PolSESS**
 - 4 architectures: ConvTasNet, DPRNN, SepFormer, SPMamba
 - Evaluate with SI-SDR, PESQ, STOI
 - Use MM-IPC augmentation (Mix Modification by Inverted Phase Cancellation)
 - **Key advantage**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + sound events), unlike LibriMix which has only clean/reverb speech
 
-**Phase 2** (Future): Use trained models for **ASR preprocessing on CLARIN**
+**Phase 2**: Use trained models for **ASR preprocessing on CLARIN**
 - Apply separation models to real conversational Polish speech (CLARIN corpus)
 - Feed separated audio to pre-trained Polish ASR
 - Evaluate ASR accuracy (WER/CER) against ground truth transcriptions
@@ -237,12 +271,30 @@ The project follows a modular architecture with clear separation of concerns:
   - Dataset variants automatically updated between epochs
   - LR scheduler can be enabled/disabled at specific epochs
 
+- **Early Stopping:** Optional training termination on plateau
+
+  - Configure in YAML: `training.early_stopping_patience`
+  - Monitors validation SI-SDR every epoch
+  - Stops if no improvement for N epochs
+  - Saves significant GPU time on poor hyperparameter configurations
+  - Bug fixed in v0.9.1: sweep configs now properly propagate patience parameter
+
 - **SPMamba Requirements:** Linux + CUDA only
 
   - Requires `mamba-ssm` library (not available on Windows native)
   - Windows users must use WSL2 with CUDA toolkit 12.4+
   - Frequency-domain processing using STFT/iSTFT
   - O(N) complexity for efficient long-sequence processing
+
+- **SPMamba Baseline Results:** Best performing model (SB Task)
+
+  - **Average SI-SDR**: 5.56 dB (across seeds 42, 123, 456)
+  - **Best**: 5.68 dB (Seed 42, Epoch 19)
+  - **Architecture**: Reduced config (4 layers, 192 LSTM hidden units, 2 attention heads)
+  - **Parameters**: 1.16M (22x smaller than SepFormer!)
+  - **Numerical Stability**: Runs 2 & 3 with `use_amp: false` for stability
+  - **Key Advantage**: State-space model with selective attention outperforms transformer-based SepFormer
+  - **Memory**: ~11.3GB GPU with batch_size=1 (FP32)
 
 ### Module Structure
 

@@ -4,24 +4,22 @@
 data:
   dataset_type: polsess
   batch_size: 16
-  task: SB  # Separate Both speakers
+  task: SB 
   num_workers: 1
   train_max_samples: null
   val_max_samples: null
-  # CSV filenames are auto-derived from data_root
 
 model:
   model_type: convtasnet
 
-  # ConvTasNet architecture optimized from focused sweep
   convtasnet:
     N: 256  # Encoder filters
-    B: 256  # Bottleneck channels (best from sweep)
-    H: 512  # Conv block channels (best from sweep)
+    B: 256  # Bottleneck channels 
+    H: 512  # Conv block channels 
     P: 3    # Kernel size
     X: 8    # Blocks per repeat
     R: 4    # Number of repeats
-    C: 2    # Output sources (2 for SB task - will be auto-set)
+    C: 2    # Output sources 
     norm_type: gLN
     kernel_size: 16
     stride: 8
@@ -31,8 +29,8 @@ model:
 training:
   num_epochs: 10
   lr: 0.001
-  weight_decay: 5.839967886489544e-06  # Will be tuned by sweep results
-  grad_clip_norm: 5.0    # Best from sweep
+  weight_decay: 5.839967886489544e-06  
+  grad_clip_norm: 5.0    
   use_amp: true
   amp_eps: 0.0001
   device: cuda

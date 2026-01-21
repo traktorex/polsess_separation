@@ -16,20 +16,20 @@ data:
 model:
   model_type: spmamba
   spmamba:
-    input_dim: 64  # Not used, kept for compatibility
-    n_srcs: 2  # Will be set by task in config post_init
-    n_fft: 256  # Paper uses 256
-    stride: 64  # Paper uses 64
+    input_dim: 64
+    n_srcs: 2         # Number of speakers
+    n_fft: 256        # Paper uses 256
+    stride: 64        # Paper uses 64
     window: "hann"
-    n_layers: 6  # Paper uses 6 GridNet blocks
-    lstm_hidden_units: 256  # Misleading name, hidden dimension for Mamba
-    attn_n_head: 4  # 4 attention heads
+    n_layers: 6       # Paper uses 6 GridNet blocks
+    lstm_hidden_units: 256  # hidden dimension for Mamba
+    attn_n_head: 4    # 4 attention heads
     attn_approx_qk_dim: 512  # Q/K dimension
-    emb_dim: 16  # Embedding dimension
-    emb_ks: 4  # Embedding kernel size (was 8 in paper for LibriMix)
-    emb_hs: 1  # Embedding hop size
+    emb_dim: 16       # Embedding dimension
+    emb_ks: 4         # Embedding kernel size
+    emb_hs: 1         # Embedding hop size
     activation: "prelu"
-    eps: 1.0e-4  # Increased for numerical stability (was 1e-5)
+    eps: 1.0e-4  # Increased for numerical stability
     sample_rate: 8000
 
 training:

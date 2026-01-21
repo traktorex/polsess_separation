@@ -23,3 +23,20 @@
                     - everything needed to know how the separation was done
 
 
+3. Option 2: Add Graceful Shutdown (Cleaner)
+Add signal handling to your trainer so it exits cleanly when Hyperband stops it:
+
+python
+import signal
+# In trainer.py, add signal handler
+def handle_early_termination(self):
+    """Handle Hyperband early termination gracefully."""
+    self.logger.warning("Received early termination signal from W&B Hyperband")
+    if self.wandb_logger:
+        self.wandb_logger.log_metrics({"hyperband_terminated": 1})
+    raise SystemExit(0)  # Clean exit
+
+
+4. stop "no spmamba" messages from appearing each epoch
+"Warning: mamba-ssm not available. SPMamba model will not work. Error: No module named 'mamba_ssm'"
+

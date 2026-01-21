@@ -30,7 +30,7 @@ parameters:
   lr:
     distribution: log_uniform_values
     min: 1e-4
-    max: 1e-2  # Increased as requested
+    max: 1e-2  
   
   weight_decay:
     distribution: log_uniform_values

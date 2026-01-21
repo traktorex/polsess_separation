@@ -4,17 +4,28 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 
 **Key Feature**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + events), unlike synthetic-only datasets (LibriMix), leading to better generalization on real speech.
 
-## Current Performance
+## Current Performance (January 2026)
 
-- **Best SI-SDR:** 9.84 dB (ES task, test set, ConvTasNet)
-- **Training time:** ~0.3s per batch with AMP enabled
-- **Model sizes:** 1.8M - 25M parameters
+**Baseline Experiments Complete** - SB Task (2-Speaker Separation):
+
+| Model | Avg SI-SDR | Runtime (3 seeds) | Notes |
+|-------|------------|-------------------|-------|
+| **SPMamba** 🏆 | **5.56 dB** | ~90 hours | Best performer, SSM architecture |
+| SepFormer | 5.10 dB | ~54 hours | Transformer-based, 2nd best |
+| DPRNN | 3.03 dB | ~11 hours | RNN baseline |
+| ConvTasNet | 2.95 dB | ~32 hours | CNN baseline |
+
+**Next**: Hyperparameter optimization in progress (target: +0.2-0.5 dB per model)
+
+See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md) for full experimental details.
 
 ## Features
 
 - **Automatic Mixed Precision (AMP):** 30-40% faster training with no quality loss
 - **MM-IPC Augmentation:** Randomly varies background complexity (SER, SR, ER, R for indoor; SE, S, E for outdoor)
 - **torch.compile Support:** Further speedup on Linux with PyTorch 2.0+
+- **W&B Hyperparameter Sweeps:** Bayesian optimization with Hyperband early termination
+- **Early Stopping:** Automatic termination when validation plateaus
 - **Configurable:** CLI arguments or config file
 - **Modular Architecture:** Clean separation of concerns
 
@@ -52,6 +63,11 @@ polsess_separation/
 │   ├── dprnn/
 │   ├── sepformer/
 │   └── spmamba/
+│
+├── sweeps/                     # W&B sweep configurations and logs
+│   ├── EXPERIMENT_LOG.md      # Complete experimental results
+│   ├── 1-baselines-SB/        # Baseline sweep configs
+│   └── 3-hyperparam-opt/      # Hyperparameter optimization sweeps
 │
 └── tests/                     # Comprehensive test suite (228 tests)
     ├── test_model.py         # Model architecture tests
@@ -283,16 +299,38 @@ Each subset has its own metadata CSV file.
 
 ## Training Results
 
-Training on ES task with test set as validation (val set only had 20 samples):
+### Baseline Experiments (SB Task - Complete)
 
+**SPMamba** - Best Performer:
 ```
-Epoch 1: Val SI-SDR = 6.79 dB
-Epoch 2: Val SI-SDR = 7.52 dB
-Epoch 3: Val SI-SDR = 8.10 dB
-...
-Epoch 9: Val SI-SDR = 9.84 dB (best)
-Epoch 10: Val SI-SDR = 9.71 dB
+Seed 42:  Epoch 19: Val SI-SDR = 5.68 dB (diverged @ 21 due to AMP)
+Seed 123: Epoch 29: Val SI-SDR = 5.45 dB
+Seed 456: Epoch 26: Val SI-SDR = 5.55 dB
+Average: 5.56 dB
 ```
+
+**SepFormer** - 2nd Place:
+```
+Seed 42:  Epoch 45: Val SI-SDR = 5.14 dB
+Seed 123: Epoch 42: Val SI-SDR = 5.26 dB
+Seed 456: Epoch 42: Val SI-SDR = 4.89 dB
+Average: 5.10 dB
+```
+
+**Key Findings**:
+- SPMamba outperforms all models despite being "reduced" architecture
+- State Space Models + selective attention excel at speech separation
+- Consistent performance across seeds (std dev: 0.12 dB for SPMamba)
+
+See full results: [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md)
+
+### Hyperparameter Optimization (In Progress)
+
+W&B sweeps running for all 4 models to optimize:
+- Learning rate (1e-4 to 1e-2)
+- Weight decay (1e-6 to 1e-4)
+- Gradient clipping (1.0 to 10.0)
+- LR scheduler factor (0.3 to 0.8)
 
 ## Troubleshooting
 
@@ -348,6 +386,11 @@ With batch_size=4, the model uses:
 - **GPU VRAM:** ~3.5 GB
 - **System RAM:** ~2 GB
 - **Training speed:** 0.3s per batch
+
+**SPMamba Specific** (FP32 for stability):
+- **GPU VRAM:** ~11.3 GB (batch_size=1)
+- **Training speed:** ~1.25 hours per epoch (30 epochs = ~37.5 hours)
+- **Recommendation:** Disable AMP (`use_amp: false`) for numerical stability
 
 ## References
 

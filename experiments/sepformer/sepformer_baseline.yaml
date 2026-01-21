@@ -13,19 +13,19 @@ data:
 model:
   model_type: sepformer
   sepformer:
-    N: 256  # Encoder channels
+    N: 256          # Encoder channels
     kernel_size: 16
     stride: 8
-    C: 2  # Number of speakers to separate
+    C: 2            # Number of speakers
     causal: false
-    num_blocks: 2  # Number of times to repeat SepFormer block
-    num_layers: 8  # Transformer layers in both IntraT and InterT
-    d_model: 256  # Transformer dimension
-    nhead: 8  # Attention heads
-    d_ffn: 1024  # Feed-forward dimension
+    num_blocks: 2   # Number of times to repeat SepFormer block
+    num_layers: 8   # Transformer layers in both IntraT and InterT
+    d_model: 256    # Transformer dimension
+    nhead: 8        # Attention heads
+    d_ffn: 1024     # Feed-forward dimension
     dropout: 0.0
-    chunk_size: 250  # Dual-path chunk size
-    hop_size: 125  # Dual-path hop size
+    chunk_size: 250 # Dual-path chunk size
+    hop_size: 125   # Dual-path hop size
 
 training:
   lr: 0.00015  
@@ -36,7 +36,7 @@ training:
   num_epochs: 200  
   use_amp: true
   amp_eps: 0.0001
-  save_dir: checkpoints/sepformer
+  save_dir: checkpoints
   use_wandb: true
   wandb_project: polsess-separation
   wandb_entity: null
