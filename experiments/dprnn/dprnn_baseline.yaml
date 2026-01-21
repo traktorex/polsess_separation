@@ -52,13 +52,9 @@ training:
   # Curriculum learning schedule
   curriculum_learning:
     - epoch: 1
-      variants: ["C"]
-    - epoch: 3
       variants: ["C", "R"]
-    - epoch: 6
-      variants: ["C", "R", "S", "SR"]
+    - epoch: 4
+      variants: ["C", "R", "SR", "S"]
     - epoch: 8
-      variants: ["C", "R", "S", "SR", "E"]
-    - epoch: 10
-      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start

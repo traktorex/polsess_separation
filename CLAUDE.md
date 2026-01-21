@@ -346,9 +346,7 @@ MAG2/polsess_separation/
 │   │   └── ES/...
 │   └── sepformer/...
 └── docs/                          # Detailed documentation
-    ├── CONFIG_GUIDE.md
-    ├── WANDB_GUIDE.md
-    └── HYPERPARAMETER_SWEEP_GUIDE.md
+    └── CONFIG_GUIDE.md
 ```
 
 ### Adding New Models

@@ -82,7 +82,7 @@ The `experiments/` folder contains pre-configured YAML files:
 - **eb_task.yaml** - Configuration for EB task (enhance both speakers)
 - **lr_sweep.yaml** - Template for learning rate experiments
 
-See [experiments/README.md](experiments/README.md) for details.
+
 
 ### Loading and Saving in Python
 

@@ -127,7 +127,7 @@ python train.py --help
 - `experiments/eb_task.yaml` - Enhance both speakers task
 - `experiments/lr_sweep.yaml` - Example for hyperparameter tuning
 
-See [experiments/README.md](experiments/README.md) for details.
+
 
 ### Evaluation
 
@@ -197,21 +197,12 @@ polsess_separation/
 │   ├── test_trainer.py
 │   └── test_utils.py
 ├── docs/                # Documentation
-│   ├── CONFIG_GUIDE.md
-│   ├── WANDB_GUIDE.md
-│   ├── HYPERPARAMETER_SWEEP_GUIDE.md
-│   ├── PROJECT_REFLECTION.md
-│   ├── FUTURE_ENHANCEMENTS.md
-│   └── SPMAMBA_INTEGRATION_PLAN.md
+│   └── CONFIG_GUIDE.md
 ├── experiments/         # Experiment configurations (YAML)
-│   ├── README.md
-│   ├── baseline.yaml
-│   ├── large_model.yaml
-│   ├── small_fast.yaml
-│   ├── eb_task.yaml
-│   ├── klec_replication.yaml
-│   ├── wandb_sweep.yaml
-│   └── klec_sweep.yaml
+│   ├── convtasnet/
+│   ├── dprnn/
+│   ├── sepformer/
+│   └── spmamba/
 ├── scripts/             # Convenience scripts
 ├── archive/             # Archived analysis documents
 ├── config.py            # Configuration management
