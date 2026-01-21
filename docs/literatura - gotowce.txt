@@ -1,0 +1,9 @@
+literatura - gotowce
+contribution - nasze realne dane
+porownanie na realnych danych
+ASR jakis model
+
+
+model separacji, nastepnie dane testowe, przepuszczamy je przez model, pozniej to co generuje wrzucamy do asr i patrrzymy na wyniki
+
+napisać 
