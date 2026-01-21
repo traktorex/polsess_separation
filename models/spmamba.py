@@ -15,6 +15,7 @@ Note: Requires mamba-ssm library (Linux + CUDA only).
 
 import math
 from functools import partial
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +23,6 @@ from torch.nn import init
 from torch.nn.parameter import Parameter
 
 # Mamba dependencies (Linux + CUDA only)
-_MAMBA_WARNING_SHOWN = False  # Module-level flag to show warning only once
 try:
     from mamba_ssm.modules.mamba_simple import Mamba
     from mamba_ssm.modules.block import Block
@@ -31,9 +31,11 @@ try:
     MAMBA_AVAILABLE = True
 except ImportError as e:
     MAMBA_AVAILABLE = False
-    if not _MAMBA_WARNING_SHOWN:
-        print(f"Warning: mamba-ssm not available. SPMamba model will not work. Error: {e}")
-        _MAMBA_WARNING_SHOWN = True
+    warnings.warn(
+        f"mamba-ssm not available. SPMamba model will not work. Error: {e}",
+        UserWarning,
+        stacklevel=2
+    )
 
 
 class MambaBlock(nn.Module):
