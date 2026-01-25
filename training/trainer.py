@@ -106,7 +106,7 @@ class Trainer:
             return True  # Always enabled if no curriculum
 
         for entry in self.curriculum_schedule:
-            if entry["epoch"] == epoch and entry.get("lr_scheduler") == "start":
+            if entry["epoch"] <= epoch and entry.get("lr_scheduler") == "start":
                 return True
 
         return False
@@ -150,6 +150,25 @@ class Trainer:
         checkpoint = load_model_from_checkpoint(checkpoint_path, self.model, self.device)
 
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        # Allow overriding LR via config even when resuming
+        current_lr = self.optimizer.param_groups[0]['lr']
+        if current_lr != self.config.training.lr:
+             self.logger.info(f"Overriding checkpoint LR {current_lr:.2e} with config LR {self.config.training.lr:.2e}")
+             for param_group in self.optimizer.param_groups:
+                 param_group['lr'] = self.config.training.lr
+        
+        # Load scheduler state if available
+        if self.scheduler is not None:
+             if "scheduler_state_dict" in checkpoint:
+                self.logger.info("Loading scheduler state from checkpoint")
+                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+             else:
+                # Legacy checkpoint: manually set 'best' so it doesn't start from scratch
+                # This prevents it from thinking the first epoch after resume is the new best
+                self.logger.info("Legacy checkpoint detected: Manually initializing scheduler 'best'")
+                self.scheduler.best = self.best_val_sisdr
+            
         self.current_epoch = checkpoint["epoch"] + 1  # Resume from next epoch
         self.best_val_sisdr = checkpoint.get(
             "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
@@ -227,13 +246,19 @@ class Trainer:
         # Get state dict from unwrapped model if using torch.compile
         model_to_save = unwrap_compiled_model(self.model)
 
-        return {
+        checkpoint = {
             "epoch": epoch,
             "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "val_sisdr": val_sisdr,
             "config": config_dict,
         }
+        
+        # Save scheduler state if available
+        if self.scheduler is not None:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
+            
+        return checkpoint
 
     def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir: str):
         """Save model checkpoint with best validation SI-SDR."""
