@@ -1,0 +1,59 @@
+# DPRNN Configuration - Subset Version (1000 samples)
+# For fast hyperparameter proxy sweeps
+
+data:
+  dataset_type: polsess
+  batch_size: 16  # DPRNN is memory efficient
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB 
+  train_max_samples: 1000  # Proxy dataset
+  val_max_samples: 400    # Proxy validation
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
+
+model:
+  model_type: dprnn
+  dprnn:
+    N: 64  
+    kernel_size: 16
+    stride: 8 
+    C: 2 
+    num_layers: 6 
+    chunk_size: 100
+    rnn_type: LSTM
+    hidden_size: 128
+    num_rnn_layers: 1
+    dropout: 0.0
+    bidirectional: true
+    norm_type: ln
+
+training:
+  lr: 0.00015
+  weight_decay: 0.0 
+  grad_clip_norm: 5.0
+  lr_factor: 0.5   # Changed from 0.98 to standard plateau decay for sweep
+  lr_patience: 4   # Increased for subset
+  num_epochs: 50   # Reduced from 100, but higher than convtasnet because RNNs converge slower
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  
+  # Logging
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  # Compressed schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

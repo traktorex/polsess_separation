@@ -1,0 +1,56 @@
+# DPRNN Hyperparameter Proxy Sweep (Subset 1k)
+# Series 3: Fast proxy search on 1000 samples
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10  # RNNs need more time to stabilize
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/dprnn/dprnn_subset.yaml
+  
+  num_epochs:
+    value: 50   # 100 -> 50 for subset
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 12
+  
+  # Hyperparameters to optimize (Widened Ranges)
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5     # 0.00001
+    max: 1e-2     # 0.01 - RNNs sensitive to high LR, but exploring
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 15.0     # RNNs definitely need clipping, searching sweet spot
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95     # RNN plateau decay
+    
+  lr_patience:
+    values: [2, 3, 4, 5, 6]
+
+count: 40  # Slightly more runs as DPRNN is cheaper/faster
+
+project: polsess-thesis-experiments
+name: 3-dprnn-subset-proxy-sweep

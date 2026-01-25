@@ -54,5 +54,5 @@ training:
     - epoch: 3
       variants: ["C", "R", "SR", "S"]
     - epoch: 5
-      variants: ["C", "R", "S", "SR", "E", "ER", "SE", "SER"]
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
       lr_scheduler: start

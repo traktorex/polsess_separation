@@ -1,0 +1,61 @@
+# SB (Separate Both) Task Configuration - Subset Version (1000 samples)
+# For fast hyperparameter proxy sweeps
+
+data:
+  dataset_type: polsess
+  batch_size: 16
+  task: SB 
+  num_workers: 1
+  train_max_samples: 1000  # Limit to 1000 samples for fast sweeping
+  val_max_samples: 400    # Limit validation set size too
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"  # Explicit path needed
+
+model:
+  model_type: convtasnet
+
+  convtasnet:
+    N: 256  # Encoder filters
+    B: 256  # Bottleneck channels 
+    H: 512  # Conv block channels 
+    P: 3    # Kernel size
+    X: 8    # Blocks per repeat
+    R: 4    # Number of repeats
+    C: 2    # Output sources 
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  num_epochs: 30  # Reduced epochs for subset
+  lr: 0.001
+  weight_decay: 5.839967886489544e-06  
+  grad_clip_norm: 5.0    
+  use_amp: true
+  amp_eps: 0.0001
+  device: cuda
+  save_dir: checkpoints
+
+  # Logging
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  # Learning rate scheduler
+  lr_factor: 0.5
+  lr_patience: 4  # Increased patience for smaller, noisier dataset
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  # Accelerated schedule for subset
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
