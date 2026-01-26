@@ -15,7 +15,7 @@ early_terminate:
 parameters:
   # Fixed parameters
   config:
-    value: experiments/convtasnet/sb_task_subset.yaml
+    value: experiments/convtasnet/sb_task_2000.yaml
   
   num_epochs:
     value: 30   # Fewer epochs needed for small data

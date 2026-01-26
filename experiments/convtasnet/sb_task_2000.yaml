@@ -6,10 +6,8 @@ data:
   batch_size: 16
   task: SB 
   num_workers: 1
-  train_max_samples: 1000  # Limit to 1000 samples for fast sweeping
-  val_max_samples: 400    # Limit validation set size too
-  polsess:
-    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"  # Explicit path needed
+  train_max_samples: 2000  # Limit to 2000 samples for fast sweeping
+  val_max_samples: null
 
 model:
   model_type: convtasnet
