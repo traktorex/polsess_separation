@@ -220,8 +220,14 @@ class Trainer:
         checkpoint_dir = base_dir / model_name / task / run_name
         ensure_dir(checkpoint_dir)
 
-        # Checkpoint file: {model}_{task}_epoch{epoch}.pt
-        checkpoint_filename = f"{model_name}_{task}_epoch{epoch+1}.pt"
+        # Checkpoint file logic
+        if self.config.training.save_all_checkpoints:
+             # Keep distinct filenames for every improvement
+             checkpoint_filename = f"{model_name}_{task}_epoch{epoch+1}.pt"
+        else:
+             # Overwrite single best file
+             checkpoint_filename = f"{model_name}_{task}_best.pt"
+
         checkpoint_path = checkpoint_dir / checkpoint_filename
         config_path = checkpoint_dir / "config.yaml"
 

@@ -1,0 +1,127 @@
+﻿1. Wstęp i opis problemu
+* opis Cocktail Party Problem
+* istotność separacji mowy dla aparatów słuchowych, ASR itd
+* {cel i zakres pracy, hipoteza badawcza}
+   * zakres:
+      * nagrania monofoniczne
+      * znana ilość mówców
+      * zaszumione nagrania
+   * charakterystyczność polskiej mowy uzasadnia potrzebę rozwijania modeli DL które brałyby ją pod uwagę (jeśli zdecydujemy się na ujęcie problemu z tej perspektywy)
+* przedstawienie struktury pracy
+2. Część teoretyczna I - przetwarzanie i separacja mowy
+2.1. Sygnał mowy
+2.1.1. Charakterystyka i akustyka mowy
+* cechy fizyczne umożliwiające odróżnienie mówców
+2.1.2 Specyfika języka polskiego
+* głoski syczące i szumiące w j. polskim? jego ponadstandardowe użycie zakresu częstotliwości powyżej 4kHz?
+* prozodia?
+* głoski dźwięczne i bezdźwięczne?
+(obecność tego fragmentu zależna od obranego kierunku pracy. do ustalenia ilość zawartych aspektów fonologicznych)
+2.1.3. Metody cyfrowego przetwarzania i reprezentacji sygnału mowy
+* time domain
+   * waveform
+   * na plus: brak utraconych informacji
+   * na minus: trudne do interpretacji
+* time-frequency
+   * Fourier i STFT (widmo, spektrogram)
+   * ograniczenia:
+      * time-frequency resolution problem
+      * problem z estymacją fazy w trakcie konwersji z reprezentacji T-F na waveform
+      * problem ustalonej z góry rozdzielczości (modele oparte o T-F nie mogą zmieniać w trakcie treningu rozdzielczości z jaką wykonywany jest STFT)
+2.2. Problem separacji źródeł
+2.2.1. Matematyczne sformułowanie problemu separacji
+* formalna definicja problemu rozwiązywanego przez model
+2.2.2. Przegląd rozwiązań sprzed pojawienia się DL
+* klasyczne rozwiązania sprzed ML
+* wczesne rozwiązania ML
+   * Deep Clustering
+2.2.3. Podejście Time-Frequency vs Time-Domain
+* problem fazy w T-F
+2.2.4. Metody estymacji sygnału
+* maskowanie
+* mapowanie
+2.3. Metryki ewaluacji
+2.3.1. SI-SDR
+* wytłumaczenie wyboru
+* wyjaśnienie matematyczne
+* wyjaśnienie scale invariance
+2.3.2. Inne metryki
+* PESQ
+* STOI
+* Ilość parametrów
+3. Część teoretyczna II - głębokie sieci neuronowe w separacji mowy
+3.1. Schemat Encoder-Separator-Decoder
+* opis wspólnego trzonu wszystkich wymienionych później architektur
+3.2. Przegląd architektur sieci neuronowych
+* Konwolucyjne (CNN):
+   * ConvTasNet
+* Rekurencyjne (RNN):
+   * DPRNN
+* Transformery:
+   * SepFormer
+* Selective State Spaces (SSM):
+   * SPMamba
+* Alternatywne architektury:
+   * Generatywne (diffusion-based)
+   * Generative Adversarial Network (GAN)
+   * w przeciwieństwie do wcześniejszych mapują, a nie korzystają z maskowania
+3.3. Trening sieci neuronowych do separacji
+3.3.1. Funkcja celu - SI-SDR
+* użycie SI-SDR w trenowaniu
+3.3.2. Permutation Invariant Training (PIT)
+* rozwiązanie Label Permutation Problem
+4. Część projektowa
+4.1. Przegląd bibliotek i technologii
+* pytorch, torchaudio, speechbrain, asteroid, wandb
+4.2. Struktura projektu
+4.3. Przygotowanie danych
+4.3.1. Użyte zbiory danych
+* PolSESS
+* LibriMix
+* (clarin???)
+4.3.2. Przetwarzanie danych
+* tutaj trochę o MM-IPC w przypadku PolSESS
+* Dataloadery w PyTorch
+4.4. Implementacja modeli
+* szczegóły implementacji modeli wymienionych w 3.2.
+* wybór hiperparametrów dla poszczególnych architektur:
+   * kernel size, stride, liczba warstw, batch_size, weight_decay
+4.5. Training loop
+* Wytłumaczenie procesu trenowania modelu
+* Techniki optymalizacji:
+   * Optymalizator (Adam)
+   * Automatic Mixed Precision (AMP)
+   * torch.compile
+* Learning Rate Scheduling
+* Curriculum Learning
+* gradient clipping
+* Seed setting dla odtwarzania eksperymentów
+5. Część badawcza
+* hic sunt dracones
+na pewno nie robimy:
+* stereo, sygnały inne niż monofoniczne
+* multimodal (np. audio-visual)
+* unknown number of speakers
+potencjalne tezy:
+* porównanie efektywności modeli pomiędzy j. polskim a angielskim
+* porównanie wpływu sampling rate na efektywność modeli pomiędzy j. polskim a angielskim
+6. Wnioski i podsumowanie
+7. Spis rysunków
+8. Bibliografia
+(będzie zdecydowanie dłuższa)
+Advances in Speech Separation: Techniques, Challenges, and Future Trends https://arxiv.org/abs/2508.10830
+Asteroid: the PyTorch-based audio source separation toolkit for researchers https://arxiv.org/abs/2005.04132
+SpeechBrain: A General-Purpose Speech Toolkit https://arxiv.org/abs/2106.04624
+A Solution for Developing Corpora for Polish Speech Enhancement in Complex Acoustic Environments
+LibriMix: An Open-Source Dataset for Generalizable Speech Separation
+SDR - half-baked or well done? https://arxiv.org/abs/1811.02508 (si-sdr paper)
+Conv-TasNet: Surpassing Ideal Time-Frequency Magnitude Masking for Speech Separation https://arxiv.org/abs/1809.07454
+SPMamba: State-space model is all you need in speech separation https://arxiv.org/abs/2404.02063
+Mamba: Linear-Time Sequence Modeling with Selective State Spaces
+Dual-path RNN: efficient long sequence modeling for time-domain single-channel speech separation https://arxiv.org/abs/1910.06379
+Attention is All You Need in Speech Separation https://arxiv.org/abs/2010.13154
+opcjonalnie:
+On Data Sampling Strategies for Training Neural Network Speech Separation Models
+Speech Slytherin: Examining the Performance and Efficiency of Mamba for Speech Separation, Recognition, and Synthesis
+Probabilistic Permutation Invariant Training for Speech Separation
+B. Arons, “A review of the cocktail party effect,” Journal of the American Voice I/O society, vol. 12, no. 7, pp. 35–50, 1992.

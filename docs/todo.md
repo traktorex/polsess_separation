@@ -37,6 +37,6 @@ def handle_early_termination(self):
     raise SystemExit(0)  # Clean exit
 
 
-4. stop "no spmamba" messages from appearing each epoch
-"Warning: mamba-ssm not available. SPMamba model will not work. Error: No module named 'mamba_ssm'"
-
+4. two options: 
+    1 - save each checkpoint as a separate file
+    2 - save only the best checkpoint (overwrite each time)

@@ -162,6 +162,7 @@ class TrainingConfig:
     validation_variants: Optional[List[str]] = None
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
+    save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
 
 
 @dataclass
@@ -414,7 +415,13 @@ def create_config_parser() -> "argparse.ArgumentParser":
         "--resume",
         type=str,
         default=None,
+        default=None,
         help="Resume training from checkpoint",
+    )
+    parser.add_argument(
+        "--save-all-checkpoints",
+        action="store_true",
+        help="Save all best checkpoints instead of overwriting the best one",
     )
 
     # Logging
@@ -456,6 +463,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.resume_from = args.resume
     if args.no_wandb:
         config.training.use_wandb = False
+    if args.save_all_checkpoints:
+        config.training.save_all_checkpoints = True
 
     return config
 
@@ -567,6 +576,8 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     # Early stopping
     if "early_stopping_patience" in sweep_config:
         config.training.early_stopping_patience = sweep_config.early_stopping_patience
+    if "save_all_checkpoints" in sweep_config:
+        config.training.save_all_checkpoints = sweep_config.save_all_checkpoints
 
     # Validate and return
     config.__post_init__()
