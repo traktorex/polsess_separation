@@ -1,0 +1,54 @@
+# DPRNN Stage 3 Sweep (8000 samples)
+# Final Search - Refined ranges from Stage 2
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/dprnn/dprnn_8000.yaml
+  
+  num_epochs:
+    value: 80
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 15
+  
+  # Refined Hyperparameters (User Specified)
+  lr:
+    distribution: log_uniform_values
+    min: 0.0006   # 6e-4
+    max: 0.0025    # 2e-3
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1.53e-7
+    max: 2e-4
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 14.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.30
+    max: 0.90
+    
+  lr_patience:
+    values: [2, 3, 4, 5]
+
+project: polsess-thesis-experiments
+name: 3-dprnn-stage3-8k

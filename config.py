@@ -415,7 +415,6 @@ def create_config_parser() -> "argparse.ArgumentParser":
         "--resume",
         type=str,
         default=None,
-        default=None,
         help="Resume training from checkpoint",
     )
     parser.add_argument(

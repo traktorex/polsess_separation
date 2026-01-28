@@ -1,0 +1,61 @@
+# SPMamba Reduced Configuration - Subset Version (2000 samples)
+# Memory-optimized version for 12GB GPU
+# For fast hyperparameter proxy sweeps (Stage 1)
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 2000
+  val_max_samples: null
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2
+    n_fft: 256
+    stride: 64
+    window: "hann"
+    n_layers: 4  # Reduced from 6
+    lstm_hidden_units: 192  # Reduced from 256
+    attn_n_head: 2  # Reduced from 4
+    attn_approx_qk_dim: 256  # Reduced from 512
+    emb_dim: 16
+    emb_ks: 4
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-4
+    sample_rate: 8000
+
+training:
+  lr: 0.001
+  weight_decay: 1.0e-5  
+  grad_clip_norm: 2.0  
+  lr_factor: 0.5
+  lr_patience: 4  # Increased for subset
+  num_epochs: 50
+  use_amp: false  # Disabled for stability as per baseline
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  log_level: "INFO"
+  early_stopping_patience: 10
+
+  device: "cuda"
+  seed: 42
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

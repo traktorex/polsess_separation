@@ -1,0 +1,59 @@
+# SepFormer Configuration - Subset Version (2000 samples)
+# For fast hyperparameter proxy sweeps (Stage 1)
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB 
+  train_max_samples: 2000
+  val_max_samples: null
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.0
+    chunk_size: 250
+    hop_size: 125
+
+training:
+  lr: 0.00015
+  weight_decay: 0.0  
+  grad_clip_norm: 5.0  
+  lr_factor: 0.5  
+  lr_patience: 4   # Increased for subset
+  num_epochs: 50   # Transformers need time / epochs 
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false # Default behavior
+
+  # Logging
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  # Accelerated for subset
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

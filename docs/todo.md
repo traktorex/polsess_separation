@@ -35,8 +35,3 @@ def handle_early_termination(self):
     if self.wandb_logger:
         self.wandb_logger.log_metrics({"hyperband_terminated": 1})
     raise SystemExit(0)  # Clean exit
-
-
-4. two options: 
-    1 - save each checkpoint as a separate file
-    2 - save only the best checkpoint (overwrite each time)
