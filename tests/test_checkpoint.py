@@ -79,7 +79,7 @@ class TestCheckpointSaving:
             run_dir = run_dirs[0]
 
             # Check checkpoint file exists
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
             assert checkpoint_file.exists(), "Checkpoint file should exist"
@@ -147,7 +147,7 @@ class TestCheckpointSaving:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
 
@@ -252,7 +252,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
 
@@ -280,7 +280,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
 
@@ -311,7 +311,7 @@ class TestCheckpointLoading:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
 
@@ -383,7 +383,7 @@ class TestCheckpointIntegration:
             # Find checkpoint file
             task_dir = save_dir / "convtasnet" / "ES"
             run_dir = _find_run_dir(task_dir)
-            checkpoint_files = list(run_dir.glob("*_epoch*.pt"))
+            checkpoint_files = list(run_dir.glob("*_best.pt"))
             assert len(checkpoint_files) > 0, "Should have checkpoint files"
             checkpoint_file = checkpoint_files[0]
 
@@ -399,3 +399,89 @@ class TestCheckpointIntegration:
             # Verify training state
             assert trainer.current_epoch == 4  # epoch + 1
             assert trainer.best_val_sisdr == 11.0
+
+
+class TestConfigurableCheckpointing:
+    """Test configurable checkpoint naming (overwrite best vs keep history)."""
+
+    @pytest.fixture
+    def mock_trainer(self):
+        """Create a mock trainer for testing."""
+        config = Config(
+            data=DataConfig(task="ES"),
+            model=ModelConfig(model_type="convtasnet"),
+            training=TrainingConfig(),
+        )
+
+        class SimpleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = torch.nn.Linear(10, 5)
+
+        model = SimpleModel()
+        mock_logger = Mock()
+        mock_train_loader = Mock()
+        mock_train_loader.batch_size = 4
+        mock_val_loader = Mock()
+
+        trainer = Trainer(
+            model=model,
+            train_loader=mock_train_loader,
+            val_loader=mock_val_loader,
+            config=config,
+            device="cpu",
+            logger=mock_logger,
+            wandb_logger=None,
+        )
+        return trainer
+
+    def test_default_overwrites_best_checkpoint(self, mock_trainer):
+        """Test default behavior: overwrites 'best' file."""
+        mock_trainer.config.training.save_all_checkpoints = False
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_dir = Path(tmpdir)
+
+            # Save first best
+            mock_trainer._save_checkpoint(epoch=1, val_sisdr=5.0, save_dir=save_dir)
+            
+            task_dir = save_dir / "convtasnet" / "ES"
+            run_dir = _find_run_dir(task_dir)
+            
+            # Should have _best.pt
+            best_file = run_dir / "convtasnet_ES_best.pt"
+            assert best_file.exists()
+            assert not (run_dir / "convtasnet_ES_epoch2.pt").exists()
+            
+            # Save better one
+            mock_trainer._save_checkpoint(epoch=2, val_sisdr=6.0, save_dir=save_dir)
+            
+            # Should still only be one best file, overwritten
+            assert best_file.exists()
+            checkpoint = torch.load(best_file)
+            assert checkpoint["epoch"] == 2
+            assert len(list(run_dir.glob("*.pt"))) == 1
+
+    def test_flag_saves_all_checkpoints(self, mock_trainer):
+        """Test flag behavior: saves epoch-specific files."""
+        mock_trainer.config.training.save_all_checkpoints = True
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_dir = Path(tmpdir)
+
+            # Save first best
+            mock_trainer._save_checkpoint(epoch=1, val_sisdr=5.0, save_dir=save_dir)
+            
+            task_dir = save_dir / "convtasnet" / "ES"
+            run_dir = _find_run_dir(task_dir)
+            
+            # Should have epoch2.pt (1-based index in filename)
+            assert (run_dir / "convtasnet_ES_epoch2.pt").exists()
+            
+            # Save better one
+            mock_trainer._save_checkpoint(epoch=2, val_sisdr=6.0, save_dir=save_dir)
+            
+            # Should have both files
+            assert (run_dir / "convtasnet_ES_epoch2.pt").exists()
+            assert (run_dir / "convtasnet_ES_epoch3.pt").exists()
+            assert len(list(run_dir.glob("*.pt"))) == 2
