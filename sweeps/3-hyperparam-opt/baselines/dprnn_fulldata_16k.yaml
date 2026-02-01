@@ -1,0 +1,56 @@
+# Experiment B: Direct Full-Data Sweep (16K samples)
+# Purpose: Test if skipping progressive scaling and going straight to full data works
+# Strategy: Wide search directly on full 16K dataset with aggressive early termination
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  s: 2
+  eta: 3  # More aggressive for expensive runs
+
+parameters:
+  # Base config - full dataset
+  config:
+    value: experiments/dprnn/dprnn_16000.yaml
+  
+  # Wide hyperparameter search (Stage 1 ranges - EXACT MATCH)
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-2
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 15.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95
+  
+  lr_patience:
+    values: [2, 3, 4, 5, 6]
+
+# Run configuration
+name: baseline-b-fulldata-16k-dprnn
+count: 80  # Fewer runs due to higher cost per run
+
+# Notes:
+# - Direct sweep on full 16K dataset (no progressive scaling)
+# - Same wide search space as Stage 1
+# - Aggressive hyperband to manage computational cost
+# - Target: ~60-80 runs (compute-limited)
+# - Best config from this experiment validates the "skip to full data" approach
+# - Expected to be less efficient than multi-stage but tests the hypothesis

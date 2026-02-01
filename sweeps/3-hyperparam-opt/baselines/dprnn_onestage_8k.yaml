@@ -1,0 +1,53 @@
+# Experiment A: One-Stage Baseline (8K samples)
+# Purpose: Compare single-stage sweep vs. multi-stage progressive approach
+# Strategy: Wide search space (like Stage 1) but on 8K samples directly
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+  s: 2
+
+parameters:
+  # Base config
+  config:
+    value: experiments/dprnn/dprnn_8000.yaml
+  
+  # Wide hyperparameter search (Stage 1 ranges - EXACT MATCH)
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-2
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 15.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95
+  
+  lr_patience:
+    values: [2, 3, 4, 5, 6]
+
+# Run configuration
+name: baseline-a-onestage-8k-dprnn
+count: 120  # Same total runs as multi-stage Stage 1+2 combined
+
+# Notes:
+# - Uses same 8K samples as Stage 3 for fair comparison
+# - Wide search space (Stage 1 ranges) without progressive refinement
+# - Target: ~120 runs to match compute budget of Stage 1+2
+# - Will select best config and validate with 3 seeds for comparison
