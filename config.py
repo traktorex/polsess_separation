@@ -430,6 +430,14 @@ def create_config_parser() -> "argparse.ArgumentParser":
         help="Disable W&B logging",
     )
 
+    # Reproducibility
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override random seed for reproducibility",
+    )
+
     return parser
 
 
@@ -464,6 +472,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.use_wandb = False
     if args.save_all_checkpoints:
         config.training.save_all_checkpoints = True
+    if args.seed is not None:
+        config.training.seed = args.seed
 
     return config
 
