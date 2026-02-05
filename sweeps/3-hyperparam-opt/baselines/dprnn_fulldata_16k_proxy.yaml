@@ -1,0 +1,54 @@
+# Experiment B (Modified): Proxy-Based Full-Data Sweep (16K samples, 20 epochs)
+# Purpose: Test proxy-based approach - quick evaluation on full data, then validate top configs
+# Strategy: Wide search on 16K with SHORT epochs (20) to identify promising regions quickly
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 6   # Even more aggressive for short runs
+  s: 2
+  eta: 3
+
+parameters:
+  # Base config - full dataset
+  config:
+    value: experiments/dprnn/dprnn_16000_proxy.yaml
+  
+  # Override num_epochs to 20 for proxy evaluation
+  num_epochs:
+    value: 20   # SHORT epochs for quick proxy evaluation
+  
+  # Wide hyperparameter search (Stage 1 ranges - EXACT MATCH)
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-2
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 15.0
+
+
+# Run configuration
+project: polsess-thesis-experiments
+name: 3-dprnn-b-fulldata-proxy-16k
+
+# Notes:
+# - Proxy-based approach: Run on full 16K but with ONLY 20 epochs
+# - Much cheaper than full 80-epoch runs (~4x faster per run)
+# - Identifies promising hyperparameter regions quickly
+# - After sweep, select top 5 configs and validate with full 80 epochs × 3 seeds
+# - This tests the hypothesis: "Can we use short runs on full data as a proxy?"
+# - Comparison point vs. multi-stage progressive approach
+# - Expected runtime: ~60-80 runs × ~40min = ~40-53 hours total

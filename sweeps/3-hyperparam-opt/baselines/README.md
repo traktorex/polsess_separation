@@ -38,38 +38,61 @@ wandb agent <sweep-id>
 
 ### Experiment B: Direct Full-Data Sweep (16K samples)
 
-**Config**: [`dprnn_fulldata_16k.yaml`](dprnn_fulldata_16k.yaml)
+**Two Variants Available**:
 
-**Strategy**: Skip progressive scaling entirely, sweep directly on full 16K dataset
+#### B1: Proxy-Based (Recommended)
+
+**Config**: [`dprnn_fulldata_16k_proxy.yaml`](dprnn_fulldata_16k_proxy.yaml)
+
+**Strategy**: Quick proxy evaluation with short epochs, then validate top configs
+
+**Setup**:
+- 60-80 runs with **20 epochs each** (proxy evaluation)
+- Same wide search space as Stage 1
+- After sweep completes, select top 5 configs
+- Validate those 5 configs with full 80 epochs × 3 seeds
 
 **Comparison**: vs. Multi-Stage (all stages)
 - Same final dataset (16K)
-- Same wide search space (Stage 1)
-- Fewer runs (~80) due to computational cost
-
-**Key Difference**: No data-scaling progression
+- Uses epochs as proxy rather than data size
+- Much faster per run (~40min vs ~2.5h)
+- Tests hypothesis: "Can short runs on full data replace progressive scaling?"
 
 **To Run**:
 ```bash
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k.yaml
+wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k_proxy.yaml
 wandb agent <sweep-id>
 ```
 
 **Expected Outcome**:
-- Very expensive per run (~1.5h each)
-- Hyperband will aggressively kill runs
-- May find good configs but less exploration than multi-stage
-- Tests hypothesis: "Can we skip progressive scaling?"
+- Proxy run cost: ~40-53 hours (60-80 runs × 40min)
+- Validation cost: ~11 hours (5 configs × 3 seeds × 45min)
+- **Total: ~51-64 hours**
+- Likely finds decent configs but less exploration than multi-stage
+- May miss configs that need more epochs to show promise
+
+---
+
+#### B2: Full Epochs (Original - Very Expensive)
+
+**Config**: [`dprnn_fulldata_16k.yaml`](dprnn_fulldata_16k.yaml)
+
+**Strategy**: Direct sweep with full 80 epochs per run
+
+**Cost**: ~120-160 hours (60-80 runs × 2.5h each)
+
+**Note**: **Not recommended** unless you have massive compute budget. Use B1 (proxy) instead for realistic comparison.
 
 ---
 
 ## Comparison Matrix
 
-| Approach | Dataset Progression | Search Space | Runs | Total Compute | Best Expected SI-SDR |
+| Approach | Dataset Progression | Epochs/Proxy | Runs | Total Compute | Best Expected SI-SDR |
 |----------|---------------------|--------------|------|---------------|----------------------|
-| **Multi-Stage** (Main) | 2K→4K→8K→16K | Wide→Narrow→Refined | 332 (155 finished) | 274h | **4.08 dB** |
-| **Experiment A** | 8K only | Wide (constant) | ~120 | ~100-120h | TBD |
-| **Experiment B** | 16K only | Wide (constant) | ~80 | ~120-150h | TBD |
+| **Multi-Stage** (Main) | 2K→4K→8K→16K | Full (varied) | 347 (170 finished) | 322h | **4.67 dB** ✅ |
+| **Experiment A** | 8K only | Full (80) | ~120 | ~100-120h | TBD 🔄 |
+| **Experiment B (Proxy)** | 16K only | **20 epochs** | ~70 | ~51-64h | TBD |
+| Experiment B (Full) | 16K only | Full (80) | ~80 | ~120-160h | ❌ Not recommended |
 
 ---
 
@@ -85,7 +108,7 @@ After running both experiments:
 2. **Final Performance**:
    - Best SI-SDR from each approach
    - Mean of top 5 configs
-   - Gap vs. multi-stage best (4.08 dB)
+   - Gap vs. multi-stage best (4.67 dB)
 
 3. **Search Quality**:
    - Diversity of top configs
@@ -96,6 +119,7 @@ After running both experiments:
    - Quantify benefit of progressive data scaling
    - Demonstrate search space refinement value
    - Cost-benefit analysis for different budgets
+   - Compare proxy approaches (data vs epochs)
 
 ---
 
@@ -108,24 +132,26 @@ Based on hyperparameter optimization literature:
 - ✅ Pro: No risk of subset bias from small data
 - ❌ Con: Wastes compute on poor hyperparameter regions
 - ❌ Con: No guidance from smaller-scale experiments
-- **Prediction**: Finds ~3.5-3.8 dB (vs. 4.08 dB multi-stage)
+- **Prediction**: Finds ~3.5-3.8 dB (vs. 4.67 dB multi-stage)
 
-**Experiment B (Direct 16K)**:
-- ✅ Pro: No data-scaling assumptions needed
-- ✅ Pro: Directly optimizes on target distribution
-- ❌ Con: Extremely expensive per run
-- ❌ Con: Hyperband kills runs very aggressively
-- ❌ Con: Limited exploration due to budget
-- **Prediction**: Finds ~3.3-3.6 dB (less exploration, early termination issues)
+**Experiment B (Proxy-Based 16K, 20 epochs)**:
+- ✅ Pro: Tests on target data distribution
+- ✅ Pro: More efficient than full-epoch sweep
+- ✅ Pro: 20 epochs may be enough to rank configs
+- ❌ Con: Short epochs may not reveal long-term performance
+- ❌ Con: May miss configs that improve after epoch 20
+- ❌ Con: Still expensive compared to multi-stage early stages
+- **Prediction**: Finds ~3.8-4.1 dB (better than Exp A, but still below multi-stage due to limited epochs)
 
 **Multi-Stage (Main)**:
 - ✅ Pro: Efficient exploration with small data first
 - ✅ Pro: Progressive search space refinement
 - ✅ Pro: Better hyperparameter space coverage
 - ✅ Pro: Insights from each stage inform next
+- ✅ Pro: Full epochs at final stage
 - ❌ Con: More complex to implement
 - ⚠️ Con: Risk of subset bias (if small data misleads)
-- **Achieved**: **4.08 dB**
+- **Achieved**: **4.67 dB** 🏆
 
 ---
 

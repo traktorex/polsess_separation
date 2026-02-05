@@ -44,8 +44,8 @@ parameters:
     values: [2, 3, 4, 5, 6]
 
 # Run configuration
-name: baseline-b-fulldata-16k-dprnn
-count: 80  # Fewer runs due to higher cost per run
+project: polsess-thesis-experiments
+name: 3-dprnn-b-full-16k
 
 # Notes:
 # - Direct sweep on full 16K dataset (no progressive scaling)

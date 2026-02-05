@@ -93,7 +93,7 @@ The performance gaps are **highly significant**:
 
 ## Series 3: Hyperparameter Optimization
 
-**Status**: 🔄 IN PROGRESS (DPRNN validation running)  
+**Status**: ✅ COMPLETE (DPRNN optimization finished)  
 **Purpose**: Optimize training hyperparameters using progressive data-scaling strategy  
 **Approach**: Multi-stage Bayesian optimization with early termination
 
@@ -114,8 +114,8 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 
 ### DPRNN Hyperparameter Optimization
 
-**Status**: ✅ Stage 1-3 COMPLETE | 🔄 Final Validation RUNNING  
-**Total Compute**: 274.3 hours across 332 runs (155 finished)
+**Status**: ✅ COMPLETE (All stages + validation finished)  
+**Total Compute**: 322 hours across 347 runs (170 finished) | **Winner**: fancy-sweep-62 (4.67 dB)
 
 #### Stage 1: Wide Search (2K samples)
 
@@ -153,7 +153,7 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 | Finished | 48 (37%) |
 | Best SI-SDR | **3.06 dB** |
 | Mean SI-SDR | 2.47 dB |
-| Runtime | 149.8h |
+| Runtime | 48.65h |
 | Improvement | +1.31 dB vs Stage 1 |
 
 **Refined Search Space** (based on Stage 1):
@@ -247,7 +247,7 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 
 ### Final Validation (16K samples, 3 seeds)
 
-**Status**: 🔄 RUNNING (Started 2026-02-01)  
+**Status**: 🔄 IN PROGRESS (Config 1 ✅ COMPLETE)  
 **Purpose**: Robust selection of final hyperparameters with full dataset and multiple seeds
 
 **Setup**:
@@ -260,9 +260,138 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 
 **Selection Criteria**: Config with **highest mean SI-SDR across 3 seeds**
 
-**Expected Outcome**: Best config should achieve **~4.0 dB** on full dataset
+#### Config 1: fancy-sweep-62 ✅ COMPLETE
 
-**Estimated Runtime**: ~22-23 hours total (~1.5h per run)
+**Expected**: 4.08 dB (from 8K samples)  
+**Actual (16K)**: **4.67 dB average** 🎉 (+0.59 dB improvement!)
+
+| Run | Seed | Best SI-SDR | Epoch | Runtime | Link |
+|-----|------|-------------|-------|---------|------|
+| 1 | 42 | **4.65 dB** | 73/80 | ~3h10m | [722e8mux](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/722e8mux) |
+| 2 | 123 | **4.62 dB** | 79/80 | ~3h17m | [8vda24q0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/8vda24q0) |
+| 3 | 456 | **4.75 dB** | 77/80 | ~3h12m | [dzfpezdn](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/dzfpezdn) |
+
+**Mean**: 4.67 dB | **Std**: 0.07 dB (very consistent!)
+
+**Key Observations**:
+- Excellent scaling from 8K → 16K samples (+0.59 dB)
+- Very low variance across seeds (0.07 dB std)
+- All runs completed near epoch 80 (no early stopping)
+- Hyperparameters: LR=0.00125, WD=2.1e-5, GC=2.76, LR_factor=0.863, LR_patience=3
+
+#### Config 2: rose-sweep-41 ✅ COMPLETE
+
+**Expected**: 3.84 dB (from 8K samples)  
+**Actual (16K)**: **4.29 dB average** (+0.45 dB improvement)
+
+| Run | Seed | Best SI-SDR | Epoch | Runtime | Link |
+|-----|------|-------------|-------|---------|------|
+| 1 | 42 | **4.21 dB** | 80/80 | ~3h10m | [2pfhn3vw](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/2pfhn3vw) |
+| 2 | 123 | **4.31 dB** | 77/80 | ~3h14m | [qz2y4s67](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/qz2y4s67) |
+| 3 | 456 | **4.34 dB** | 76/80 | ~3h30m | [v9k57wnb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/v9k57wnb) |
+
+**Mean**: 4.29 dB | **Std**: 0.07 dB
+
+**Key Observations**:
+- Good scaling from 8K → 16K samples (+0.45 dB)
+- Low variance across seeds (0.07 dB std)
+- Hyperparameters: LR=0.00150, WD=4.4e-5, GC=2.29, LR_factor=0.799, LR_patience=5
+
+#### Config 3: spring-sweep-67 ✅ COMPLETE
+
+**Expected**: 3.78 dB (from 8K samples)  
+**Actual (16K)**: **4.28 dB average** (+0.50 dB improvement)
+
+| Run | Seed | Best SI-SDR | Epoch | Runtime | Link |
+|-----|------|-------------|-------|---------|------|
+| 1 | 42 | **4.24 dB** | 63/80 | ~3h21m | [d5puian1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/d5puian1) ⚠️ ES@78 |
+| 2 | 123 | **4.42 dB** | 69/80 | ~3h24m | [hjpbov0z](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hjpbov0z) |
+| 3 | 456 | **4.19 dB** | 68/80 | ~3h20m | [3efoaqli](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/3efoaqli) |
+
+**Mean**: 4.28 dB | **Std**: 0.12 dB
+
+**Key Observations**:
+- Good scaling from 8K → 16K samples (+0.50 dB)
+- Slightly higher variance than Configs 1-2 (0.12 dB std)
+- Run 1 early stopped at epoch 78
+- Hyperparameters: LR=0.00114, WD=2.1e-6, GC=13.86, LR_factor=0.542, LR_patience=5
+
+#### Config 4: exalted-sweep-12 ✅ COMPLETE
+
+**Expected**: 3.74 dB (from 8K samples)  
+**Actual (16K)**: **4.24 dB average** (+0.50 dB improvement)
+
+| Run | Seed | Best SI-SDR | Epoch | Runtime | Link |
+|-----|------|-------------|-------|---------|------|
+| 1 | 42 | **4.09 dB** | 53/80 | ~2h49m | [ka2iinu4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ka2iinu4) ⚠️ ES@68 |
+| 2 | 123 | **4.35 dB** | 62/80 | ~3h11m | [aigaiez1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/aigaiez1) ⚠️ ES@77 |
+| 3 | 456 | **4.27 dB** | 65/80 | ~3h18m | [bbc7repc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bbc7repc) |
+
+**Mean**: 4.24 dB | **Std**: 0.13 dB
+
+**Key Observations**:
+- Good scaling from 8K → 16K samples (+0.50 dB)
+- Higher variance across seeds (0.13 dB std)
+- 2 of 3 runs early stopped
+- Hyperparameters: LR=0.00085, WD=4.8e-5, GC=3.80, LR_factor=0.695, LR_patience=3
+
+#### Config 5: sunny-sweep-2 ✅ COMPLETE
+
+**Expected**: 3.72 dB (from 8K samples)  
+**Actual (16K)**: **4.17 dB average** (+0.45 dB improvement)
+
+| Run | Seed | Best SI-SDR | Epoch | Runtime | Link |
+|-----|------|-------------|-------|---------|------|
+| 1 | 42 | **4.06 dB** | 68/80 | ~2h33m | [htyogmgo](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/htyogmgo) ⚠️ ES@68 |
+| 2 | 123 | **4.25 dB** | 78/80 | ~2h57m | [4z7p2xjd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/4z7p2xjd) ⚠️ ES@78 |
+| 3 | 456 | **4.21 dB** | 74/80 | ~2h49m | [8vcr3smx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/8vcr3smx) ⚠️ ES@74 |
+
+**Mean**: 4.17 dB | **Std**: 0.10 dB
+
+**Key Observations**:
+- Good scaling from 8K → 16K samples (+0.45 dB)
+- All 3 runs early stopped (earliest at epoch 68)
+- Moderate variance (0.10 dB std)
+- Hyperparameters: LR=0.00082, WD=4.85e-5, GC=2.58, LR_factor=0.768, LR_patience=2
+
+---
+
+### Final Validation Summary ✅ COMPLETE
+
+**All 15 runs completed** (5 configs × 3 seeds)  
+**Total Runtime**: ~48 hours  
+**Completion Date**: 2026-02-03
+
+#### Final Rankings
+
+| 🏆 Rank | Config | Name | Mean SI-SDR | Std | 8K→16K Gain | Gap to #1 |
+|---------|--------|------|-------------|-----|-------------|-----------|
+| **🥇** | **Config 1** | **fancy-sweep-62** | **4.67 dB** | **0.07** | **+0.59 dB** | **-** |
+| 🥈 | Config 2 | rose-sweep-41 | 4.29 dB | 0.07 | +0.45 dB | -0.38 dB |
+| 🥉 | Config 3 | spring-sweep-67 | 4.28 dB | 0.12 | +0.50 dB | -0.39 dB |
+| 4 | Config 4 | exalted-sweep-12 | 4.24 dB | 0.13 | +0.50 dB | -0.43 dB |
+| 5 | Config 5 | sunny-sweep-2 | 4.17 dB | 0.10 | +0.45 dB | -0.50 dB |
+
+#### Winner: Config 1 (fancy-sweep-62) 🏆
+
+**Performance**: 4.67 dB average SI-SDR  
+**Improvement**: +1.64 dB vs. baseline (3.03 dB → 4.67 dB = **54% gain**)  
+**Consistency**: 0.07 dB std (lowest variance, tied with Config 2)  
+**Individual runs**: 4.65, 4.62, 4.75 dB  
+
+**Final Hyperparameters**:
+- Learning Rate: **0.00125**
+- Weight Decay: **2.1e-5**
+- Gradient Clipping: **2.76**
+- LR Factor: **0.863**
+- LR Patience: **3**
+
+**Key Insights**:
+1. **Clear winner** - Config 1 outperformed all others by 0.38+ dB
+2. **Excellent scaling** - All configs showed positive 8K→16K gains (+0.45 to +0.59 dB)
+3. **Low variance** - Configs 1 and 2 had exceptional reproducibility (0.07 dB std)
+4. **Early stopping patterns** - Configs 4 and 5 showed more early stopping events, indicating less stable training
+5. **Multi-stage optimization validated** - Progressive data scaling successfully identified optimal hyperparameters
 
 ---
 
@@ -300,9 +429,10 @@ From 332 runs across all stages:
 | **SPMamba** | ⬜ Not Started | - | Already best performer; optimization optional |
 
 **Next Steps**: 
-- Complete DPRNN final validation
-- Optionally run Stage 3 for ConvTasNet/SepFormer
-- Compare optimized DPRNN vs. baseline for thesis
+- ✅ ~~Complete DPRNN final validation~~ **DONE**
+- Use optimized DPRNN config (fancy-sweep-62) for thesis benchmarks
+- Optionally run Stage 3 for ConvTasNet/SepFormer (if time permits)
+- Document multi-stage optimization methodology in thesis
 
 ---
 
@@ -312,10 +442,11 @@ From 332 runs across all stages:
 - ✅ Stage 1 (2K): Wide search → 1.75 dB best
 - ✅ Stage 2 (4K): Narrowed search → 3.06 dB best (+1.31 dB)
 - ✅ Stage 3 (8K): Final refinement → 4.08 dB best (+1.02 dB)
-- 🔄 Final Validation (16K × 3 seeds): Running
+- ✅ Final Validation (16K × 3 seeds): **All 15 runs complete → 4.67 dB winner** (+0.59 dB)
 
-**Total improvement**: +2.33 dB from Stage 1 to Stage 3 (133% gain)  
-**Baseline comparison**: +1.05 dB vs. default hyperparameters (3.03 dB baseline avg)
+**Total improvement**: +2.92 dB from Stage 1 to Final (167% gain)  
+**Baseline comparison**: +1.64 dB vs. default hyperparameters (3.03 dB baseline avg)  
+**Final winner**: **4.67 dB** (Config 1: fancy-sweep-62) 🏆
 
 ---
 
@@ -332,9 +463,10 @@ From 332 runs across all stages:
 
 1. **SPMamba is the best baseline model** (5.56 dB avg) - State Space Models with selective attention outperform transformers
 2. **Modern architectures dominate** - SPMamba and SepFormer significantly outperform RNN/CNN baselines (+2.5+ dB)
-3. **Multi-stage hyperparameter optimization works** - Progressive data scaling efficiently found +1.05 dB improvement over baseline
-4. **Weight decay is critical for DPRNN** - Strong negative correlation (-0.27); keep very low (<5e-5)
-5. **Hyperband vs. Conservative trade-off** - Aggressive termination finds best configs faster but kills promising runs
+3. **Multi-stage hyperparameter optimization is highly effective** - Progressive data scaling found **+1.64 dB improvement** over baseline (3.03 → 4.67 dB)
+4. **Hyperparameters scale well across dataset sizes** - Best config from 8K validation (4.08 dB) improved to 4.67 dB on 16K (+0.59 dB)
+5. **Weight decay is critical for DPRNN** - Strong negative correlation (-0.27); keep very low (<5e-5)
+6. **Training is highly reproducible** - Very low variance across seeds (0.07 dB std) for optimized config
 
 ---
 

@@ -43,8 +43,8 @@ parameters:
     values: [2, 3, 4, 5, 6]
 
 # Run configuration
-name: baseline-a-onestage-8k-dprnn
-count: 120  # Same total runs as multi-stage Stage 1+2 combined
+project: polsess-thesis-experiments
+name: 3-dprnn-a-onestage-8k
 
 # Notes:
 # - Uses same 8K samples as Stage 3 for fair comparison
