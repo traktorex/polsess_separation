@@ -1,0 +1,35 @@
+# Exclude virtual environments
+venv/
+.venv/
+
+# Exclude Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Exclude Git
+.git/
+
+# Exclude Weights & Biases logs
+wandb/
+
+# Exclude model checkpoint files (but keep directory structure visible)
+*.pt
+*.pth
+*.onnx
+
+# Exclude Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Exclude pytest cache
+.pytest_cache/
+
+# Exclude coverage reports
+htmlcov/
+.coverage
+
+# Exclude large data files
+*.wav
+*.mp3
+*.flac

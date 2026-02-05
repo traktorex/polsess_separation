@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-This is a speech processing research repository focused on speech separation and enhancement for Polish speech datasets. The main active project is in `MAG2/polsess_separation/`.
+This is a speech processing research repository focused on speech separation and enhancement for Polish speech datasets. The main active project is in `polsess_separation/`.
 
 ## 🎓 Master's Thesis Context
 
@@ -65,7 +65,7 @@ If the answer to any is "no", simplify.
 
 ## Primary Project: PolSESS Speech Separation
 
-Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
+Located in `polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
@@ -130,7 +130,7 @@ Located in `MAG2/polsess_separation/`, this is a PyTorch implementation of speec
 
 ```bash
 # Navigate to project directory
-cd MAG2/polsess_separation
+cd polsess_separation
 
 # Train with YAML config (recommended)
 python train.py --config experiments/baseline.yaml
@@ -299,7 +299,7 @@ The project follows a modular architecture with clear separation of concerns:
 ### Module Structure
 
 ```
-MAG2/polsess_separation/
+polsess_separation/
 ├── config.py                      # Configuration dataclasses and parsing
 ├── train.py                       # Main training entry point
 ├── train_sweep.py                 # Weights & Biases sweep entry point
@@ -437,7 +437,7 @@ python train.py --config baseline.yaml --lr 0.0001 --batch-size 8
 
 ### Dependencies
 
-Key dependencies (from `MAG2/polsess_separation/requirements.txt`):
+Key dependencies (from `polsess_separation/requirements.txt`):
 
 - `torch>=2.0.0`, `torchaudio>=2.0.0` - Core ML framework
 - `speechbrain>=1.0.0` - Speech processing toolkit (source of models)
@@ -494,11 +494,10 @@ PolSESS/
 
 ## Other Directories
 
-You should not concern yourself with what's there. Only look into MAG2.
+You should not concern yourself with what's there.
 
 - **Archive/**: Old coursework exercises (TEG) - largely inactive
 - **WUM/**: Coursework exercises - largely inactive
-- **MAG/**: Earlier experiments with speech separation (predecessor to MAG2)
 - **speechbrain/**: Cloned SpeechBrain toolkit repository
 - **wandb/**: Local Weights & Biases run data
 
@@ -526,12 +525,3 @@ source .venv/bin/activate
 5. Evaluate checkpoints: `python evaluate.py --checkpoint checkpoints/{model}/{task}/latest/model.pt`
 6. Run tests after code changes: `pytest`
 7. For new features: add tests in `tests/`, update README.md, CHANGELOG.md and docs in `docs/` if needed
-
-## Recent Changes
-
-See [CHANGELOG.md](MAG2/polsess_separation/CHANGELOG.md) for detailed project history, including:
-- SPMamba model implementation (Linux + CUDA only)
-- torch.compile support for training speedup
-- Hierarchical checkpoint structure with symlinks
-- Interactive testing notebook with dropdown widgets
-- Removal of gradient accumulation (simplified training loop)

@@ -35,3 +35,16 @@ def handle_early_termination(self):
     if self.wandb_logger:
         self.wandb_logger.log_metrics({"hyperband_terminated": 1})
     raise SystemExit(0)  # Clean exit
+
+
+4. stop 
+"EARLY STOPPING
+[2026-02-03 09:21:52] WARNING: ================================================================================
+[2026-02-03 09:21:52] WARNING: No improvement for X epochs"
+message from appearing if this is the last epoch anyway
+
+
+
+SepALM: Audio Language Models Are Error Correctors for Robust Speech Separation
+https://www.semanticscholar.org/paper/SepALM%3A-Audio-Language-Models-Are-Error-Correctors-Mu-Yang/9248414ca6036956d41f73c52aeed10ec79d51a3
+!!!
