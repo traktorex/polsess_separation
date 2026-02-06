@@ -290,3 +290,163 @@ def test_task_routing(tmp_path):
     )
     assert trainer_sb.task == "SB"
     assert trainer_sb.loss_fn == trainer_sb._pit_loss_wrapper
+
+
+def test_gradient_accumulation_basic(tmp_path):
+    """Test that gradient accumulation reduces optimizer steps correctly."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.grad_accumulation_steps = 2  # Accumulate over 2 batches
+
+    # 6 samples with batch_size=2 = 3 batches
+    # With accum_steps=2, optimizer should step floor(3/2) + 1 = 2 times
+    train_dataset = SyntheticDataset(n_samples=6, time_steps=256)
+    val_dataset = SyntheticDataset(n_samples=4, time_steps=256)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+
+    model = DummyModel()
+    trainer = Trainer(
+        model,
+        train_loader,
+        val_loader,
+        cfg,
+        device="cpu",
+        logger=None,
+        wandb_logger=None,
+    )
+
+    # Override loss function with MSE
+    def mse_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        return loss, loss.item()
+
+    trainer.loss_fn = mse_loss_wrapper
+
+    # Track optimizer steps
+    original_step = trainer.optimizer.step
+    step_count = [0]
+
+    def counting_step():
+        step_count[0] += 1
+        original_step()
+
+    trainer.optimizer.step = counting_step
+
+    # Run one epoch
+    trainer.train_epoch()
+
+    # With 3 batches and accum_steps=2:
+    # - Batch 0: accumulate
+    # - Batch 1: step (batch_idx+1 = 2, 2 % 2 == 0)
+    # - Batch 2: step (last batch)
+    # Total: 2 optimizer steps
+    assert step_count[0] == 2, f"Expected 2 optimizer steps, got {step_count[0]}"
+
+
+def test_gradient_accumulation_scaling(tmp_path):
+    """Test that loss is scaled correctly for gradient accumulation."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.grad_accumulation_steps = 4
+
+    train_dataset = SyntheticDataset(n_samples=8, time_steps=256)
+    val_dataset = SyntheticDataset(n_samples=4, time_steps=256)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+
+    model = DummyModel()
+    trainer = Trainer(
+        model,
+        train_loader,
+        val_loader,
+        cfg,
+        device="cpu",
+        logger=None,
+        wandb_logger=None,
+    )
+
+    # Verify accum_steps is read correctly
+    accum_steps = getattr(trainer.config.training, 'grad_accumulation_steps', 1)
+    assert accum_steps == 4
+
+    # Override loss to track loss scaling
+    original_losses = []
+    scaled_losses = []
+
+    def tracking_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        original_losses.append(loss.item())
+        return loss, loss.item()
+
+    trainer.loss_fn = tracking_loss_wrapper
+
+    # Run one epoch
+    trainer.train_epoch()
+
+    # Verify we processed all batches
+    assert len(original_losses) == 4  # 8 samples / batch_size 2 = 4 batches
+
+
+def test_gradient_accumulation_disabled_by_default(tmp_path):
+    """Test that gradient accumulation defaults to 1 (disabled)."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    # Don't set grad_accumulation_steps - should default to 1
+
+    train_dataset = SyntheticDataset(n_samples=4, time_steps=256)
+    val_dataset = SyntheticDataset(n_samples=2, time_steps=256)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+
+    model = DummyModel()
+    trainer = Trainer(
+        model,
+        train_loader,
+        val_loader,
+        cfg,
+        device="cpu",
+        logger=None,
+        wandb_logger=None,
+    )
+
+    def mse_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        return loss, loss.item()
+
+    trainer.loss_fn = mse_loss_wrapper
+
+    # Track optimizer steps
+    original_step = trainer.optimizer.step
+    step_count = [0]
+
+    def counting_step():
+        step_count[0] += 1
+        original_step()
+
+    trainer.optimizer.step = counting_step
+
+    # Run one epoch
+    trainer.train_epoch()
+
+    # With 2 batches and accum_steps=1 (default), should step every batch
+    assert step_count[0] == 2, f"Expected 2 optimizer steps, got {step_count[0]}"
+

@@ -302,6 +302,9 @@ class Trainer:
         self.model.train()
         total_sisdr = 0
         total_samples = 0
+        
+        # Gradient accumulation setup
+        accum_steps = getattr(self.config.training, 'grad_accumulation_steps', 1)
 
         pbar = tqdm(
             self.train_loader,
@@ -324,6 +327,10 @@ class Trainer:
                 estimates = self.model(mix_input)
 
             loss, sisdr_value = self.loss_fn(estimates, clean)
+            
+            # Scale loss for gradient accumulation
+            if accum_steps > 1:
+                loss = loss / accum_steps
 
             if torch.isnan(loss) or torch.isinf(loss):
                 self.logger.warning(
@@ -338,23 +345,28 @@ class Trainer:
             else:
                 loss.backward()
 
-            # Gradient clipping and optimizer step
-            if self.scaler:
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    max_norm=self.config.training.grad_clip_norm,
-                )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    max_norm=self.config.training.grad_clip_norm,
-                )
-                self.optimizer.step()
+            # Only step optimizer every accum_steps batches (or at end of epoch)
+            is_accum_step = (batch_idx + 1) % accum_steps == 0
+            is_last_batch = (batch_idx + 1) == len(self.train_loader)
+            
+            if is_accum_step or is_last_batch:
+                # Gradient clipping and optimizer step
+                if self.scaler:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        max_norm=self.config.training.grad_clip_norm,
+                    )
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        max_norm=self.config.training.grad_clip_norm,
+                    )
+                    self.optimizer.step()
 
-            self.optimizer.zero_grad()
+                self.optimizer.zero_grad()
 
             # Weight by actual batch size for correct averaging
             batch_size = len(mix)

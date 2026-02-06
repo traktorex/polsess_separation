@@ -163,6 +163,7 @@ class TrainingConfig:
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
+    grad_accumulation_steps: int = 1  # Accumulate gradients over N steps (effective batch = batch_size * N)
 
 
 @dataclass
