@@ -8,30 +8,28 @@
 # 4. Create sweep and run agent
 
 program: train_sweep.py
-method: grid  # Grid search - exhaustive over all combinations
+method: bayes  
 metric:
   name: best_val_sisdr
   goal: maximize
 
-# Early termination - kill obviously poor LR combinations
 early_terminate:
   type: hyperband
-  min_iter: 35  # Let LR scheduler show its effect (starts at epoch 10)
+  min_iter: 55
   s: 2
-  eta: 3  # Conservative - only kills clear underperformers
 
 parameters:
   # Base config
   config:
     value: experiments/dprnn/dprnn_8000_lr_sweep.yaml
   
-  # LR scheduler parameters to grid search
   lr_factor:
-    values: [0.40, 0.55, 0.70, 0.85]  # 4 values
+    distribution: uniform
+    min: 0.3
+    max: 0.95
   
   lr_patience:
     values: [2, 3, 4, 5]  # 4 values
-  # Total: 4 × 4 = 16 combinations per config
   
   # Fixed core hyperparameters - SET THESE FROM PROXY SWEEP TOP CONFIG
   lr:
