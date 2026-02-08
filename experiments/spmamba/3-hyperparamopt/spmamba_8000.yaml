@@ -1,0 +1,57 @@
+# SPMamba Stage 2 Configuration (8000 samples)
+# 2-stage HPO: Refined search on larger subset
+
+data:
+  dataset_type: polsess
+  batch_size: 1  # SPMamba is memory-heavy
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 8000
+ 
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2
+    n_fft: 256
+    stride: 64
+    window: "hann"
+    n_layers: 4  # Reduced from 6
+    lstm_hidden_units: 192  # Reduced from 256
+    attn_n_head: 2  # Reduced from 4
+    attn_approx_qk_dim: 256  # Reduced from 512
+    emb_dim: 16
+    emb_ks: 4
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-5
+    sample_rate: 8000
+
+training:
+  lr: 0.001
+  weight_decay: 1.0e-5
+  grad_clip_norm: 2.0
+  lr_factor: 0.5
+  lr_patience: 3
+  num_epochs: 80  # Longer runs for Stage 2
+  use_amp: false  # Disabled for stability
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+  
+  use_wandb: true
+  wandb_project: polsess-thesis-experiments
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

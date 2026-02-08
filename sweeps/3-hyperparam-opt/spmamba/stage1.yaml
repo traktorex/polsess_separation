@@ -1,0 +1,56 @@
+# SPMamba 2-Stage Hyperparameter Optimization
+# Stage 1: Wide search on 2K samples
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10  # Mamba needs time to stabilize
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/spmamba/3-hyperparamopt/spmamba_2000.yaml
+  
+  num_epochs:
+    value: 50
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 10
+  
+  # Wide search ranges (Stage 1)
+  # Based on DPRNN learnings + SPMamba paper defaults
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4    # SPMamba paper uses 1e-3, search around it
+    max: 3e-3
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6    # Very low, similar to DPRNN findings
+    max: 1e-4
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5     # SPMamba baseline uses 2.0, search wider
+    max: 10.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3     # SPMamba paper uses 0.5
+    max: 0.90
+    
+  lr_patience:
+    values: [1, 2, 3, 4]
+
+
+project: polsess-thesis-experiments
+name: spmamba-stage1-2k
