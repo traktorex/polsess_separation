@@ -99,16 +99,23 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 
 #### Stage 1: Wide Search (2K samples)
 
-**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/subset-sweeps/dprnn.yaml) | **WandB**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
+**Config**: [`sweeps/3-hyperparam-opt/stage1/dprnn.yaml`](sweeps/3-hyperparam-opt/stage1/dprnn.yaml)  
+**WandB**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
 
 | Metric | Value |
 |--------|-------|
-| Runs | 91 (42 finished, 46%) |
+| Total Runs | 91 |
+| Finished | 42 (46%) |
 | Best SI-SDR | **1.75 dB** |
 | Runtime | 19.8h |
 | Early Termination | Hyperband (s=2, min_iter=10) |
 
-**Search Space**: LR [3e-4, 3e-3] • WD [1e-6, 1e-4] • GC [0.5, 20.0] • LR Factor [0.3, 0.95] • LR Patience [1, 5]
+**Search Space**:
+- LR: [3e-4, 3e-3]
+- Weight Decay: [1e-6, 1e-4]
+- Grad Clip: [0.5, 20.0]
+- LR Factor: [0.3, 0.95]
+- LR Patience: [1, 5]
 
 **Outcome**: Identified promising regions (higher LR ~1e-3, very low weight decay).
 
@@ -116,15 +123,23 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 
 #### Stage 2: Narrowed Search (4K samples)
 
-**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage2/dprnn.yaml) | **WandB**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
+**Config**: [`sweeps/3-hyperparam-opt/stage2/dprnn.yaml`](sweeps/3-hyperparam-opt/stage2/dprnn.yaml)  
+**WandB**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
 
 | Metric | Value |
 |--------|-------|
-| Runs | 131 (48 finished, 37%) |
-| Best SI-SDR | **3.06 dB**  (+1.31 dB vs Stage 1) |
+| Total Runs | 131 |
+| Finished | 48 (37%) |
+| Best SI-SDR | **3.06 dB** |
+| Mean SI-SDR | 2.47 dB |
 | Runtime | 48.65h |
 
-**Refined Search Space**: LR [5e-4, 2e-3] • WD [1e-6, 5e-5] • GC [0.5, 20.0] • LR Factor [0.38, 0.95] • LR Patience [1, 5]
+**Refined Search Space** (based on Stage 1):
+- LR: [5e-4, 2e-3] (narrowed)
+- Weight Decay: [1e-6, 5e-5] (much lower max)
+- Grad Clip: [0.5, 20.0] (kept wide)
+- LR Factor: [0.38, 0.95] (slight adjustment)
+- LR Patience: [1, 5] (unchanged)
 
 **Key Finding**: Weight decay should be kept **very low** (<5e-5).
 
@@ -188,18 +203,6 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 - Normalized 5D hyperparameter space (LR, weight decay, grad clip, LR factor, LR patience)
 - Euclidean distance to previously selected configs
 - Ensures selected configs explore different hyperparameter regions
-
-#### Top 5 Selected Configurations
-
-| Rank | Name | Source | SI-SDR | LR | Weight Decay | Grad Clip | LR Factor | LR Patience | Diversity |
-|------|------|--------|--------|-----|--------------|-----------|-----------|-------------|-----------|
-| 🥇 | fancy-sweep-62 | Hyperband | **4.08 dB** | 0.00125 | 2.1e-5 | 2.76 | 0.863 | 3 | - |
-| 🥈 | rose-sweep-41 | Hyperband | **3.84 dB** | 0.00150 | 4.4e-5 | 2.29 | 0.799 | 5 | 1.98 |
-| 🥉 | spring-sweep-67 | Hyperband | **3.78 dB** | 0.00114 | 2.1e-6 | 13.86 | 0.542 | 5 | **3.58** ⭐ |
-| 4 | exalted-sweep-12 | Conservative | **3.74 dB** | 0.00085 | 4.8e-5 | 3.80 | 0.695 | 3 | 1.53 |
-| 5 | sunny-sweep-2 | Conservative | **3.72 dB** | 0.00082 | 4.9e-5 | 2.58 | 0.768 | 2 | 1.02 |
-
-**Gap**: 0.36 dB between best and 5th (good clustering of top performers)
 
 **Full results**: [`sweeps/3-hyperparam-opt/stage3/results/`](sweeps/3-hyperparam-opt/stage3/results/)
 - [`top5_configs_for_validation.csv`](sweeps/3-hyperparam-opt/stage3/results/top5_configs_for_validation.csv)

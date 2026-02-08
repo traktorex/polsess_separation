@@ -58,7 +58,7 @@
 
 #### Stage 1: Wide Search (2K samples)
 
-**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/subset-sweeps/dprnn.yaml) | **Sweep**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
+**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage1/dprnn.yaml) | **Sweep**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
 
 | Metric | Value |
 |--------|-------|
