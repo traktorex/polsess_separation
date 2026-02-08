@@ -1,0 +1,62 @@
+# ConvTasNet 2-Stage Hyperparameter Optimization
+# Stage 2: Refined search on 8K samples
+# NOTE: Update ranges after Stage 1 completes!
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15  # Stage 2 runs longer, allow more warmup
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/convtasnet/sb_task_8000.yaml
+  
+  num_epochs:
+    value: 80
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 15
+  
+  # ========================================
+  # REFINED RANGES - UPDATE AFTER STAGE 1!
+  # ========================================
+  # Placeholder ranges based on DPRNN Stage 2 pattern
+  # Adjust min/max based on Stage 1 best configs
+  
+  lr:
+    distribution: log_uniform_values
+    min: 5e-4    # TODO: Narrow based on Stage 1
+    max: 2e-3
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6    # TODO: Narrow based on Stage 1
+    max: 5e-5    # DPRNN showed low weight_decay is key
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5     # TODO: Narrow based on Stage 1
+    max: 15.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.4     # TODO: Narrow based on Stage 1
+    max: 0.95
+    
+  lr_patience:
+    values: [2, 3, 4, 5, 6]
+
+count: 50  # Fewer runs with narrowed ranges
+
+project: polsess-thesis-experiments
+name: convtasnet-stage2-8k

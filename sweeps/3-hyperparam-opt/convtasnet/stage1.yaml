@@ -1,0 +1,56 @@
+# ConvTasNet 2-Stage Hyperparameter Optimization
+# Stage 1: Wide search on 2K samples
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/convtasnet/sb_task_2000.yaml
+  
+  num_epochs:
+    value: 50
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 10
+  
+  # Wide search ranges (Stage 1)
+  # Based on DPRNN learnings + ConvTasNet paper defaults
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4    # ConvTasNet paper uses 1e-3
+    max: 1e-2
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6    # DPRNN showed low WD is optimal
+    max: 1e-4
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5     # ConvTasNet baseline uses 5.0, search wider
+    max: 15.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95
+    
+  lr_patience:
+    values: [1, 2, 3, 4, 5, 6]
+
+
+project: polsess-thesis-experiments
+name: convtasnet-stage1-2k

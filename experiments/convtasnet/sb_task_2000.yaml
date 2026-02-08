@@ -27,7 +27,7 @@ model:
     mask_nonlinear: relu
 
 training:
-  num_epochs: 30  # Reduced epochs for subset
+  num_epochs: 50  # Reduced epochs for subset
   lr: 0.001
   weight_decay: 5.839967886489544e-06  
   grad_clip_norm: 5.0    
