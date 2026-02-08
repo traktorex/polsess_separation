@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run all 9 Experiment A validation experiments sequentially
+# Run all 9 Experiment B validation experiments sequentially
 # 3 configs × 3 seeds each
 
-echo "🚀 Starting Experiment A Final Validation (9 runs total)"
+echo "🚀 Starting Experiment B Final Validation (9 runs total)"
 echo "=========================================================="
 
 # Seeds to test
@@ -13,7 +13,7 @@ for config_num in 1 2 3; do
     echo ""
     echo "📊 Running Config $config_num..."
     
-    config_file="experiments/dprnn/3-hyperparamopt-expA-vals/validation_config${config_num}.yaml"
+    config_file="experiments/dprnn/3-hyperparamopt-expB-vals/validation_config${config_num}.yaml"
     
     for seed in "${SEEDS[@]}"; do
         echo "   Seed: $seed"

@@ -38,9 +38,8 @@ wandb agent <sweep-id>
 
 ### Experiment B: Direct Full-Data Sweep (16K samples)
 
-**Two Variants Available**:
 
-#### B1: Proxy-Based (Recommended)
+#### B: Proxy-Based
 
 **Config**: [`dprnn_fulldata_16k_proxy.yaml`](dprnn_fulldata_16k_proxy.yaml)
 
@@ -71,17 +70,6 @@ wandb agent <sweep-id>
 - Likely finds decent configs but less exploration than multi-stage
 - May miss configs that need more epochs to show promise
 
----
-
-#### B2: Full Epochs (Original - Very Expensive)
-
-**Config**: [`dprnn_fulldata_16k.yaml`](dprnn_fulldata_16k.yaml)
-
-**Strategy**: Direct sweep with full 80 epochs per run
-
-**Cost**: ~120-160 hours (60-80 runs × 2.5h each)
-
-**Note**: **Not recommended** unless you have massive compute budget. Use B1 (proxy) instead for realistic comparison.
 
 ---
 
