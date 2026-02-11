@@ -4,11 +4,14 @@ Supports Libri2Mix mix_single variant (1 speaker + noise) for ES task evaluation
 Compatible with PolSESS-trained models.
 """
 
+import logging
 import torch
 import torchaudio
 from torch.utils.data import Dataset
 from pathlib import Path
 from typing import Literal, List, Dict
+
+logger = logging.getLogger("polsess")
 
 
 class Libri2MixDataset(Dataset):
@@ -81,9 +84,9 @@ class Libri2MixDataset(Dataset):
         if max_samples is not None:
             self.mix_files = self.mix_files[:max_samples]
 
-        print(f"Loaded Libri2Mix {subset} set: {len(self.mix_files)} samples")
-        print(f"  Mix dir: {self.mix_dir}")
-        print(f"  Clean dir: {self.clean_dir}")
+        logger.info(f"Loaded Libri2Mix {subset} set: {len(self.mix_files)} samples")
+        logger.info(f"  Mix dir: {self.mix_dir}")
+        logger.info(f"  Clean dir: {self.clean_dir}")
 
     def __len__(self):
         return len(self.mix_files)
