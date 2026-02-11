@@ -198,33 +198,23 @@ class Config:
             )
 
         # Adjust model output sources based on task
-        if self.model.model_type == "convtasnet":
-            if self.data.task == "ES":
+        if self.data.task in ["ES", "EB"]:
+            if self.model.model_type == "convtasnet":
                 self.model.convtasnet.C = 1
-            elif self.data.task == "EB":
-                self.model.convtasnet.C = 1
-            elif self.data.task == "SB":
+            elif self.model.model_type == "sepformer":
+                self.model.sepformer.C = 1
+            elif self.model.model_type == "dprnn":
+                self.model.dprnn.C = 1
+            elif self.model.model_type == "spmamba":
+                self.model.spmamba.n_srcs = 1
+        elif self.data.task == "SB":
+            if self.model.model_type == "convtasnet":
                 self.model.convtasnet.C = 2
-        elif self.model.model_type == "sepformer":
-            if self.data.task == "ES":
-                self.model.sepformer.C = 1
-            elif self.data.task == "EB":
-                self.model.sepformer.C = 1
-            elif self.data.task == "SB":
+            elif self.model.model_type == "sepformer":
                 self.model.sepformer.C = 2
-        elif self.model.model_type == "dprnn":
-            if self.data.task == "ES":
-                self.model.dprnn.C = 1
-            elif self.data.task == "EB":
-                self.model.dprnn.C = 1
-            elif self.data.task == "SB":
+            elif self.model.model_type == "dprnn":
                 self.model.dprnn.C = 2
-        elif self.model.model_type == "spmamba":
-            if self.data.task == "ES":
-                self.model.spmamba.n_srcs = 1
-            elif self.data.task == "EB":
-                self.model.spmamba.n_srcs = 1
-            elif self.data.task == "SB":
+            elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
 
     def summary(self) -> str:
