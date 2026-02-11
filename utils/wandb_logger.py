@@ -102,6 +102,9 @@ class WandbLogger:
                 return
 
             artifact_name = name or model_path.stem
+            # Include run name to avoid all runs versioning the same artifact
+            if self.run.name and not name:
+                artifact_name = f"{artifact_name}-{self.run.name}"
             artifact = wandb.Artifact(artifact_name, type="model")
             artifact.add_file(str(model_path))
             self.run.log_artifact(artifact)
