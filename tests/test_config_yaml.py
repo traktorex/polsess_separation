@@ -464,3 +464,179 @@ training:
         config = load_config_for_run(sweep)
 
         assert config.training.early_stopping_patience == 10
+
+
+class TestConfigSummary:
+    """Test config.summary() output contains expected data."""
+
+    def test_convtasnet_summary(self):
+        """Test summary includes ConvTasNet-specific params."""
+        from config import ConvTasNetParams
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(
+                model_type='convtasnet',
+                convtasnet=ConvTasNetParams(N=512, B=128, H=256, P=3, X=8, R=4, C=1)
+            ),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Architecture: convtasnet" in s
+        assert "Encoder: N=512" in s
+        assert "MaskNet: B=128, H=256, P=3, X=8, R=4" in s
+        assert "Output: C=1, norm=gLN, mask=relu" in s
+
+    def test_dprnn_summary(self):
+        """Test summary includes DPRNN-specific params."""
+        from config import DPRNNParams
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(model_type='dprnn', dprnn=DPRNNParams(N=64, hidden_size=128)),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Architecture: dprnn" in s
+        assert "RNN: LSTM, hidden=128, layers=6" in s
+        assert "Chunking: chunk_size=100, bidirectional=True" in s
+        assert "Output: C=1, norm=ln" in s
+
+    def test_sepformer_summary(self):
+        """Test summary includes SepFormer-specific params."""
+        from config import SepFormerParams
+        config = Config(
+            data=DataConfig(task='SB'),
+            model=ModelConfig(model_type='sepformer', sepformer=SepFormerParams()),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Architecture: sepformer" in s
+        assert "Transformer: blocks=2, layers=8, d_model=256" in s
+        assert "Attention: heads=8, d_ffn=1024" in s
+        assert "Chunking: chunk=250, hop=125" in s
+
+    def test_spmamba_summary(self):
+        """Test summary includes SPMamba-specific params."""
+        from config import SPMambaParams
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(model_type='spmamba', spmamba=SPMambaParams()),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Architecture: spmamba" in s
+        assert "STFT: n_fft=256, stride=64, window=hann" in s
+        assert "Model: layers=6, input_dim=64" in s
+        assert "LSTM: hidden=256" in s
+        assert "Output: n_srcs=1" in s
+
+    def test_runtime_info_in_summary(self):
+        """Test that runtime_info values appear in summary when provided."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig()
+        )
+        runtime = {
+            'train_samples': 8000,
+            'val_samples': 2000,
+            'model_params_millions': 1.16,
+        }
+        s = config.summary(runtime_info=runtime)
+
+        assert "Train samples: 8000" in s
+        assert "Val samples: 2000" in s
+        assert "Parameters: 1.16M" in s
+
+    def test_runtime_info_absent_when_not_provided(self):
+        """Test that runtime fields are absent when runtime_info is None."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Train samples" not in s
+        assert "Val samples" not in s
+        # "Parameters:" for model param count should not appear (the label)
+        # But "Parameters" might match other text, so check specifically
+        assert "Parameters:" not in s
+
+    def test_formatted_floats(self):
+        """Test that LR and weight_decay are in scientific notation."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig(lr=0.0004608327, weight_decay=2.7014e-06)
+        )
+        s = config.summary()
+
+        assert "LR: 4.61e-04" in s
+        assert "Weight decay: 2.70e-06" in s
+
+    def test_conditional_sections(self):
+        """Test conditional sections appear only when set."""
+        config = Config(
+            data=DataConfig(task='ES', batch_size=4),
+            model=ModelConfig(),
+            training=TrainingConfig(
+                early_stopping_patience=10,
+                resume_from="/path/to/checkpoint.pt",
+                curriculum_learning=[{"epoch": 1, "variants": ["C"]}],
+                grad_accumulation_steps=4,
+            )
+        )
+        s = config.summary()
+
+        assert "Early stopping: patience=10" in s
+        assert "Resume from: /path/to/checkpoint.pt" in s
+        assert "Curriculum stages: 1" in s
+        assert "Grad accumulation: 4 steps (effective batch=16)" in s
+
+    def test_conditional_sections_absent_by_default(self):
+        """Test conditional sections are absent when not configured."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig()
+        )
+        s = config.summary()
+
+        assert "Early stopping" not in s
+        assert "Resume from" not in s
+        assert "Curriculum" not in s
+        assert "Grad accumulation" not in s
+        assert "Logging (W&B)" in s  # enabled by default in TrainingConfig
+        assert "Project: polsess-separation" in s
+
+    def test_wandb_summary(self):
+        """Test W&B info appears in summary."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig(
+                use_wandb=True,
+                wandb_project="my-project",
+                wandb_run_name="test-run"
+            )
+        )
+        s = config.summary()
+
+        assert "Logging (W&B):" in s
+        assert "Project: my-project" in s
+        assert "Run name: test-run" in s
+
+    def test_wandb_disabled_summary(self):
+        """Test W&B info absent when disabled."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig(use_wandb=False)
+        )
+        s = config.summary()
+
+        assert "Logging (W&B)" not in s

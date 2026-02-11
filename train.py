@@ -104,12 +104,7 @@ def main():
     )
 
     # Log configuration
-    logger.info("\n" + config.summary())
-    logger.info(f"Dataset: {config.data.dataset_type}")
-    logger.info(f"Train samples: {summary_info['train_samples']}")
-    logger.info(f"Val samples: {summary_info['val_samples']}")
-    logger.info(f"Model: {config.model.model_type}")
-    logger.info(f"Model parameters: {summary_info['model_params_millions']:.2f}M")
+    logger.info("\n" + config.summary(runtime_info=summary_info))
 
     # Create trainer
     trainer = Trainer(

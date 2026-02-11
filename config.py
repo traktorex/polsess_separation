@@ -217,7 +217,13 @@ class Config:
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
 
-    def summary(self) -> str:
+    def summary(self, runtime_info: dict = None) -> str:
+        """Generate comprehensive configuration summary.
+        
+        Args:
+            runtime_info: Optional dict with runtime values to include:
+                - train_samples, val_samples, model_params_millions
+        """
         lines = [
             "=" * 80,
             "Configuration Summary",
@@ -227,47 +233,103 @@ class Config:
             f"  Dataset: {self.data.dataset_type}",
         ]
 
-        # Add dataset-specific info
         if self.data.dataset_type == "polsess":
-            lines.extend(
-                [
-                    f"  Root: {self.data.polsess.data_root}",
-                ]
+            lines.append(f"  Root: {self.data.polsess.data_root}")
+
+        lines.extend([
+            f"  Task: {self.data.task}",
+            f"  Batch size: {self.data.batch_size}",
+            f"  Workers: {self.data.num_workers} (prefetch={self.data.prefetch_factor})",
+        ])
+
+        if runtime_info:
+            if "train_samples" in runtime_info:
+                lines.append(f"  Train samples: {runtime_info['train_samples']}")
+            if "val_samples" in runtime_info:
+                lines.append(f"  Val samples: {runtime_info['val_samples']}")
+
+        # Model section
+        lines.extend(["", "Model:", f"  Architecture: {self.model.model_type}"])
+
+        if runtime_info and "model_params_millions" in runtime_info:
+            lines.append(f"  Parameters: {runtime_info['model_params_millions']:.2f}M")
+
+        # Model-specific params
+        mt = self.model.model_type
+        if mt == "convtasnet":
+            p = self.model.convtasnet
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  MaskNet: B={p.B}, H={p.H}, P={p.P}, X={p.X}, R={p.R}",
+                f"  Output: C={p.C}, norm={p.norm_type}, mask={p.mask_nonlinear}",
+            ])
+        elif mt == "dprnn":
+            p = self.model.dprnn
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  RNN: {p.rnn_type}, hidden={p.hidden_size}, layers={p.num_layers}",
+                f"  Chunking: chunk_size={p.chunk_size}, bidirectional={p.bidirectional}",
+                f"  Output: C={p.C}, norm={p.norm_type}",
+            ])
+        elif mt == "sepformer":
+            p = self.model.sepformer
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.d_model}",
+                f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
+                f"  Chunking: chunk={p.chunk_size}, hop={p.hop_size}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "spmamba":
+            p = self.model.spmamba
+            lines.extend([
+                f"  STFT: n_fft={p.n_fft}, stride={p.stride}, window={p.window}",
+                f"  Model: layers={p.n_layers}, input_dim={p.input_dim}",
+                f"  LSTM: hidden={p.lstm_hidden_units}",
+                f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
+                f"  Output: n_srcs={p.n_srcs}",
+            ])
+
+        # Training section
+        lines.extend([
+            "",
+            "Training:",
+            f"  Epochs: {self.training.num_epochs}",
+            f"  LR: {self.training.lr:.2e}",
+            f"  Weight decay: {self.training.weight_decay:.2e}",
+            f"  Grad clip norm: {self.training.grad_clip_norm}",
+            f"  LR scheduler: factor={self.training.lr_factor}, patience={self.training.lr_patience}",
+            f"  Seed: {self.training.seed}",
+            f"  AMP: {self.training.use_amp}",
+        ])
+
+        if self.training.grad_accumulation_steps > 1:
+            eff = self.data.batch_size * self.training.grad_accumulation_steps
+            lines.append(
+                f"  Grad accumulation: {self.training.grad_accumulation_steps} steps (effective batch={eff})"
             )
 
-        lines.extend(
-            [
-                f"  Task: {self.data.task}",
-                f"  Batch size: {self.data.batch_size}",
-                "",
-                "Model:",
-                f"  Architecture: {self.model.model_type}",
-            ]
-        )
+        if self.training.early_stopping_patience:
+            lines.append(f"  Early stopping: patience={self.training.early_stopping_patience}")
 
-        # Add model-specific info
-        if self.model.model_type == "convtasnet":
-            lines.extend(
-                [
-                    f"  Parameters: N={self.model.convtasnet.N}, B={self.model.convtasnet.B}, H={self.model.convtasnet.H}",
-                    f"  Temporal blocks: R={self.model.convtasnet.R}, X={self.model.convtasnet.X}",
-                    f"  Output sources: C={self.model.convtasnet.C}",
-                ]
-            )
+        if self.training.resume_from:
+            lines.append(f"  Resume from: {self.training.resume_from}")
 
-        lines.extend(
-            [
-                "",
-                "Training:",
-                f"  Epochs: {self.training.num_epochs}",
-                f"  Learning rate: {self.training.lr}",
-                f"  Weight decay: {self.training.weight_decay}",
-                f"  AMP enabled: {self.training.use_amp}",
-                f"  Device: {self.training.device}",
-                "",
-                "=" * 80,
-            ]
-        )
+        if self.training.curriculum_learning:
+            lines.append(f"  Curriculum stages: {len(self.training.curriculum_learning)}")
+
+        if self.training.validation_variants:
+            lines.append(f"  Validation variants: {self.training.validation_variants}")
+
+        if self.training.use_wandb:
+            lines.extend(["", "Logging (W&B):"])
+            lines.append(f"  Project: {self.training.wandb_project}")
+            if self.training.wandb_run_name:
+                lines.append(f"  Run name: {self.training.wandb_run_name}")
+            if self.training.wandb_entity:
+                lines.append(f"  Entity: {self.training.wandb_entity}")
+
+        lines.extend(["", "=" * 80])
         return "\n".join(lines)
 
 
