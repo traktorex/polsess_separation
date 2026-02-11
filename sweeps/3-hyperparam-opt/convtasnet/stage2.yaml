@@ -28,35 +28,35 @@ parameters:
     value: 15
   
   # ========================================
-  # REFINED RANGES - UPDATE AFTER STAGE 1!
+  # REFINED RANGES (from Stage 1 analysis)
   # ========================================
-  # Placeholder ranges based on DPRNN Stage 2 pattern
-  # Adjust min/max based on Stage 1 best configs
+  # Based on 27 Stage 1 runs (21 complete):
+  #   Top-5: all in [6.1e-4, 7.6e-4] LR range
+  #   Worst: LR>2e-3 (0.05-0.33 dB) and LR<1.5e-4 (0.20-0.43 dB)
   
   lr:
     distribution: log_uniform_values
-    min: 5e-4    # TODO: Narrow based on Stage 1
-    max: 2e-3
+    min: 3e-4    # Top-10 range: [3.8e-4, 7.6e-4], slight expansion
+    max: 1.5e-3  # LR>2e-3 caused worst runs
   
   weight_decay:
     distribution: log_uniform_values
-    min: 1e-6    # TODO: Narrow based on Stage 1
-    max: 5e-5    # DPRNN showed low weight_decay is key
+    min: 1e-6    # Top-10 range: [6e-6, 6.9e-5], wide spread
+    max: 1e-4    # WD not strongly selective, keep broad
   
   grad_clip_norm:
     distribution: uniform
-    min: 0.5     # TODO: Narrow based on Stage 1
-    max: 15.0
+    min: 1.5     # Top-10 range: [2.8, 13.9], wide spread
+    max: 15.0    # Not strongly selective
   
   lr_factor:
     distribution: uniform
-    min: 0.4     # TODO: Narrow based on Stage 1
+    min: 0.3    # Top-10 range: [0.41, 0.89]
     max: 0.95
     
   lr_patience:
-    values: [2, 3, 4, 5, 6]
+    values: [2, 3, 4]  # Top-10 strongly favored 2-4 (8/10 used 3)
 
-count: 50  # Fewer runs with narrowed ranges
 
 project: polsess-thesis-experiments
 name: convtasnet-stage2-8k
