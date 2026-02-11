@@ -24,7 +24,7 @@ from config import Config, load_config_from_yaml
 from utils import apply_eps_patch, load_checkpoint_file, count_parameters
 
 
-def load_model_from_checkpoint(
+def load_model_for_evaluation(
     checkpoint_path: str, config: Config = None, device: str = "cuda"
 ) -> torch.nn.Module:
     """Load trained model from checkpoint for evaluation.
@@ -356,7 +356,7 @@ def main():
 
     # Load model
     device = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
-    model = load_model_from_checkpoint(args.checkpoint, config, device)
+    model = load_model_for_evaluation(args.checkpoint, config, device)
 
     # Determine evaluation mode
     if args.variant or (args.dataset == "polsess" and not args.variant):

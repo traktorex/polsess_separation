@@ -4,13 +4,13 @@ import pytest
 import torch
 from pathlib import Path
 from unittest.mock import Mock, patch
-from evaluate import load_model_from_checkpoint, print_summary, save_results_csv
+from evaluate import load_model_for_evaluation, print_summary, save_results_csv
 
 
 class TestEvaluationLoading:
     """Test model loading for evaluation."""
 
-    def test_load_model_from_checkpoint_with_embedded_config(self, tmp_path):
+    def test_load_model_for_evaluation_with_embedded_config(self, tmp_path):
         """Test loading model when checkpoint contains config."""
         checkpoint_path = tmp_path / "model.pt"
         
@@ -51,7 +51,7 @@ class TestEvaluationLoading:
         )
         
         # Test loading
-        loaded_model = load_model_from_checkpoint(
+        loaded_model = load_model_for_evaluation(
             str(checkpoint_path), config=None, device="cpu"
         )
         
@@ -60,7 +60,7 @@ class TestEvaluationLoading:
         assert loaded_model.N == 64
         # Note: B is not exposed as attribute
 
-    def test_load_model_from_checkpoint_without_config_raises_error(self, tmp_path):
+    def test_load_model_for_evaluation_without_config_raises_error(self, tmp_path):
         """Test loading fails gracefully without config."""
         checkpoint_path = tmp_path / "model.pt"
         
@@ -76,7 +76,7 @@ class TestEvaluationLoading:
         
         # Should raise error when no config provided
         with pytest.raises(ValueError, match="No config in checkpoint"):
-            load_model_from_checkpoint(
+            load_model_for_evaluation(
                 str(checkpoint_path), config=None, device="cpu"
             )
 
@@ -114,7 +114,7 @@ class TestEvaluationLoading:
             checkpoint_path,
         )
         
-        loaded_model = load_model_from_checkpoint(
+        loaded_model = load_model_for_evaluation(
             str(checkpoint_path), config=None, device="cpu"
         )
         
@@ -155,7 +155,7 @@ class TestEvaluationLoading:
     def test_load_model_nonexistent_file_raises_error(self):
         """Test loading from nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            load_model_from_checkpoint(
+            load_model_for_evaluation(
                 "/nonexistent/path.pt", config=None, device="cpu"
             )
 
