@@ -23,27 +23,6 @@
                     - everything needed to know how the separation was done
 
 
-3. Option 2: Add Graceful Shutdown (Cleaner)
-Add signal handling to your trainer so it exits cleanly when Hyperband stops it:
-
-python
-import signal
-# In trainer.py, add signal handler
-def handle_early_termination(self):
-    """Handle Hyperband early termination gracefully."""
-    self.logger.warning("Received early termination signal from W&B Hyperband")
-    if self.wandb_logger:
-        self.wandb_logger.log_metrics({"hyperband_terminated": 1})
-    raise SystemExit(0)  # Clean exit
-
-
-4. stop 
-"EARLY STOPPING
-[2026-02-03 09:21:52] WARNING: ================================================================================
-[2026-02-03 09:21:52] WARNING: No improvement for X epochs"
-message from appearing if this is the last epoch anyway
-
-
 
 SepALM: Audio Language Models Are Error Correctors for Robust Speech Separation
 https://www.semanticscholar.org/paper/SepALM%3A-Audio-Language-Models-Are-Error-Correctors-Mu-Yang/9248414ca6036956d41f73c52aeed10ec79d51a3
