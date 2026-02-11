@@ -192,6 +192,7 @@ Two parallel strategies:
 2. wise-sweep-64: **3.36 dB**
 3. prime-sweep-35: **3.34 dB**
 
+
 **Rationale**: 20 epochs too short for LR scheduler to show effect; tune LR/WD/GC first, then optimize LR scheduler separately
 
 ---
@@ -212,6 +213,12 @@ For each top-3 config, run grid search over LR scheduler params:
 **prime-sweep-35 LR sweep**: ⏳ Pending
 
 **Phase 3 - Final Validation**: Best LR params from each config × 3 seeds × 80 epochs on 16K
+
+| Rank | Config | 2K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
+|------|--------|-----------|-------------------|-----------------|-------|-------|
+| 1 | kind-sweep-68 | 3.41 dB | ✅ Complete   | 4.42 dB | 4.35, 4.69, 4.22 dB | [ff2i3l0v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ff2i3l0v), [bk0dmhqj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bk0dmhqj), [wmvnhx84](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/wmvnhx84) |
+| 2 | wise-sweep-64 | 3.36 dB | ✅ Complete | 4.16 dB | 4.17, 4.19, 4.11 dB | [l2xzaoon](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/l2xzaoon), [1bcg8abx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1bcg8abx), [305dk3qx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/305dk3qx) |
+| 3 | prime-sweep-35 | 3.34 dB | ✅ Complete | 3.96 dB | 4.00, 3.91, 3.96 dB | [xoaottd1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xoaottd1), [oanobnwm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/oanobnwm), [w5pcz9oe](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/w5pcz9oe) |
 
 **Comparison vs 3-Stage**: Tests whether epoch-based proxy can replace data-based progressive scaling
 
