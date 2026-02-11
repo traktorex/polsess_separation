@@ -104,6 +104,7 @@ def main():
         enabled=True,  # Always enabled for sweeps
         logger=logger,
         run=run,
+        upload_checkpoints=False,  # Don't upload model artifacts during sweeps
     )
 
     # Log configuration

@@ -25,10 +25,17 @@ class WandbLogger:
         enabled: bool = True,
         logger: Optional[logging.Logger] = None,
         run: Optional[Any] = None,
+        upload_checkpoints: bool = True,
     ):
-        """Initialize W&B logger. If run is provided, uses it instead of creating new one."""
+        """Initialize W&B logger. If run is provided, uses it instead of creating new one.
+        
+        Args:
+            upload_checkpoints: If False, skip uploading model artifacts to W&B.
+                Set to False during sweeps to avoid storage bloat.
+        """
         self.logger = logger or logging.getLogger("polsess")
         self.enabled = enabled and WANDB_AVAILABLE
+        self.upload_checkpoints = upload_checkpoints
         self.run = None
 
         if not self.enabled:
@@ -85,7 +92,7 @@ class WandbLogger:
 
     def log_model(self, model_path: str, name: Optional[str] = None):
         """Save model checkpoint as W&B artifact."""
-        if not self.enabled or not self.run:
+        if not self.enabled or not self.run or not self.upload_checkpoints:
             return
 
         try:
