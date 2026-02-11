@@ -531,63 +531,42 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     base_config_path = sweep_config.get("config", "experiments/baseline.yaml")
     config = load_config_from_yaml(base_config_path)
 
-    # Apply common overrides (if present in sweep config)
-    
-    # Model architecture overrides
+    # Apply sweep overrides to config
+    # Mapping: sweep_key -> (config_section, config_attr)
+    OVERRIDE_MAP = {
+        # Training hyperparameters
+        "lr":                       (config.training, "lr"),
+        "weight_decay":             (config.training, "weight_decay"),
+        "grad_clip_norm":           (config.training, "grad_clip_norm"),
+        "lr_factor":                (config.training, "lr_factor"),
+        "lr_patience":              (config.training, "lr_patience"),
+        "num_epochs":               (config.training, "num_epochs"),
+        "seed":                     (config.training, "seed"),
+        "use_amp":                  (config.training, "use_amp"),
+        "early_stopping_patience":  (config.training, "early_stopping_patience"),
+        "save_all_checkpoints":     (config.training, "save_all_checkpoints"),
+        "curriculum_learning":      (config.training, "curriculum_learning"),
+        "validation_variants":      (config.training, "validation_variants"),
+        # Data
+        "task":                     (config.data, "task"),
+        "batch_size":               (config.data, "batch_size"),
+        # Model
+        "model_type":               (config.model, "model_type"),
+    }
+
+    for key, (section, attr) in OVERRIDE_MAP.items():
+        if key in sweep_config:
+            setattr(section, attr, getattr(sweep_config, key))
+
+    # Special cases: "epochs" alias for "num_epochs"
+    if "epochs" in sweep_config:
+        config.training.num_epochs = sweep_config.epochs
+
+    # Special cases: ConvTasNet architecture overrides (nested)
     if "model_B" in sweep_config:
         config.model.convtasnet.B = sweep_config.model_B
     if "model_H" in sweep_config:
         config.model.convtasnet.H = sweep_config.model_H
-    
-    # Task and model type
-    if "task" in sweep_config:
-        config.data.task = sweep_config.task
-    if "model_type" in sweep_config:
-        config.model.model_type = sweep_config.model_type
-    
-    # Training hyperparameters
-    if "weight_decay" in sweep_config:
-        config.training.weight_decay = sweep_config.weight_decay
-    if "grad_clip_norm" in sweep_config:
-        config.training.grad_clip_norm = sweep_config.grad_clip_norm
-    if "lr" in sweep_config:
-        config.training.lr = sweep_config.lr
-    
-    # Learning rate scheduler
-    if "lr_factor" in sweep_config:
-        config.training.lr_factor = sweep_config.lr_factor
-    if "lr_patience" in sweep_config:
-        config.training.lr_patience = sweep_config.lr_patience
-    
-    # Epochs (support both "epochs" and "num_epochs")
-    if "epochs" in sweep_config:
-        config.training.num_epochs = sweep_config.epochs
-    if "num_epochs" in sweep_config:
-        config.training.num_epochs = sweep_config.num_epochs
-    
-    # Data config
-    if "batch_size" in sweep_config:
-        config.data.batch_size = sweep_config.batch_size
-    
-    # Curriculum learning and validation
-    if "curriculum_learning" in sweep_config:
-        config.training.curriculum_learning = sweep_config.curriculum_learning
-    if "validation_variants" in sweep_config:
-        config.training.validation_variants = sweep_config.validation_variants
-    
-    # Hardware and reproducibility
-    if "device" in sweep_config:
-        config.training.device = sweep_config.device
-    if "use_amp" in sweep_config:
-        config.training.use_amp = sweep_config.use_amp
-    if "seed" in sweep_config:
-        config.training.seed = sweep_config.seed
-    
-    # Early stopping
-    if "early_stopping_patience" in sweep_config:
-        config.training.early_stopping_patience = sweep_config.early_stopping_patience
-    if "save_all_checkpoints" in sweep_config:
-        config.training.save_all_checkpoints = sweep_config.save_all_checkpoints
 
     # Validate and return
     config.__post_init__()

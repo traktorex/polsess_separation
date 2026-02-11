@@ -326,3 +326,141 @@ class TestConfigValidation:
             training=TrainingConfig()
         )
         assert config_es.model.convtasnet.C == 1  # Auto-corrected
+
+
+class TestLoadConfigForRun:
+    """Test load_config_for_run with sweep config overrides."""
+
+    @pytest.fixture
+    def base_yaml(self, tmp_path):
+        """Create a base YAML config file for testing."""
+        yaml_content = """
+data:
+  batch_size: 4
+  task: ES
+
+model:
+  model_type: convtasnet
+  convtasnet:
+    N: 256
+    B: 256
+    H: 512
+  dprnn:
+    N: 64
+    hidden_size: 128
+
+training:
+  lr: 0.001
+  weight_decay: 0.0001
+  grad_clip_norm: 5.0
+  lr_factor: 0.95
+  lr_patience: 2
+  num_epochs: 10
+  seed: 42
+  use_amp: true
+"""
+        yaml_path = tmp_path / "base.yaml"
+        yaml_path.write_text(yaml_content)
+        return str(yaml_path)
+
+    def _make_sweep_config(self, base_yaml, **overrides):
+        """Create a mock matching wandb.config behavior (supports 'in' and attr access)."""
+        class MockSweepConfig:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+            def __contains__(self, key):
+                return key in self.__dict__
+            def get(self, key, default=None):
+                return self.__dict__.get(key, default)
+        return MockSweepConfig(config=base_yaml, **overrides)
+
+    def test_training_hp_overrides(self, base_yaml):
+        """Test that training hyperparameters are correctly overridden."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(
+            base_yaml,
+            lr=0.0005,
+            weight_decay=1e-5,
+            grad_clip_norm=10.0,
+            lr_factor=0.5,
+            lr_patience=5,
+        )
+        config = load_config_for_run(sweep)
+
+        assert config.training.lr == 0.0005
+        assert config.training.weight_decay == 1e-5
+        assert config.training.grad_clip_norm == 10.0
+        assert config.training.lr_factor == 0.5
+        assert config.training.lr_patience == 5
+
+    def test_data_overrides(self, base_yaml):
+        """Test that data config overrides work."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, task="SB", batch_size=8)
+        config = load_config_for_run(sweep)
+
+        assert config.data.task == "SB"
+        assert config.data.batch_size == 8
+
+    def test_model_type_override(self, base_yaml):
+        """Test that model_type override works."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, model_type="dprnn")
+        config = load_config_for_run(sweep)
+
+        assert config.model.model_type == "dprnn"
+
+    def test_epochs_alias(self, base_yaml):
+        """Test that 'epochs' works as alias for 'num_epochs'."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, epochs=50)
+        config = load_config_for_run(sweep)
+
+        assert config.training.num_epochs == 50
+
+    def test_num_epochs_override(self, base_yaml):
+        """Test that 'num_epochs' direct override works."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, num_epochs=30)
+        config = load_config_for_run(sweep)
+
+        assert config.training.num_epochs == 30
+
+    def test_convtasnet_architecture_overrides(self, base_yaml):
+        """Test special-case ConvTasNet model_B and model_H overrides."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, model_B=128, model_H=256)
+        config = load_config_for_run(sweep)
+
+        assert config.model.convtasnet.B == 128
+        assert config.model.convtasnet.H == 256
+
+    def test_partial_override_preserves_defaults(self, base_yaml):
+        """Test that unspecified keys remain at YAML defaults."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, lr=0.01)
+        config = load_config_for_run(sweep)
+
+        assert config.training.lr == 0.01
+        # These should stay at YAML values, not dataclass defaults
+        assert config.training.weight_decay == 0.0001
+        assert config.training.grad_clip_norm == 5.0
+        assert config.training.lr_factor == 0.95
+        assert config.data.batch_size == 4
+
+    def test_seed_and_amp_overrides(self, base_yaml):
+        """Test hardware/reproducibility overrides."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, seed=123, use_amp=False)
+        config = load_config_for_run(sweep)
+
+        assert config.training.seed == 123
+        assert config.training.use_amp is False
+
+    def test_early_stopping_override(self, base_yaml):
+        """Test early stopping patience override."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, early_stopping_patience=10)
+        config = load_config_for_run(sweep)
+
+        assert config.training.early_stopping_patience == 10
