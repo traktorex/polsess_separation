@@ -33,24 +33,24 @@ This is a speech processing research repository focused on speech separation and
 
 **DON'T:**
 - ❌ Over-engineer with excessive abstraction layers
-- ❌ Create factory patterns unless handling 4+ variants (we have model factory for 4 models - justified)
+- ❌ Create factory patterns unless handling 4+ variants (we have model factory for 4 models — justified)
 - ❌ Split simple functions into separate files "for organization"
 - ❌ Use clever tricks that require explanation
-- ❌ Add features "for future extensibility" - implement what's needed now
+- ❌ Add features "for future extensibility" — implement what's needed now
 - ❌ Create deep inheritance hierarchies
 
 ### Recent Simplifications (Based on Thesis Best Practices):
 
-1. **Evaluation Module** - Merged split modules back into single `evaluate.py` (498→420 lines)
+1. **Evaluation Module** — Merged split modules back into single `evaluate.py`
    - *Rationale*: All top speech separation papers use single evaluation scripts
-   
-2. **Dataset Factory Removed** - Direct DataLoader instantiation
+
+2. **Dataset Factory Removed** — Direct DataLoader instantiation
    - *Rationale*: Only 2 datasets, factory pattern unnecessary for thesis scope
-   
-3. **Utils Consolidated** - Reduced from 7→4 files by merging tiny utilities
+
+3. **Utils Consolidated** — Reduced from 7→4 files by merging tiny utilities
    - *Rationale*: Fewer files = easier navigation for reviewers
 
-4. **Model Factory Retained** - Kept for 4 model architectures
+4. **Model Factory Retained** — Kept for 4 model architectures
    - *Rationale*: Config-driven model selection is standard for multi-model comparison papers
 
 ### Code Review Mindset:
@@ -69,7 +69,7 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
-## Current State (January 2026)
+## Current State (February 2026)
 
 ### Baseline Experiments Complete (SB Task):
 
@@ -80,116 +80,86 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 | DPRNN | 3.03 dB | 3.20 dB | ✅ Baseline complete |
 | ConvTasNet | 2.95 dB | 3.28 dB | ✅ Baseline complete |
 
-**Total GPU Time**: ~187 hours across all baseline experiments  
 **Full Results**: See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md)
 
 ### Research Pipeline:
 
-**✅ Phase 1A Complete** - Baseline Performance Established
+**✅ Phase 1A Complete** — Baseline Performance Established
 - Trained all 4 architectures for 3 seeds each (~187 GPU hours)
 - Identified SPMamba as best model (5.56 dB average SI-SDR)
-- Full experimental log at `sweeps/EXPERIMENT_LOG.md`
 
-**🔄 Phase 1B In Progress** - Hyperparameter Optimization
-- Bayesian sweeps for lr, weight_decay, grad_clip_norm, lr_factor
-- Target: +0.2-0.5 dB improvement per model
-- Estimated completion: ~2-3 weeks
+**✅ Phase 1B Complete (DPRNN)** — Hyperparameter Optimization
+- 3-stage progressive scaling: **4.67 dB** (+1.64 dB vs. baseline, +54%)
+- Best HPs: LR=0.00125, WD=2.1e-5, grad_clip=2.76, lr_factor=0.863, lr_patience=3
+- Key finding: weight decay is the strongest predictor (correlation −0.27)
 
-**📋 Phase 1C Planned** - Architecture Variants
-- Test larger SPMamba configurations (5-6 layers vs current 4)
-- Evaluate performance vs model size trade-offs
+**🔄 Phase 1B In Progress (ConvTasNet, SPMamba)** — 2-Stage HPO
+- Stage 1 (2K samples) complete for both models
+- Stage 2 (8K samples) sweeps currently running
 
-**⏳ Phase 2 Pending** - ASR Integration
+**📋 Phase 1C Planned** — Architecture Variants
+- Test larger SPMamba configurations (6 layers vs. current 4)
+- Evaluate performance vs. model size trade-offs
+
+**⏳ Phase 2 Pending** — ASR Integration
 - Apply best separation model to CLARIN corpus
 - Measure WER/CER improvements for downstream ASR
-
-### Phase 1 Details:
-
-**Train and evaluate separation models on PolSESS**
-- 4 architectures: ConvTasNet, DPRNN, SepFormer, SPMamba
-- Evaluate with SI-SDR, PESQ, STOI
-- Use MM-IPC augmentation (Mix Modification by Inverted Phase Cancellation)
-- **Key advantage**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + sound events), unlike LibriMix which has only clean/reverb speech
-
-**Phase 2**: Use trained models for **ASR preprocessing on CLARIN**
-- Apply separation models to real conversational Polish speech (CLARIN corpus)
-- Feed separated audio to pre-trained Polish ASR
-- Evaluate ASR accuracy (WER/CER) against ground truth transcriptions
-- **Research contribution**: Determine which separation architecture produces best ASR performance on real Polish conversations
-
-### PolSESS Dataset Advantages:
-
-- **Realistic conditions**: Reverb, scene sounds (e.g., street noise), and sound events (e.g., phone ringing)
-- **Polish speech specific**: Optimized for Polish phonetics and prosody
-- **MM-IPC augmentation**: Multi-modal augmentation variants (Clean, Reverb, Scene, Events, combinations)
-- **Better generalization**: Models trained on PolSESS should perform better on real CLARIN data vs. models trained on synthetic-only datasets
 
 ### Key Commands
 
 **Training:**
 
 ```bash
-# Navigate to project directory
 cd polsess_separation
 
 # Train with YAML config (recommended)
-python train.py --config experiments/baseline.yaml
+python train.py --config experiments/dprnn/dprnn_baseline.yaml
 
-# Train with custom parameters
-python train.py --batch-size 8 --epochs 20 --lr 0.0001
+# Override model type or task
+python train.py --config experiments/baseline.yaml --model-type spmamba
+python train.py --config experiments/baseline.yaml --task SB
 
-# Train on different task (EB = both speakers)
-python train.py --task EB
+# Disable W&B logging
+python train.py --config experiments/baseline.yaml --no-wandb
 
-# Hyperparameter sweep with Weights & Biases
-python train_sweep.py --config experiments/wandb_sweep.yaml
+# Resume from checkpoint
+python train.py --config experiments/baseline.yaml --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
+
+# Override seed
+python train.py --config experiments/baseline.yaml --seed 123
 ```
 
 **Evaluation:**
 
 ```bash
-# Evaluate on all MM-IPC variants (using latest symlink)
-python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/model.pt
+# Evaluate on all MM-IPC variants
+python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 
 # Evaluate specific variant only
-python evaluate.py --checkpoint checkpoints/spmamba/ES/latest/model.pt --variant SER
+python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --variant SER
 
 # Fast evaluation (skip PESQ and STOI)
-python evaluate.py --checkpoint checkpoints/sepformer/EB/latest/model.pt --no-pesq --no-stoi
+python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --no-pesq --no-stoi
 
 # Save results to CSV
-python evaluate.py --checkpoint checkpoints/convtasnet/ES/latest/model.pt --output results.csv
-
-# Or use specific run_id instead of latest
-python evaluate.py --checkpoint checkpoints/spmamba/ES/run_2024-12-11_14-30-00/model.pt
+python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --output results.csv
 ```
 
 **Testing:**
 
 ```bash
-# Run all tests
 pytest
-
-# Run with coverage
 pytest --cov=. --cov-report=html
-
-# Run specific test file
 pytest tests/test_model.py
-
-# Run with verbose output
 pytest -v
 ```
 
 **Interactive Model Testing:**
 
 ```bash
-# Launch Jupyter and open test_model_interactive.ipynb
 jupyter notebook test_model_interactive.ipynb
-
-# Features:
 # - Auto-discovers all checkpoints from hierarchical structure
 # - Dropdown selectors for model, task, variant, and sample
-# - Single-button model loading and testing
 # - Real-time SI-SDR metrics and waveform visualization
 # - Audio playback for mix, clean, and estimate
 ```
@@ -204,97 +174,76 @@ The project follows a modular architecture with clear separation of concerns:
 - Three main config sections: `DataConfig`, `ModelConfig`, `TrainingConfig`
 - Each model/dataset has nested parameter classes (e.g., `ConvTasNetParams`, `PolSESSParams`)
 - Configuration priority: defaults → env vars → YAML → CLI args (highest priority)
-- Use `get_config_from_args()` to parse and merge all config sources
+- Use `get_config_from_args()` for CLI training, `load_config_for_run(wandb.config)` for sweeps
 
 **Model Registry (`models/__init__.py`):**
 
-- Models are registered with `@register_model("model_name")`
+- Simple dict-based registry: `MODELS = {"convtasnet": ConvTasNet, ...}`
 - Retrieve with `get_model("model_name")` which returns the model class
 - Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`
   - **convtasnet**: Time-domain convolutional architecture (~8M params)
   - **sepformer**: Transformer-based separation (~26M params)
-  - **dprnn**: Dual-path RNN with intra/inter-chunk processing
-  - **spmamba**: State-space model with Mamba blocks (requires Linux + CUDA)
-- Add new models by decorating with `@register_model()` and implementing the class
+  - **dprnn**: Dual-path RNN with intra/inter-chunk processing (~2-3M params)
+  - **spmamba**: State-space model with Mamba blocks (~1.2M params, requires Linux + CUDA)
 
 **Dataset Registry (`datasets/__init__.py`):**
 
-- Datasets registered with `@register_dataset("dataset_name")`
+- Simple dict-based registry: `DATASETS = {"polsess": PolSESSDataset, ...}`
 - Retrieve with `get_dataset("dataset_name")` which returns dataset class
 - Currently supports: `polsess`, `libri2mix`
-- All datasets must support `allowed_variants` parameter for filtering data
 
 **Training Flow:**
 
-1. `train.py` loads config via `get_config_from_args()`
-2. Creates dataloaders using `get_dataset()` registry
-3. Creates model using `get_model()` registry with nested params
+1. `train.py` loads config via `get_config_from_args()` (or `load_config_for_run(wandb.config)` for sweeps)
+2. Creates dataloaders directly (no factory — only 2 datasets)
+3. Creates model via `create_model_from_config()` in `models/factory.py`
 4. Optionally applies `torch.compile()` for speedup (PyTorch 2.0+, Linux only)
 5. Instantiates `Trainer` with model, dataloaders, config
-6. Trainer handles: AMP, checkpointing, logging, curriculum learning
-7. Curriculum learning: can progressively add data variants over epochs
-8. Checkpoints saved to: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
-9. Symlink created at: `checkpoints/{model}/{task}/latest/` for easy access
+6. Trainer handles: AMP, gradient accumulation, checkpointing, logging, curriculum learning
+7. Curriculum learning: progressively adds data variants over epochs
+8. Checkpoints saved to: `checkpoints/{model}/{task}/{run_name}/model.pt`
 
 **Key Technical Details:**
 
-- **AMP (Automatic Mixed Precision):** Enabled by default for 30-40% speedup
-
-  - SpeechBrain's `EPS=1e-8` causes float16 underflow → patched to `1e-4`
-  - Patch applied automatically in `utils/amp_patch.py`
+- **AMP (Automatic Mixed Precision):** Enabled by default for 30–40% speedup
+  - SpeechBrain's `EPS=1e-8` causes float16 underflow → patched to `1e-4` in `utils/common.py`
 
 - **torch.compile:** Automatic model compilation for speedup (PyTorch 2.0+)
-
   - Applied automatically in `train.py` when available
-  - ~10-20% training speedup on Linux systems
+  - ~10–20% training speedup on Linux systems
   - Proper checkpoint handling for compiled models (unwraps `_orig_mod` prefix)
   - No-op on Windows (compilation not supported)
 
-- **Hierarchical Checkpoint Structure:** Organized checkpoint storage
-
-  - Structure: `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`
+- **Checkpoint Structure:** `checkpoints/{model}/{task}/{run_name}/`
   - Each checkpoint directory includes `config.yaml` for easy viewing
-  - Automatic symlink creation at `checkpoints/{model}/{task}/latest/`
-  - Windows fallback uses junction instead of symlink
-  - Run ID includes wandb run name when available
+  - `save_all_checkpoints: true` keeps every improvement; default overwrites single best file
+  - Run name comes from W&B run name when available, falls back to timestamp
 
 - **MM-IPC Augmentation:** Randomly varies background complexity during training
-
   - Indoor: SER, SR, ER, R (with reverb)
-  - Outdoor: SE, S, E (no reverb)
+  - Outdoor: SE, S, E, C (no reverb)
   - Implemented via lazy loading in `datasets/polsess_dataset.py`
+  - Validation uses deterministic selection (seeded by sample index)
 
 - **Curriculum Learning:** Optional progressive training strategy
-
   - Configure in YAML: `training.curriculum_learning`
-  - Each epoch can specify: epoch number, variants, learning rate
+  - Each entry specifies: `epoch`, `variants`, optionally `lr_scheduler: start`
   - Dataset variants automatically updated between epochs
-  - LR scheduler can be enabled/disabled at specific epochs
+  - LR scheduler can be gated to start at a specific curriculum stage
 
 - **Early Stopping:** Optional training termination on plateau
-
   - Configure in YAML: `training.early_stopping_patience`
   - Monitors validation SI-SDR every epoch
   - Stops if no improvement for N epochs
-  - Saves significant GPU time on poor hyperparameter configurations
-  - Bug fixed in v0.9.1: sweep configs now properly propagate patience parameter
+
+- **Gradient Accumulation:** Effective batch size scaling
+  - Configure in YAML: `training.grad_accumulation_steps`
+  - Effective batch = `batch_size × grad_accumulation_steps`
+  - Useful when VRAM limits physical batch size
 
 - **SPMamba Requirements:** Linux + CUDA only
-
   - Requires `mamba-ssm` library (not available on Windows native)
   - Windows users must use WSL2 with CUDA toolkit 12.4+
-  - Frequency-domain processing using STFT/iSTFT
-  - O(N) complexity for efficient long-sequence processing
-
-- **SPMamba Baseline Results:** Best performing model (SB Task)
-
-  - **Average SI-SDR**: 5.56 dB (across seeds 42, 123, 456)
-  - **Best**: 5.68 dB (Seed 42, Epoch 19)
-  - **Architecture**: Reduced config (4 layers, 192 LSTM hidden units, 2 attention heads)
-  - **Parameters**: 1.16M (22x smaller than SepFormer!)
-  - **Numerical Stability**: Runs 2 & 3 with `use_amp: false` for stability
-  - **Key Advantage**: State-space model with selective attention outperforms transformer-based SepFormer
-  - **Memory**: ~11.3GB GPU with batch_size=1 (FP32)
 
 ### Module Structure
 
@@ -305,72 +254,70 @@ polsess_separation/
 ├── train_sweep.py                 # Weights & Biases sweep entry point
 ├── evaluate.py                    # Evaluation with per-variant metrics
 ├── test_model_interactive.ipynb   # Interactive model testing with dropdowns
-├── CHANGELOG.md                   # Project changelog
 ├── models/
-│   ├── __init__.py                # Model registry (register_model, get_model)
+│   ├── __init__.py                # Model registry (dict-based, get_model)
+│   ├── factory.py                 # Config-driven model instantiation
 │   ├── conv_tasnet.py             # ConvTasNet architecture
 │   ├── sepformer.py               # SepFormer architecture
 │   ├── dprnn.py                   # Dual-path RNN architecture
 │   └── spmamba.py                 # SPMamba with Mamba blocks (Linux + CUDA only)
 ├── datasets/
-│   ├── __init__.py                # Dataset registry (register_dataset, get_dataset)
+│   ├── __init__.py                # Dataset registry (dict-based, get_dataset)
 │   ├── polsess_dataset.py         # PolSESS with MM-IPC augmentation
 │   └── libri2mix_dataset.py       # Cross-dataset evaluation
 ├── training/
-│   └── trainer.py                 # Trainer with AMP and checkpointing
+│   └── trainer.py                 # Trainer with AMP, grad accumulation, checkpointing
 ├── utils/
-│   ├── amp_patch.py               # SpeechBrain float16 compatibility
-│   ├── common.py                  # Seeds, warnings, device setup
+│   ├── common.py                  # Seeds, EPS patch, warnings, device setup
+│   ├── model_utils.py             # torch.compile, param counting, checkpoint loading
 │   ├── logger.py                  # Colored logging
 │   └── wandb_logger.py            # Weights & Biases integration
-├── tests/                         # Pytest test suite
+├── tests/                         # Pytest test suite (264 tests, 17 files)
 │   ├── conftest.py                # Shared fixtures
+│   ├── test_config_yaml.py        # Config loading, saving, summary
 │   ├── test_dataset.py
+│   ├── test_mmipc.py
 │   ├── test_model.py
 │   ├── test_trainer.py
-│   └── test_utils.py
+│   └── ...
 ├── experiments/                   # YAML experiment configs
-│   ├── baseline.yaml              # ConvTasNet baseline (9.84 dB SI-SDR)
-│   ├── large_model.yaml           # Large ConvTasNet (~34M params)
-│   ├── eb_task.yaml               # Both speakers task
-│   ├── spmamba_baseline.yaml      # SPMamba configuration
-│   └── wandb_sweep.yaml           # Hyperparameter sweep config
-├── checkpoints/                   # Hierarchical checkpoint storage
 │   ├── convtasnet/
-│   │   └── ES/
-│   │       ├── latest/            # Symlink to most recent run
-│   │       └── run_{timestamp}/
-│   │           ├── best_model.pt
-│   │           └── config.yaml
-│   ├── spmamba/
-│   │   └── ES/...
-│   └── sepformer/...
-└── docs/                          # Detailed documentation
-    └── CONFIG_GUIDE.md
+│   ├── dprnn/
+│   ├── sepformer/
+│   └── spmamba/
+└── sweeps/                        # W&B sweep configs and experiment log
+    ├── EXPERIMENT_LOG.md
+    ├── 1-baselines-SB/
+    └── 3-hyperparam-opt/
 ```
 
 ### Adding New Models
 
 1. Create model file in `models/` directory
-2. Implement model class (typically inheriting from `nn.Module`)
+2. Implement model class inheriting from `nn.Module`
 3. Add model-specific parameters dataclass to `config.py` (e.g., `NewModelParams`)
-4. Add field to `ModelConfig` for the new params
-5. Register model with `@register_model("model_name")` decorator in `models/__init__.py`
-6. Create experiment YAML in `experiments/` with model config
-7. Add conditional logic in `train.py`'s `create_model()` if needed
+4. Add `Optional[NewModelParams]` field to `ModelConfig`
+5. Add entry to `MODELS` dict in `models/__init__.py`
+6. Add initialization logic to `ModelConfig.__post_init__`
+7. Create experiment YAML in `experiments/` with model config
 
-Example structure:
+Example:
 
 ```python
 # models/new_model.py
-from models import register_model
 import torch.nn as nn
 
-@register_model("newmodel")
 class NewModel(nn.Module):
     def __init__(self, param1, param2):
         super().__init__()
         # implementation
+
+# models/__init__.py
+from models.new_model import NewModel
+MODELS = {
+    "newmodel": NewModel,
+    # ... existing models
+}
 
 # config.py
 @dataclass
@@ -389,12 +336,11 @@ class ModelConfig:
 
 1. Create dataset file in `datasets/` directory
 2. Implement dataset class inheriting from `torch.utils.data.Dataset`
-3. Must accept `allowed_variants` parameter for filtering
-4. Add dataset-specific parameters dataclass to `config.py`
-5. Add field to `DataConfig` for the new params
-6. Register with `@register_dataset("dataset_name")` decorator
-7. Update `train.py`'s `create_dataloaders()` with conditional logic
-8. May need custom collate function if data structure differs
+3. Add dataset-specific parameters dataclass to `config.py`
+4. Add `Optional[NewDatasetParams]` field to `DataConfig`
+5. Add entry to `DATASETS` dict in `datasets/__init__.py`
+6. Update `train.py`'s dataloader creation with conditional logic
+7. Add custom collate function if data structure differs
 
 ### Working with Configuration
 
@@ -404,56 +350,63 @@ class ModelConfig:
 data:
   dataset_type: polsess
   batch_size: 4
-  task: ES
+  task: SB
   polsess:
     data_root: /path/to/dataset
 
 model:
-  model_type: convtasnet
-  convtasnet:
-    N: 256
-    B: 256
-    # ... other params
+  model_type: dprnn
+  dprnn:
+    N: 64
+    hidden_size: 128
+    num_layers: 6
 
 training:
-  num_epochs: 10
-  lr: 0.001
+  num_epochs: 80
+  lr: 0.00125
+  weight_decay: 2.1e-5
+  grad_clip_norm: 2.76
+  lr_factor: 0.863
+  lr_patience: 3
   use_amp: true
+  seed: 42
+  use_wandb: true
+  wandb_project: polsess-separation
   curriculum_learning:
-    - epoch: 0
-      variants: ["SER", "SR"]
-      lr: 0.001
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
     - epoch: 5
-      variants: null  # all variants
-      lr: 0.0005
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
+  validation_variants: ["SER", "SE"]
 ```
 
-**CLI Overrides:**
-CLI arguments override YAML values. Use kebab-case for nested params:
+**CLI Overrides** (only a subset of params are exposed as CLI args):
 
 ```bash
-python train.py --config baseline.yaml --lr 0.0001 --batch-size 8
+python train.py --config baseline.yaml --model-type spmamba --task SB --no-wandb --seed 123
 ```
 
 ### Dependencies
 
-Key dependencies (from `polsess_separation/requirements.txt`):
+Key dependencies (from `requirements.txt`):
 
-- `torch>=2.0.0`, `torchaudio>=2.0.0` - Core ML framework
-- `speechbrain>=1.0.0` - Speech processing toolkit (source of models)
-- `wandb>=0.16.0` - Experiment tracking
-- `pytest>=7.4.0` - Testing framework
-- `torchmetrics>=1.0.0` - Metrics (SI-SDR, PESQ, STOI)
-- `pyyaml>=6.0` - Config parsing
+- `torch>=2.0.0`, `torchaudio>=2.0.0` — Core ML framework
+- `speechbrain>=1.0.0` — Speech processing toolkit (source of models)
+- `wandb>=0.16.0` — Experiment tracking
+- `pytest>=7.4.0` — Testing framework
+- `torchmetrics>=1.0.0` — Metrics (SI-SDR, PESQ, STOI)
+- `pyyaml>=6.0` — Config parsing
+- `mamba-ssm` — Required for SPMamba (Linux + CUDA only)
 
 ### Environment Variables
 
-- `POLSESS_DATA_ROOT` - Path to PolSESS dataset (default hardcoded in config.py)
-- `TF_ENABLE_ONEDNN_OPTS=0` - Disable TensorFlow warnings (set in train.py)
+- `POLSESS_DATA_ROOT` — Path to PolSESS dataset (default hardcoded in `config.py`)
+- `TF_ENABLE_ONEDNN_OPTS=0` — Disable TensorFlow warnings (set in `train.py`)
 
 ### Dataset Structure Expected
-
-PolSESS dataset should follow this structure:
 
 ```
 PolSESS/
@@ -474,54 +427,47 @@ PolSESS/
 
 ### Common Pitfalls
 
-1. **NaN in SI-SDR:** Usually caused by AMP underflow. AMP patch should handle this automatically.
+1. **NaN in SI-SDR:** Usually caused by AMP underflow. AMP patch should handle this automatically. If it persists, disable AMP (`use_amp: false`).
 
-2. **Memory overflow:** Reduce batch size if training slows dramatically (~35s per batch indicates RAM overflow). Note: gradient accumulation has been removed, so physical batch size = effective batch size.
+2. **Memory overflow:** Reduce `batch_size` in YAML if training slows dramatically (~35s per batch indicates RAM overflow). Use `grad_accumulation_steps` to maintain effective batch size.
 
 3. **Config changes not applied:** Remember CLI args > YAML > env vars > defaults. Check precedence.
 
 4. **Missing variants:** If evaluation fails, ensure `allowed_variants` parameter is correctly set in dataset instantiation.
 
-5. **Registry errors:** Models/datasets must be imported in `__init__.py` to trigger decorator registration.
+5. **SPMamba on Windows:** `mamba-ssm` requires Linux + CUDA. Use WSL2 with CUDA toolkit 12.4+ on Windows.
 
-6. **SPMamba on Windows:** mamba-ssm requires Linux + CUDA. Use WSL2 with CUDA toolkit 12.4+ on Windows.
+6. **torch.compile checkpoint loading:** Old checkpoints from compiled models may have `_orig_mod.` prefix issues. `load_model_from_checkpoint()` in `utils/model_utils.py` handles this automatically.
 
-7. **torch.compile checkpoint loading:** Old checkpoints from compiled models may have `_orig_mod.` prefix issues. New trainer automatically handles this.
+7. **WSL2 CUDA setup:** Ensure CUDA toolkit is installed in WSL2, not just on Windows host. Check with `nvcc --version` inside WSL.
 
-8. **Checkpoint path changes:** New hierarchical structure uses `checkpoints/{model}/{task}/{run_name}_{timestamp}/model.pt`. Use `latest` symlink for convenience.
-
-9. **WSL2 CUDA setup:** Ensure CUDA toolkit is installed in WSL2, not just on Windows host. Check with `nvcc --version` inside WSL.
+8. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr(sweep_config, key)` — not dict access — for compatibility with `wandb.config` objects.
 
 ## Other Directories
 
 You should not concern yourself with what's there.
 
-- **Archive/**: Old coursework exercises (TEG) - largely inactive
-- **WUM/**: Coursework exercises - largely inactive
+- **Archive/**: Old coursework exercises (TEG) — largely inactive
+- **WUM/**: Coursework exercises — largely inactive
 - **speechbrain/**: Cloned SpeechBrain toolkit repository
 - **wandb/**: Local Weights & Biases run data
 
 ## Virtual Environment
 
-The repository uses a virtual environment at `.venv/`. Activate before running:
+The repository uses a virtual environment at `venv/`. Activate before running:
 
 ```bash
-# Windows
-.venv\Scripts\activate
-
-# Linux/Mac
-source .venv/bin/activate
+source venv/bin/activate
 ```
+
+single command for activating venv: `polsess_venv`
 
 ## Development Workflow
 
 1. Create/modify experiment YAML in `experiments/`
-2. Run training with config: `python train.py --config experiments/your_config.yaml`
+2. Run training: `python train.py --config experiments/your_config.yaml`
 3. Monitor on Weights & Biases dashboard
 4. Test models interactively: `jupyter notebook test_model_interactive.ipynb`
-   - Use dropdown widgets to select checkpoint (including `latest` symlink)
-   - Choose task, variant, and sample ID
-   - Get real-time SI-SDR metrics and audio playback
-5. Evaluate checkpoints: `python evaluate.py --checkpoint checkpoints/{model}/{task}/latest/model.pt`
+5. Evaluate checkpoints: `python evaluate.py --checkpoint checkpoints/{model}/{task}/{run_name}/model.pt`
 6. Run tests after code changes: `pytest`
-7. For new features: add tests in `tests/`, update README.md, CHANGELOG.md and docs in `docs/` if needed
+7. For new features: add tests in `tests/`, update `README.md` and `CLAUDE.md` if needed
