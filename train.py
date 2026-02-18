@@ -42,7 +42,7 @@ def main():
     if config.data.dataset_type == "polsess":
         data_root = config.data.polsess.data_root
     else:
-        raise ValueError(f"Dataset {config.data.dataset_type} not configured")
+        raise ValueError(f"Dataset {config.data.dataset_type} not configured for training. Only PolSESS is supported for training")
     
     # Determine variants
     train_variants = None

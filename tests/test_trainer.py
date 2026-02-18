@@ -86,6 +86,8 @@ def make_config(tmp_path, task="ES"):
     cfg.training.resume_from = None
     cfg.training.validation_variants = None
     cfg.training.curriculum_learning = None
+    cfg.training.save_all_checkpoints = False
+    cfg.training.grad_accumulation_steps = 1
 
     cfg.model = SimpleNamespace()
     cfg.model.model_type = "convtasnet"  # Required for checkpoint structure
@@ -450,3 +452,64 @@ def test_gradient_accumulation_disabled_by_default(tmp_path):
     # With 2 batches and accum_steps=1 (default), should step every batch
     assert step_count[0] == 2, f"Expected 2 optimizer steps, got {step_count[0]}"
 
+
+def test_training_summary_epoch_numbers_after_resume(tmp_path, capsys):
+    """Regression test: training summary must show correct epoch numbers after resume.
+
+    Before the fix, enumerate(val_sisdr_history, 1) always started at 1,
+    so a run resumed from epoch 5 would log 'Epoch 1, 2, ...' instead of 'Epoch 6, 7, ...'.
+    """
+    import logging
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.num_epochs = 3
+
+    train_dataset = SyntheticDataset(n_samples=4, time_steps=256)
+    val_dataset = SyntheticDataset(n_samples=2, time_steps=256)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+
+    model = DummyModel()
+
+    # Capture log output
+    log_messages = []
+
+    class ListHandler(logging.Handler):
+        def emit(self, record):
+            log_messages.append(record.getMessage())
+
+    logger = logging.getLogger("test_resume_epoch")
+    logger.setLevel(logging.DEBUG)
+    handler = ListHandler()
+    logger.addHandler(handler)
+
+    trainer = Trainer(
+        model, train_loader, val_loader, cfg, device="cpu", logger=logger
+    )
+
+    # Simulate resuming from epoch 5 (next epoch to run is 6)
+    trainer.current_epoch = 5
+
+    def mse_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        return loss, loss.item()
+
+    trainer.loss_fn = mse_loss_wrapper
+
+    trainer.train(num_epochs=3, save_dir=cfg.training.save_dir)
+
+    # Find the epoch summary lines
+    summary_lines = [m for m in log_messages if "Val SI-SDR" in m and "Epoch" in m]
+
+    assert len(summary_lines) == 3, f"Expected 3 summary lines, got: {summary_lines}"
+
+    # Epochs should be 6, 7, 8 — not 1, 2, 3
+    assert "Epoch 6:" in summary_lines[0], f"Expected 'Epoch 6:', got: {summary_lines[0]}"
+    assert "Epoch 7:" in summary_lines[1], f"Expected 'Epoch 7:', got: {summary_lines[1]}"
+    assert "Epoch 8:" in summary_lines[2], f"Expected 'Epoch 8:', got: {summary_lines[2]}"

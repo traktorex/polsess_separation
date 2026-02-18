@@ -294,8 +294,6 @@ class Trainer:
                 {"best_val_sisdr": val_sisdr}, step=self.current_epoch
             )
             self.wandb_logger.log_model(str(checkpoint_path))
-        else:
-            self.logger.info(f"Logged model artifact: {checkpoint_path}")
 
     def train_epoch(self) -> float:
         """Train for one epoch and return average SI-SDR."""
@@ -509,7 +507,8 @@ class Trainer:
             self.logger.info(f"Batch size: {self.train_loader.batch_size}")
             self.logger.info(f"Number of epochs: {num_epochs}")
             self.logger.info("\nValidation SI-SDR history:")
-            for idx, val_sisdr in enumerate(val_sisdr_history, 1):
+            start_epoch = final_epoch - num_epochs + 1
+            for idx, val_sisdr in enumerate(val_sisdr_history, start_epoch):
                 self.logger.info(f"  Epoch {idx}: Val SI-SDR = {val_sisdr:.2f} dB")
 
         except torch.cuda.OutOfMemoryError as e:

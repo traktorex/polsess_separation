@@ -122,11 +122,10 @@ def main():
     )
 
     # Run training
-    early_stopping = getattr(config.training, 'early_stopping_patience', None)
     trainer.train(
         num_epochs=config.training.num_epochs, 
         save_dir=config.training.save_dir,
-        early_stopping_patience=early_stopping
+        early_stopping_patience=config.training.early_stopping_patience,
     )
 
     # Log completion
