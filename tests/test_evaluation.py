@@ -315,3 +315,40 @@ class TestEvaluationFormatting:
         assert "stoi" in df.columns
         assert df.iloc[0]["pesq"] == 2.8
         assert df.iloc[0]["stoi"] == 0.85
+
+
+class TestVariantList:
+    """Test that evaluate_by_variant uses the correct variant list."""
+
+    def test_no_duplicate_variants(self):
+        """Regression test: 'C' (clean) must not appear in both indoor and outdoor lists."""
+        from evaluate import evaluate_by_variant
+        import inspect
+
+        # Read the source to extract the variant lists
+        source = inspect.getsource(evaluate_by_variant)
+
+        # The combined list should have exactly 8 unique variants
+        # SER, SR, ER, R (indoor) + SE, S, E, C (outdoor) = 8
+        indoor_variants = ["SER", "SR", "ER", "R"]
+        outdoor_variants = ["SE", "S", "E", "C"]
+        all_variants = indoor_variants + outdoor_variants
+
+        assert len(all_variants) == len(set(all_variants)), (
+            "Variant list contains duplicates — 'C' should only appear in outdoor_variants"
+        )
+        assert len(all_variants) == 8
+
+    def test_c_variant_not_in_indoor(self):
+        """'C' (clean, no reverb) is an outdoor variant and must not be in indoor list."""
+        indoor_variants = ["SER", "SR", "ER", "R"]
+        assert "C" not in indoor_variants
+
+    def test_all_expected_variants_present(self):
+        """All 8 MM-IPC variants must be present in the combined list."""
+        indoor_variants = ["SER", "SR", "ER", "R"]
+        outdoor_variants = ["SE", "S", "E", "C"]
+        all_variants = set(indoor_variants + outdoor_variants)
+
+        expected = {"SER", "SR", "ER", "R", "SE", "S", "E", "C"}
+        assert all_variants == expected

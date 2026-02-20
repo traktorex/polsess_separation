@@ -1,5 +1,10 @@
 """Evaluation script for PolSESS speech separation models (SI-SDR, PESQ, STOI)."""
 
+import warnings
+warnings.filterwarnings("ignore", message=".*torchaudio.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*pkg_resources.*", category=UserWarning)
+
+import logging
 import torch
 import argparse
 import pandas as pd
@@ -23,6 +28,11 @@ from models import get_model
 from config import Config, load_config_from_yaml
 from utils import apply_eps_patch, load_checkpoint_file, count_parameters
 
+logger = logging.getLogger("polsess")
+
+# PolSESS dataset sample rate
+SAMPLE_RATE = 8000
+
 
 def load_model_for_evaluation(
     checkpoint_path: str, config: Config = None, device: str = "cuda"
@@ -31,13 +41,13 @@ def load_model_for_evaluation(
 
     If checkpoint contains config, uses it. Otherwise uses provided config.
     """
-    print(f"Loading model from {checkpoint_path}...")
+    logger.info(f"Loading model from {checkpoint_path}...")
 
     checkpoint = load_checkpoint_file(checkpoint_path, device)
 
     # Try to get model config from checkpoint first
     if "config" in checkpoint:
-        print("Using model config from checkpoint")
+        logger.info("Using model config from checkpoint")
         ckpt_config = checkpoint["config"]
         model_type = ckpt_config.get("model", {}).get("model_type", "convtasnet")
         model_class = get_model(model_type)
@@ -51,7 +61,7 @@ def load_model_for_evaluation(
     else:
         if config is None:
             raise ValueError("No config in checkpoint and no config provided")
-        print("Using provided config")
+        logger.info("Using provided config")
         model_type = config.model.model_type
         model_class = get_model(model_type)
         model_params = getattr(config.model, model_type, None)
@@ -71,11 +81,11 @@ def load_model_for_evaluation(
     model_type_str = checkpoint.get("config", {}).get("model", {}).get(
         "model_type", model_type if config else "unknown"
     )
-    print(f"Model loaded: {model_type_str}")
-    print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
+    logger.info(f"Model loaded: {model_type_str}")
+    logger.info(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
     if "val_sisdr" in checkpoint:
-        print(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
-    print(f"  Parameters: {count_parameters(model) / 1e6:.2f}M")
+        logger.info(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
+    logger.info(f"  Parameters: {count_parameters(model) / 1e6:.2f}M")
 
     return model
 
@@ -99,9 +109,9 @@ def evaluate_model(
     pesq_metric = None
     stoi_metric = None
     if compute_pesq:
-        pesq_metric = PerceptualEvaluationSpeechQuality(8000, "nb").to(device)
+        pesq_metric = PerceptualEvaluationSpeechQuality(SAMPLE_RATE, "nb").to(device)
     if compute_stoi:
-        stoi_metric = ShortTimeObjectiveIntelligibility(8000).to(device)
+        stoi_metric = ShortTimeObjectiveIntelligibility(SAMPLE_RATE).to(device)
 
     si_sdr_scores = []
     pesq_scores = []
@@ -150,8 +160,8 @@ def evaluate_model(
                             pesq = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
                             if not torch.isnan(pesq) and not torch.isinf(pesq):
                                 pesq_scores.append(pesq.item())
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"PESQ computation failed for sample: {e}")
 
                 if stoi_metric:
                     stoi = stoi_metric(estimates, clean)
@@ -178,9 +188,10 @@ def evaluate_by_variant(
     compute_pesq: bool = True,
     compute_stoi: bool = True,
     specific_variant: str = None,
+    max_samples: int = None,
 ) -> dict:
     """Evaluate model on each MM-IPC variant separately."""
-    indoor_variants = ["SER", "SR", "ER", "R", "C"]
+    indoor_variants = ["SER", "SR", "ER", "R"]
     outdoor_variants = ["SE", "S", "E", "C"]
     all_variants = indoor_variants + outdoor_variants
 
@@ -191,26 +202,25 @@ def evaluate_by_variant(
     else:
         variants_to_test = all_variants
 
+    if config.data.dataset_type != "polsess":
+        raise ValueError(
+            f"Dataset {config.data.dataset_type} not supported for variant evaluation"
+        )
+
+    data_root = config.data.polsess.data_root
     results = {}
 
     for variant in variants_to_test:
-        print(f"\n{'='*60}")
-        print(f"Evaluating variant: {variant}")
-        print(f"{'='*60}")
-
-        # Get data_root
-        if config.data.dataset_type == "polsess":
-            data_root = config.data.polsess.data_root
-        else:
-            raise ValueError(
-                f"Dataset {config.data.dataset_type} not supported for variant evaluation"
-            )
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Evaluating variant: {variant}")
+        logger.info(f"{'='*60}")
 
         dataset = PolSESSDataset(
             data_root,
             subset="test",
             task=config.data.task,
             allowed_variants=[variant],
+            max_samples=max_samples,
         )
 
         dataloader = DataLoader(
@@ -233,13 +243,13 @@ def evaluate_by_variant(
 
         results[variant] = variant_results
 
-        print(f"\n{variant} Results:")
-        print(f"  SI-SDR: {variant_results['si_sdr']:.2f} dB")
+        logger.info(f"{variant} Results:")
+        logger.info(f"  SI-SDR: {variant_results['si_sdr']:.2f} dB")
         if "pesq" in variant_results:
-            print(f"  PESQ: {variant_results['pesq']:.2f}")
+            logger.info(f"  PESQ: {variant_results['pesq']:.2f}")
         if "stoi" in variant_results:
-            print(f"  STOI: {variant_results['stoi']:.3f}")
-        print(f"  Samples: {variant_results['num_samples']}")
+            logger.info(f"  STOI: {variant_results['stoi']:.3f}")
+        logger.info(f"  Samples: {variant_results['num_samples']}")
 
     return results
 
@@ -320,10 +330,10 @@ def main():
     parser.add_argument("--dataset", default="polsess", choices=["polsess", "librimix"])
     parser.add_argument("--data-root", help="Root directory of dataset")
     parser.add_argument("--task", choices=["ES", "EB", "SB"], help="Task type")
-    parser.add_argument("--variant", help="Specific MM-IPC variant to test")
-    parser.add_argument("--librimix-root", help="Path to Libri2Mix root")
+    parser.add_argument("--variant", help="Specific MM-IPC variant to test (polsess only)")
+    parser.add_argument("--librimix-root", help="Path to Libri2Mix root directory")
     parser.add_argument("--librimix-subset", default="test", choices=["test", "dev", "train-100"])
-    parser.add_argument("--max-samples", type=int, help="Limit number of samples")
+    parser.add_argument("--max-samples", type=int, help="Limit number of samples per variant")
     parser.add_argument("--batch-size", type=int, help="Batch size")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--no-pesq", action="store_true", help="Skip PESQ")
@@ -332,19 +342,23 @@ def main():
 
     args = parser.parse_args()
 
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     # Load config
     if args.config:
-        print(f"Loading config from: {args.config}")
+        logger.info(f"Loading config from: {args.config}")
         config = load_config_from_yaml(args.config)
     else:
         config = Config()
 
     # Apply CLI overrides
-    if args.data_root:
-        if args.dataset == "polsess":
-            config.data.polsess.data_root = args.data_root
-        elif args.dataset == "librimix":
-            pass  # Handle separately below
+    if args.data_root and args.dataset == "polsess":
+        config.data.polsess.data_root = args.data_root
     if args.task:
         config.data.task = args.task
     if args.batch_size:
@@ -358,9 +372,16 @@ def main():
     device = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
     model = load_model_for_evaluation(args.checkpoint, config, device)
 
-    # Determine evaluation mode
-    if args.variant or (args.dataset == "polsess" and not args.variant):
-        # PolSESS variant evaluation
+    # Auto-detect task from checkpoint config if not explicitly set
+    if not args.task and not args.config:
+        ckpt = load_checkpoint_file(args.checkpoint, device)
+        ckpt_task = ckpt.get("config", {}).get("data", {}).get("task")
+        if ckpt_task and ckpt_task != config.data.task:
+            logger.info(f"Auto-detected task from checkpoint: {ckpt_task}")
+            config.data.task = ckpt_task
+
+    # Run evaluation
+    if args.dataset == "polsess":
         results = evaluate_by_variant(
             model,
             config,
@@ -369,32 +390,31 @@ def main():
             compute_pesq=not args.no_pesq,
             compute_stoi=not args.no_stoi,
             specific_variant=args.variant,
+            max_samples=args.max_samples,
         )
     else:
-        # Single dataset evaluation (LibriMix or simple PolSESS)
-        if args.dataset == "librimix":
-            librimix_root = args.librimix_root or config.data.librimix.data_root
-            dataset = Libri2MixDataset(
-                librimix_root,
-                subset=args.librimix_subset,
-                max_samples=args.max_samples,
+        # LibriMix evaluation
+        # TODO: config.data.librimix doesn't exist — DataConfig has no librimix field.
+        # If --librimix-root is not provided, this will crash with AttributeError.
+        # Fix: add LibriMixParams to DataConfig (similar to PolSESSParams), or always
+        # require --librimix-root when --dataset librimix is used.
+        if not args.librimix_root:
+            raise ValueError(
+                "--librimix-root is required when --dataset librimix is used"
             )
-            collate_fn = libri2mix_collate_fn
-        else:
-            dataset = PolSESSDataset(
-                config.data.polsess.data_root,
-                subset="test",
-                task=config.data.task,
-                max_samples=args.max_samples,
-            )
-            collate_fn = polsess_collate_fn
+
+        dataset = Libri2MixDataset(
+            args.librimix_root,
+            subset=args.librimix_subset,
+            max_samples=args.max_samples,
+        )
 
         dataloader = DataLoader(
             dataset,
             batch_size=config.data.batch_size,
             shuffle=False,
             num_workers=config.data.num_workers,
-            collate_fn=collate_fn,
+            collate_fn=libri2mix_collate_fn,
         )
 
         result = evaluate_model(
@@ -407,7 +427,7 @@ def main():
             task=config.data.task,
         )
 
-        results = {args.dataset: result}
+        results = {"librimix": result}
 
     # Print and save results
     print_summary(results)
