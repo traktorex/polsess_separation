@@ -4,6 +4,7 @@ from .conv_tasnet import ConvTasNet
 from .sepformer import SepFormer
 from .dprnn import DPRNN
 from .spmamba import SPMamba
+from .tiger import TIGER
 
 # Model registry for easy switching between architectures
 MODELS = {
@@ -11,6 +12,7 @@ MODELS = {
     'sepformer': SepFormer,
     'dprnn': DPRNN,
     'spmamba': SPMamba,
+    'tiger': TIGER,
 }
 
 
@@ -25,4 +27,4 @@ def get_model(model_type: str):
     return MODELS[model_type]
 
 
-__all__ = ['ConvTasNet', 'SepFormer', 'DPRNN', 'SPMamba', 'MODELS', 'get_model']
+__all__ = ['ConvTasNet', 'SepFormer', 'DPRNN', 'SPMamba', 'TIGER', 'MODELS', 'get_model']

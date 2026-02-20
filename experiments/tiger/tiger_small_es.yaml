@@ -1,0 +1,68 @@
+# TIGER Small Configuration (B=4 FFI blocks) — ES Task (Enhance Solo speaker)
+# Based on: "TIGER: Time-frequency Interleaved Gain Extraction and Reconstruction
+# for Efficient Speech Separation" (ICLR 2025)
+# https://arxiv.org/abs/2410.01469
+#
+# Small variant: 4 FFI block iterations, ~0.70M parameters at 8kHz
+# STFT: 320-sample window (40ms) / 80-sample hop (10ms) at 8kHz
+# Paper config: in_channels=256, upsampling_depth=5, win=640 at 16kHz
+
+data:
+  dataset_type: polsess
+  batch_size: 4
+  num_workers: 4
+  prefetch_factor: 2
+  task: ES  # Single speaker enhancement
+  train_max_samples: null
+  val_max_samples: null
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
+
+model:
+  model_type: tiger
+  tiger:
+    out_channels: 128
+    in_channels: 256        # Paper value (not 512 which is the music-separation default)
+    num_blocks: 4           # Small: 4 FFI block iterations
+    upsampling_depth: 5     # Paper value
+    att_n_head: 4
+    att_hid_chan: 4
+    n_fft: 320              # 40ms window at 8kHz (paper uses 640 at 16kHz)
+    hop_length: 80          # 10ms hop at 8kHz
+    n_srcs: 1               # ES task: 1 output source
+    sample_rate: 8000
+
+training:
+  lr: 0.001
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+
+  lr_factor: 0.5
+  lr_patience: 10
+
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 1.0e-4
+
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  wandb_entity: null
+  wandb_run_name: "tiger_small_es"
+  log_file: null
+  log_level: "INFO"
+
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R"]
+    - epoch: 2
+      variants: ["R", "SR", "S"]
+    - epoch: 3
+      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      lr_scheduler: start

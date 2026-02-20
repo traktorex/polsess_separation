@@ -97,6 +97,27 @@ class SPMambaParams:
 
 
 @dataclass
+class TIGERParams:
+    """TIGER (Time-frequency Interleaved Gain Extraction and Reconstruction) parameters.
+
+    Paper: https://arxiv.org/abs/2410.01469 (ICLR 2025)
+    Small variant: num_blocks=4 (~0.82M params)
+    Large variant: num_blocks=8 (~0.82M params, more compute)
+    """
+
+    out_channels: int = 128       # Feature dimension N per sub-band
+    in_channels: int = 256        # Hidden dim in MSA U-Net (paper: 256, not 512)
+    num_blocks: int = 4           # FFI block iterations (4=small, 8=large)
+    upsampling_depth: int = 5     # MSA downsampling depth D (paper: 5)
+    att_n_head: int = 4           # F³A attention heads A
+    att_hid_chan: int = 4         # F³A hidden channel E per head
+    n_fft: int = 320              # STFT window size (320 → 40ms at 8kHz)
+    hop_length: int = 80          # STFT hop length (80 → 10ms at 8kHz)
+    n_srcs: int = 1               # 1=enhancement (ES/EB), 2=separation (SB)
+    sample_rate: int = 8000       # PolSESS sample rate
+
+
+@dataclass
 class DataConfig:
     """Common data configuration across all datasets."""
 
@@ -120,12 +141,13 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba, tiger
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    tiger: Optional[TIGERParams] = None
 
     def __post_init__(self):
         """Initialize model-specific params if not provided."""
@@ -137,6 +159,8 @@ class ModelConfig:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "tiger" and self.tiger is None:
+            self.tiger = TIGERParams()
 
 
 @dataclass
@@ -363,6 +387,9 @@ def load_config_from_yaml(yaml_path: str) -> Config:
     spmamba_dict = model_dict.pop("spmamba", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
 
+    tiger_dict = model_dict.pop("tiger", None)
+    tiger_params = TIGERParams(**tiger_dict) if tiger_dict else None
+
     data_config = DataConfig(**data_dict, polsess=polsess_params)
     model_config = ModelConfig(
         **model_dict,
@@ -370,6 +397,7 @@ def load_config_from_yaml(yaml_path: str) -> Config:
         sepformer=sepformer_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        tiger=tiger_params,
     )
     training_config = TrainingConfig(**training_dict)
 
@@ -396,7 +424,9 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba"]:
+        elif key == "tiger" and value is not None:
+            model_dict["tiger"] = value
+        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba", "tiger"]:
             model_dict[key] = value
 
     config_dict = {
