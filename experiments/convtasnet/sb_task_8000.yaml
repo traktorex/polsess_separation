@@ -3,7 +3,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 16
+  batch_size: 3
   task: SB 
   num_workers: 1
   train_max_samples: 8000  # Scaled up from 4000

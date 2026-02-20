@@ -7,10 +7,8 @@ data:
   num_workers: 1
   prefetch_factor: 2
   task: SB 
-  train_max_samples: 1000  # Proxy dataset
-  val_max_samples: 400    # Proxy validation
-  polsess:
-    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
+  train_max_samples: 2000  # Proxy dataset
+  val_max_samples: null
 
 model:
   model_type: dprnn

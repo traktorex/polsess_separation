@@ -4,7 +4,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 16
+  batch_size: 3
   num_workers: 1
   prefetch_factor: 2
   task: SB
