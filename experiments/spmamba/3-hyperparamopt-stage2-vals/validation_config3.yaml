@@ -1,0 +1,59 @@
+# SPMamba Stage 2 Validation — Config 3
+# Source: cerulean-sweep-2, best_val_sisdr=5.103
+# Sweep: spmamba-stage2-8k (2wdpj22v)
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2
+    n_fft: 256
+    stride: 64
+    window: "hann"
+    n_layers: 4
+    lstm_hidden_units: 192
+    attn_n_head: 2
+    attn_approx_qk_dim: 256
+    emb_dim: 16
+    emb_ks: 4
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-5
+    sample_rate: 8000
+
+training:
+  seed: 42
+  lr: 0.0004608327212682304
+  weight_decay: 2.7014884721188497e-06
+  grad_clip_norm: 4.784759293090902
+  lr_factor: 0.49739503955636344
+  lr_patience: 2
+  num_epochs: 80
+  use_amp: false
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
