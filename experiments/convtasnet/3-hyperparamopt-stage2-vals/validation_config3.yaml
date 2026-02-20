@@ -1,0 +1,56 @@
+# ConvTasNet Stage 2 Validation — Config 3
+# Source: quiet-sweep-8, best_val_sisdr=3.332
+# Sweep: convtasnet-stage2-8k (71wtfegp)
+
+data:
+  dataset_type: polsess
+  batch_size: 16
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: convtasnet
+  convtasnet:
+    N: 256
+    B: 256
+    H: 512
+    P: 3
+    X: 8
+    R: 4
+    C: 2
+    norm_type: gLN
+    kernel_size: 16
+    stride: 8
+    causal: false
+    mask_nonlinear: relu
+
+training:
+  seed: 42
+  lr: 0.0009732796256927992
+  weight_decay: 3.75531282340996e-06
+  grad_clip_norm: 5.743539089934647
+  lr_factor: 0.7031611021339876
+  lr_patience: 4
+  num_epochs: 80
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 4
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 10
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
