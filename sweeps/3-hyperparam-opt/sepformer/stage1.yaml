@@ -1,0 +1,56 @@
+# SepFormer 2-Stage Hyperparameter Optimization
+# Stage 1: Wide search on 2K samples
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10  # Transformers need time to warm up
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/sepformer/3-hyperparamopt/sepformer_2000.yaml
+  
+  num_epochs:
+    value: 50
+  
+  seed:
+    values: [42]
+  
+  early_stopping_patience:
+    value: 12
+  
+  # Wide search ranges (Stage 1)
+  # SepFormer paper uses lr=1.5e-4, but we search broadly
+  lr:
+    distribution: log_uniform_values
+    min: 5e-5    # Transformers often need lower LR
+    max: 3e-3
+  
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6    # Previous models showed low WD is optimal
+    max: 1e-4
+  
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5     # SepFormer baseline uses 5.0, search wider
+    max: 15.0
+  
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95
+    
+  lr_patience:
+    values: [1, 2, 3, 4]
+
+
+project: polsess-thesis-experiments
+name: sepformer-stage1-2k

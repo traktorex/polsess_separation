@@ -1,0 +1,55 @@
+# SepFormer Stage 1 Configuration (2000 samples)
+# 2-stage HPO: Quick exploration on small subset
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # SepFormer is memory-heavy (transformers)
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 2000
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.0
+    chunk_size: 250
+    hop_size: 125
+
+training:
+  lr: 0.00015
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 50
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 12
+
+  use_wandb: true
+  wandb_project: polsess-thesis-experiments
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
