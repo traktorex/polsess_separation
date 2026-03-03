@@ -69,7 +69,7 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
-## Current State (February 2026)
+## Current State (March 2026)
 
 ### Baseline Experiments Complete (SB Task):
 
@@ -93,9 +93,17 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 - Best HPs: LR=0.00125, WD=2.1e-5, grad_clip=2.76, lr_factor=0.863, lr_patience=3
 - Key finding: weight decay is the strongest predictor (correlation −0.27)
 
-**🔄 Phase 1B In Progress (ConvTasNet, SPMamba)** — 2-Stage HPO
-- Stage 1 (2K samples) complete for both models
-- Stage 2 (8K samples) sweeps currently running
+**✅ Phase 1B Complete (ConvTasNet)** — 2-Stage HPO
+- Stage 2 sweeps + 16K validation complete
+- Best: stilted-sweep-16 → **3.68 dB** (+0.73 dB vs baseline, +25%)
+
+**✅ Phase 1B Complete (SPMamba)** — 2-Stage HPO
+- Stage 2 sweeps + 16K validation complete (2 seeds per config)
+- Best: glowing-sweep-9 → **5.94 dB** (+0.38 dB vs baseline, +7%)
+
+**🔄 Phase 1B In Progress (SepFormer)** — 2-Stage HPO
+- Stage 1 (2K) uninformative — SepFormer overfits severely on small subsets
+- Stage 2 (8K) sweep currently running
 
 **📋 Phase 1C Planned** — Architecture Variants
 - Test larger SPMamba configurations (6 layers vs. current 4)

@@ -4,7 +4,7 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 
 **Key Feature**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + events), unlike synthetic-only datasets (LibriMix), leading to better generalization on real speech.
 
-## Current Performance (February 2026)
+## Current Performance (March 2026)
 
 **Baseline Experiments Complete** — SB Task (2-Speaker Separation):
 
@@ -25,7 +25,9 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 
 **Key insight**: Weight decay is the strongest predictor (correlation −0.27). Optimal range: 1e-6 to 5e-5.
 
-**ConvTasNet & SPMamba HPO**: Stage 2 sweeps currently running.
+**ConvTasNet HPO Complete**: Best config → **3.68 dB** (+25% vs baseline)  
+**SPMamba HPO Complete**: Best config → **5.94 dB** (+7% vs baseline)  
+**SepFormer HPO**: Stage 2 sweep running (Stage 1 uninformative — overfitting on 2K samples)
 
 See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md) for full experimental details.
 

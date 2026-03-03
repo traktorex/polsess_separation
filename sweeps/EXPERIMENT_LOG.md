@@ -275,7 +275,7 @@ From 330+ runs across all 3-stage sweeps:
 
 ### ConvTasNet & SPMamba HPO (2-Stage)
 
-**Status**: 🔄 In Progress  
+**Status**: Stage 2 sweeps ✅ Complete | Validation 🔄 Running  
 **Strategy**: Shortened **2-stage** approach (2K → 8K → 16K validation, skipping 4K stage)
 
 **Rationale**: DPRNN 3-Stage produced the best SI-SDR (4.67 dB) and highest average across validated configs. However, DPRNN Stage 1→3 showed that the intermediate Stage 2 (4K) mostly confirmed Stage 1 findings — the major search space refinements came from Stage 1 alone. Skipping Stage 2 halves the compute while preserving the core benefit of progressive refinement.
@@ -297,12 +297,12 @@ From 330+ runs across all 3-stage sweeps:
 | LR Factor | [0.3, 0.95] | [0.3, 0.90] |
 | LR Patience | {1,2,3,4,5,6} | {1,2,3,4} |
 
-#### Stage 2: Refined Search (8K samples) — 🔄 Running
+#### Stage 2: Refined Search (8K samples) — ✅ Complete
 
-| Model | Sweep | Config | Machine |
-|-------|-------|--------|---------|
-| ConvTasNet | [71wtfegp](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/71wtfegp) | [`stage2.yaml`](3-hyperparam-opt/convtasnet/stage2.yaml) | PC2 |
-| SPMamba | [2wdpj22v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/2wdpj22v) | [`stage2.yaml`](3-hyperparam-opt/spmamba/stage2.yaml) | PC1 |
+| Model | Sweep | Runs | Finished | Best SI-SDR | Config |
+|-------|-------|------|----------|-------------|--------|
+| ConvTasNet | [71wtfegp](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/71wtfegp) | 34 | 11 | **3.36 dB** | [`stage2.yaml`](3-hyperparam-opt/convtasnet/stage2.yaml) |
+| SPMamba | [2wdpj22v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/2wdpj22v) | 20 | 4 | **5.26 dB** | [`stage2.yaml`](3-hyperparam-opt/spmamba/stage2.yaml) |
 
 **Stage 2 Refined Ranges** (based on Stage 1 analysis):
 
@@ -313,6 +313,79 @@ From 330+ runs across all 3-stage sweeps:
 | Grad Clip | [1.5, 15.0] | [1.5, 10.0] |
 | LR Factor | [0.3, 0.95] | [0.3, 0.90] |
 | LR Patience | {2,3,4} | {1,2,3} |
+
+##### ConvTasNet Top 3
+
+| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
+|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
+| 🥇 | stilted-sweep-16 | **3.36 dB** | 4.57e-4 | 1.70e-6 | 4.49 | 0.327 | 3 | 48 |
+| 🥈 | major-sweep-31 | **3.34 dB** | 4.83e-4 | 1.59e-6 | 4.30 | 0.393 | 3 | 49 |
+| 🥉 | quiet-sweep-8 | **3.33 dB** | 9.73e-4 | 3.76e-6 | 5.74 | 0.703 | 4 | 62 |
+
+**Key Findings**: Top-5 tightly clustered (3.30–3.36 dB). LR sweet spot ~3.5e-4 to 6e-4. Weight decay essentially zero (1e-6 to 2e-5). Converged after run #16 — no improvement in last 18 runs.
+
+##### SPMamba Top 3
+
+| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
+|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
+| 🥇 | glowing-sweep-9 | **5.26 dB** | 7.05e-4 | 4.89e-6 | 8.45 | 0.718 | 2 | 42 |
+| 🥈 | autumn-sweep-10 | **5.12 dB** | 4.67e-4 | 1.12e-6 | 6.76 | 0.806 | 1 | 40 |
+| 🥉 | cerulean-sweep-2 | **5.10 dB** | 4.61e-4 | 2.70e-6 | 4.78 | 0.497 | 2 | 36 |
+
+**Key Findings**: Only 4/20 runs converged (rest killed by Hyperband). Top-3 ran 36–42 epochs before manual stop (no further improvement). LR sweet spot ~4.6e-4 to 7.0e-4. Weight decay tiny (1e-6 to 5e-6).
+
+#### Validation (16K samples, 3 seeds) — 🔄 Running
+
+**Configs**: [`convtasnet/3-hyperparamopt-stage2-vals/`](../experiments/convtasnet/3-hyperparamopt-stage2-vals/), [`spmamba/3-hyperparamopt-stage2-vals/`](../experiments/spmamba/3-hyperparamopt-stage2-vals/)
+
+**ConvTasNet validation runs:**
+
+| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
+|------|--------|-----------|-------------------|-----------------|-------|-------|
+| 1 | stilted-sweep-16 | 3.36 dB | ✅ Complete   | 3.68 dB | 3.62, 3.76, 3.66 dB | [hh5wilky](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hh5wilky), [54op6g20](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/54op6g20), [kostulsf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/kostulsf) |
+| 2 | major-sweep-31 | 3.34 dB | ✅ Complete | 3.62 dB | 3.64, 3.67, 3.56 dB | [j9rat6z8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/j9rat6z8), [xwhj84pc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xwhj84pc), [taegu8ol](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/taegu8ol) |
+| 3 | quiet-sweep-8 | 3.33 dB | ✅ Complete | N/A | 3.56, 3.77, -2.23 dB | [s4xd0je8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/s4xd0je8), [6sbxpwmb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6sbxpwmb), [boq4ms4o](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/boq4ms4o)  |
+
+**Notes**: 2 out of 3 rank 3 (quiet-sweep-8) validation runs encountered NaN divergence - an anomaly I've never seen before in ConvTasNet.
+
+**SPMamba validation runs:**
+
+| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
+|------|--------|-----------|-------------------|-----------------|-------|-------|
+| 1 | glowing-sweep-9 | 5.26 dB | ✅ Complete | 5.94 dB | 5.95, 5.94 dB | [6ieu8fjf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6ieu8fjf), [55vxrby8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/55vxrby8) |
+| 2 | autumn-sweep-10 | 5.12 dB | Running | 5.89 dB | 6.12, 5.66 dB | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
+| 3 | cerulean-sweep-2 | 5.10 dB | Running | 5.93 dB | 6.06, 5.80 dB | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
+
+**Notes**: Running 2 instead of 3 validation runs for SPMamba due to the runs taking 2 days each.
+
+---
+
+### SepFormer HPO (2-Stage)
+
+**Status**: Stage 1 ❌ Uninformative | Stage 2 🔄 Running  
+**Strategy**: Same 2-stage approach (2K → 8K), but Stage 1 failed to produce useful signal.
+
+#### Stage 1: Wide Search (2K samples) — ❌ Uninformative
+
+**Sweep**: [m627m0ur](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/m627m0ur) | **Config**: [`stage1.yaml`](3-hyperparam-opt/sepformer/stage1.yaml)
+
+| Metric | Value |
+|--------|-------|
+| Runs | 19 (7 finished, 10 killed, 2 running) |
+| Best SI-SDR | **-1.15 dB** (fanciful-sweep-11) |
+| All runs | Below 0 dB |
+
+**Root Cause**: SepFormer (~26M params) overfits on 2K samples. Training SI-SDR reaches 4–5 dB while validation stays at -1.1 to -3.8 dB — a 6+ dB generalization gap. The transformer's weak inductive bias (compared to CNNs/RNNs) perhaps makes it data-hungry; other models (DPRNN ~2.6M, ConvTasNet ~5M, SPMamba) achieved >0 dB on the same 2K subset.
+
+**Only useful signal**: LR should stay low (~5e-5 to 1.1e-4). Higher LR consistently made overfitting worse.
+
+**Baseline verification**: Confirmed with manual runs — baseline config on 2K achieved -1.21 dB, on 4K crossed 0 dB and reached ~1 dB before being stopped.
+
+#### Stage 2: Refined Search (8K samples) — 🔄 Running
+
+**Sweep**: [qqjh7cvm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/qqjh7cvm) | **Config**: [`stage2.yaml`](3-hyperparam-opt/sepformer/stage2.yaml)
+
+Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1).
 
 ## Notes
 
