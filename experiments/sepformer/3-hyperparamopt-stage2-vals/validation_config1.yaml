@@ -1,0 +1,57 @@
+# SepFormer Stage 2 Validation — Config 1 (Best)
+# Source: dutiful-sweep-9, best_val_sisdr=4.300
+# Sweep: sepformer-stage2-8k (qqjh7cvm)
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.0
+    chunk_size: 250
+    hop_size: 125
+
+training:
+  seed: 42
+  lr: 0.0002892302124331005
+  weight_decay: 5.571747498252304e-06
+  grad_clip_norm: 1.650149523461969
+  lr_factor: 0.6245882455753577
+  lr_patience: 2
+  num_epochs: 80
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 4
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 10
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
