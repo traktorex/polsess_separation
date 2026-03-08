@@ -27,7 +27,7 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 
 **ConvTasNet HPO Complete**: Best config → **3.68 dB** (+25% vs baseline)  
 **SPMamba HPO Complete**: Best config → **5.94 dB** (+7% vs baseline)  
-**SepFormer HPO**: Stage 2 sweep running (Stage 1 uninformative — overfitting on 2K samples)
+**SepFormer HPO**: Stage 2 sweep complete — best **4.30 dB** (validation pending)
 
 See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md) for full experimental details.
 

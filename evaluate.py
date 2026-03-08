@@ -24,70 +24,13 @@ from datasets import (
     polsess_collate_fn,
     libri2mix_collate_fn,
 )
-from models import get_model
 from config import Config, load_config_from_yaml
-from utils import apply_eps_patch, load_checkpoint_file, count_parameters
+from utils import apply_eps_patch, load_model_for_inference, count_parameters
 
 logger = logging.getLogger("polsess")
 
 # PolSESS dataset sample rate
 SAMPLE_RATE = 8000
-
-
-def load_model_for_evaluation(
-    checkpoint_path: str, config: Config = None, device: str = "cuda"
-) -> torch.nn.Module:
-    """Load trained model from checkpoint for evaluation.
-
-    If checkpoint contains config, uses it. Otherwise uses provided config.
-    """
-    logger.info(f"Loading model from {checkpoint_path}...")
-
-    checkpoint = load_checkpoint_file(checkpoint_path, device)
-
-    # Try to get model config from checkpoint first
-    if "config" in checkpoint:
-        logger.info("Using model config from checkpoint")
-        ckpt_config = checkpoint["config"]
-        model_type = ckpt_config.get("model", {}).get("model_type", "convtasnet")
-        model_class = get_model(model_type)
-
-        # Get model-specific parameters
-        model_params_dict = ckpt_config.get("model", {}).get(model_type, {})
-        if not model_params_dict:
-            model_params_dict = ckpt_config.get("model", {})  # Legacy flat config
-
-        model = model_class(**model_params_dict)
-    else:
-        if config is None:
-            raise ValueError("No config in checkpoint and no config provided")
-        logger.info("Using provided config")
-        model_type = config.model.model_type
-        model_class = get_model(model_type)
-        model_params = getattr(config.model, model_type, None)
-
-        if model_params is None:
-            raise ValueError(f"Config doesn't contain parameters for '{model_type}'")
-
-        model_params_dict = vars(model_params)
-        model = model_class(**model_params_dict)
-
-    # Load weights and prepare for eval
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model = model.to(device)
-    model.eval()
-
-    # Log info
-    model_type_str = checkpoint.get("config", {}).get("model", {}).get(
-        "model_type", model_type if config else "unknown"
-    )
-    logger.info(f"Model loaded: {model_type_str}")
-    logger.info(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
-    if "val_sisdr" in checkpoint:
-        logger.info(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
-    logger.info(f"  Parameters: {count_parameters(model) / 1e6:.2f}M")
-
-    return model
 
 
 def evaluate_model(
@@ -370,12 +313,20 @@ def main():
 
     # Load model
     device = args.device if torch.cuda.is_available() or args.device == "cpu" else "cpu"
-    model = load_model_for_evaluation(args.checkpoint, config, device)
+    model, checkpoint = load_model_for_inference(args.checkpoint, device)
+
+    # Log checkpoint info
+    ckpt_config = checkpoint.get("config", {})
+    model_type = ckpt_config.get("model", {}).get("model_type", "unknown")
+    logger.info(f"Model loaded: {model_type}")
+    logger.info(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
+    if "val_sisdr" in checkpoint:
+        logger.info(f"  Validation SI-SDR: {checkpoint['val_sisdr']:.2f} dB")
+    logger.info(f"  Parameters: {count_parameters(model) / 1e6:.2f}M")
 
     # Auto-detect task from checkpoint config if not explicitly set
     if not args.task and not args.config:
-        ckpt = load_checkpoint_file(args.checkpoint, device)
-        ckpt_task = ckpt.get("config", {}).get("data", {}).get("task")
+        ckpt_task = ckpt_config.get("data", {}).get("task")
         if ckpt_task and ckpt_task != config.data.task:
             logger.info(f"Auto-detected task from checkpoint: {ckpt_task}")
             config.data.task = ckpt_task

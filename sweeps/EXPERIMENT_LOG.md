@@ -362,7 +362,7 @@ From 330+ runs across all 3-stage sweeps:
 
 ### SepFormer HPO (2-Stage)
 
-**Status**: Stage 1 ❌ Uninformative | Stage 2 🔄 Running  
+**Status**: Stage 1 ❌ Uninformative | Stage 2 ✅ Complete | Validation 🔄 Pending  
 **Strategy**: Same 2-stage approach (2K → 8K), but Stage 1 failed to produce useful signal.
 
 #### Stage 1: Wide Search (2K samples) — ❌ Uninformative
@@ -381,11 +381,30 @@ From 330+ runs across all 3-stage sweeps:
 
 **Baseline verification**: Confirmed with manual runs — baseline config on 2K achieved -1.21 dB, on 4K crossed 0 dB and reached ~1 dB before being stopped.
 
-#### Stage 2: Refined Search (8K samples) — 🔄 Running
+#### Stage 2: Refined Search (8K samples) — ✅ Complete
 
 **Sweep**: [qqjh7cvm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/qqjh7cvm) | **Config**: [`stage2.yaml`](3-hyperparam-opt/sepformer/stage2.yaml)
 
-Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1).
+| Metric | Value |
+|--------|-------|
+| Runs | 41 (11 finished, 17 crashed, 7 killed, 3 running, 2 failed) |
+| Best SI-SDR | **4.30 dB** (dutiful-sweep-9) |
+
+Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K samples resolved the overfitting issue.
+
+##### Top 3
+
+| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
+|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
+| 🥇 | dutiful-sweep-9 | **4.30 dB** | 2.89e-4 | 5.57e-6 | 1.65 | 0.625 | 2 | 70 |
+| 🥈 | happy-sweep-19 | **4.10 dB** | 2.79e-4 | 7.02e-6 | 4.87 | 0.912 | 3 | 80 |
+| 🥉 | stoic-sweep-3 | **3.96 dB** | 2.00e-4 | 6.74e-5 | 4.69 | 0.459 | 4 | 80 |
+
+**Key Findings**: LR sweet spot ~2e-4 to 3e-4 (consistent with Stage 1 finding that low LR wins). ~73% of runs crashed or were killed — LR > 5e-4 generally leads to divergence. Weight decay tiny for top 2 (5-7e-6), higher for #3 (6.7e-5).
+
+#### Validation (16K samples, 3 seeds) — 🔄 Pending
+
+**Configs**: [`sepformer/3-hyperparamopt-stage2-vals/`](../experiments/sepformer/3-hyperparamopt-stage2-vals/)
 
 ## Notes
 

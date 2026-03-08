@@ -103,7 +103,8 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 
 **🔄 Phase 1B In Progress (SepFormer)** — 2-Stage HPO
 - Stage 1 (2K) uninformative — SepFormer overfits severely on small subsets
-- Stage 2 (8K) sweep currently running
+- Stage 2 (8K) sweep complete — best: dutiful-sweep-9 → **4.30 dB**
+- Validation (16K, 3 seeds) pending
 
 **📋 Phase 1C Planned** — Architecture Variants
 - Test larger SPMamba configurations (6 layers vs. current 4)

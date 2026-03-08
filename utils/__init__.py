@@ -14,6 +14,7 @@ from .model_utils import (
     unwrap_compiled_model,
     load_checkpoint_file,
     load_model_from_checkpoint,
+    load_model_for_inference,
     count_parameters,
     apply_torch_compile,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "unwrap_compiled_model",
     "load_checkpoint_file",
     "load_model_from_checkpoint",
+    "load_model_for_inference",
     "count_parameters",
     "dataclass_to_dict",
     "ensure_dir",
