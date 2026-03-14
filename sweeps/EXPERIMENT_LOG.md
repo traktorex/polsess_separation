@@ -406,6 +406,14 @@ Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K
 
 **Configs**: [`sepformer/3-hyperparamopt-stage2-vals/`](../experiments/sepformer/3-hyperparamopt-stage2-vals/)
 
+**Sepformer validation runs:**
+
+| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
+|------|--------|-----------|-------------------|-----------------|-------|-------|
+| 1 | dutiful-sweep-9 | 4.30 dB | Running | 4.66 dB | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
+| 2 | happy-sweep-19 | 4.10 dB | Running | N/A | 5.28, N/A, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
+| 3 | stoic-sweep-3 | 3.96 dB | Running | N/A | N/A, N/A, 4.02 dB | N/A, [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
+
 ## Notes
 
 - All experiments use curriculum learning with ["SER", "SE"] validation
