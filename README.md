@@ -2,7 +2,7 @@
 
 PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, SPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
 
-**Key Feature**: PolSESS includes realistic acoustic conditions (reverb + scene sounds + events), unlike synthetic-only datasets (LibriMix), leading to better generalization on real speech.
+**Key Feature**: PolSESS includes realistic acoustic conditions simulation (reverb + scene sounds + events), unlike other datasets (LibriMix), leading to better generalization on real speech.
 
 ## Current Performance (March 2026)
 

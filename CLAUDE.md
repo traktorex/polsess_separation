@@ -141,7 +141,7 @@ python train.py --config experiments/baseline.yaml --seed 123
 **Evaluation:**
 
 ```bash
-# Evaluate on all MM-IPC variants
+# Evaluate on all MM-IPC variants (PolSESS)
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 
 # Evaluate specific variant only
@@ -149,6 +149,14 @@ python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt -
 
 # Fast evaluation (skip PESQ and STOI)
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --no-pesq --no-stoi
+
+# Evaluate on Libri2Mix (both Libri2Mix-Clean and Libri2Mix-Noisy)
+python evaluate.py --checkpoint path/to/model.pt \
+  --dataset librimix --librimix-root /home/user/datasets/LibriMix/Libri2Mix --no-pesq --no-stoi
+
+# Evaluate on specific Libri2Mix variant
+python evaluate.py --checkpoint path/to/model.pt \
+  --dataset librimix --librimix-root /home/user/datasets/LibriMix/Libri2Mix --mix-type mix_clean
 
 # Save results to CSV
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --output results.csv
@@ -273,7 +281,7 @@ polsess_separation/
 ├── datasets/
 │   ├── __init__.py                # Dataset registry (dict-based, get_dataset)
 │   ├── polsess_dataset.py         # PolSESS with MM-IPC augmentation
-│   └── libri2mix_dataset.py       # Cross-dataset evaluation
+│   └── libri2mix_dataset.py       # Libri2Mix 2-speaker separation (mix_clean + mix_both)
 ├── training/
 │   └── trainer.py                 # Trainer with AMP, grad accumulation, checkpointing
 ├── utils/
@@ -417,6 +425,7 @@ Key dependencies (from `requirements.txt`):
 
 ### Dataset Structure Expected
 
+**PolSESS** (training + evaluation):
 ```
 PolSESS/
 ├── train/
@@ -432,6 +441,27 @@ PolSESS/
 │   └── ...
 └── test/
     └── corpus_PolSESS_C_in_test_final.csv
+```
+
+**Libri2Mix** (evaluation only — SI-SDR separation benchmark):
+```
+Libri2Mix/wav8k/min/test/
+├── mix_clean/    # Libri2Mix-Clean: s1 + s2
+├── mix_both/     # Libri2Mix-Noisy: s1 + s2 + WHAM noise
+├── s1/           # Speaker 1 target
+├── s2/           # Speaker 2 target
+└── noise/        # Noise component
+```
+Generated via `LibriMix/generate_librimix.sh` (test subset only, 3000 samples, 8kHz, min mode).
+
+**REAL-M** (evaluation only — real-world ASR-based WER benchmark, not yet integrated):
+```
+REAL-M-v0.1.0/
+├── audio_files_converted_8000Hz/   # 1436 real 2-speaker mixtures at 8kHz
+│   └── {session_id}/mixture_*.wav
+├── transcriptions/                 # Per-speaker text transcripts (CSV)
+│   └── {session_id}.csv            # columns: sentence1, sentence2, filename
+└── separations/                    # Pre-computed SepFormer separations
 ```
 
 ### Common Pitfalls

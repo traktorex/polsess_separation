@@ -353,8 +353,8 @@ From 330+ runs across all 3-stage sweeps:
 | Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
 |------|--------|-----------|-------------------|-----------------|-------|-------|
 | 1 | glowing-sweep-9 | 5.26 dB | ✅ Complete | 5.94 dB | 5.95, 5.94 dB | [6ieu8fjf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6ieu8fjf), [55vxrby8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/55vxrby8) |
-| 2 | autumn-sweep-10 | 5.12 dB | Running | 5.89 dB | 6.12, 5.66 dB | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
-| 3 | cerulean-sweep-2 | 5.10 dB | Running | 5.93 dB | 6.06, 5.80 dB | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
+| 2 | autumn-sweep-10 | 5.12 dB | ✅ Complete | 5.89 dB | 6.12, 5.66 dB | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
+| 3 | cerulean-sweep-2 | 5.10 dB | ✅ Complete | 5.93 dB | 6.06, 5.80 dB | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
 
 **Notes**: Running 2 instead of 3 validation runs for SPMamba due to the runs taking 2 days each.
 
@@ -410,9 +410,9 @@ Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K
 
 | Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
 |------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | dutiful-sweep-9 | 4.30 dB | Running | 4.66 dB | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
-| 2 | happy-sweep-19 | 4.10 dB | Running | N/A | 5.28, N/A, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
-| 3 | stoic-sweep-3 | 3.96 dB | Running | N/A | N/A, N/A, 4.02 dB | N/A, [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
+| 1 | dutiful-sweep-9 | 4.30 dB | Complete | 4.66 dB | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
+| 2 | happy-sweep-19 | 4.10 dB | Complete | 5.03 dB | 5.28, 4.84, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
+| 3 | stoic-sweep-3 | 3.96 dB | Running | N/A | N/A, N/A, 4.02 dB | [73gkwwg4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/73gkwwg4), [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
 
 ## Notes
 
