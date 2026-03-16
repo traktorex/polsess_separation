@@ -25,9 +25,23 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 
 **Key insight**: Weight decay is the strongest predictor (correlation −0.27). Optimal range: 1e-6 to 5e-5.
 
-**ConvTasNet HPO Complete**: Best config → **3.68 dB** (+25% vs baseline)  
-**SPMamba HPO Complete**: Best config → **5.94 dB** (+7% vs baseline)  
+**ConvTasNet HPO Complete**: Best config → **3.68 dB** (+25% vs baseline)
+**SPMamba HPO Complete**: Best config → **5.94 dB** (+7% vs baseline)
 **SepFormer HPO**: Stage 2 sweep complete — best **4.30 dB** (validation pending)
+
+**Cross-dataset evaluation (SPMamba best checkpoint, Libri2Mix test set):**
+
+| Variant | SI-SDR (dB) |
+|---------|-------------|
+| Libri2Mix-Clean | 12.22 |
+| Libri2Mix-Noisy | 7.89 |
+
+**ASR evaluation (SPMamba, separation → Whisper transcription):**
+
+| Dataset | Whisper model | WER (%) |
+|---------|---------------|---------|
+| LibriSpeechMixASR | large | 18.80 |
+| REAL-M | large | 63.31 |
 
 See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md) for full experimental details.
 
@@ -66,6 +80,12 @@ polsess_separation/
 │   ├── model_utils.py        # Parameter counting, checkpointing
 │   ├── wandb_logger.py       # Experiment tracking
 │   └── logger.py             # Logging setup
+│
+├── asr/                       # ASR evaluation (WER/CER via Whisper)
+│   ├── evaluate_asr.py       # Unified evaluation (separation/mixture/baseline)
+│   ├── dataset.py            # LibriSpeechMixDataset + RealMDataset
+│   ├── metrics.py            # WER/CER via jiwer
+│   └── transcribe.py         # WhisperTranscriber wrapper
 │
 ├── config.py                  # Configuration dataclasses
 ├── train.py                   # Training entry point
@@ -140,23 +160,35 @@ wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1.yaml
 wandb agent <sweep_id>
 ```
 
-### Evaluation
+### Evaluation (SI-SDR)
 
 ```bash
-# Evaluate on all MM-IPC variants
+# Evaluate on all MM-IPC variants (PolSESS)
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 
-# Evaluate on specific variant only
-python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --variant SER
-
-# Fast evaluation (skip PESQ and STOI)
-python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --no-pesq --no-stoi
-
-# Save results to CSV
-python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --output results.csv
+# Evaluate on Libri2Mix
+python evaluate.py --checkpoint path/to/model.pt \
+    --dataset librimix --librimix-root /home/user/datasets/LibriMix/Libri2Mix --no-pesq --no-stoi
 
 # See all options
 python evaluate.py --help
+```
+
+### ASR Evaluation (WER/CER)
+
+```bash
+# Evaluate separation as ASR preprocessing on REAL-M
+python asr/evaluate_asr.py --checkpoint path/to/model.pt \
+    --dataset realm --mode separation --whisper-model large
+
+# Mixture baseline (no separation)
+python asr/evaluate_asr.py --dataset realm --mode mixture
+
+# Clean source baseline (LibriSpeech only)
+python asr/evaluate_asr.py --dataset librispeech --mode baseline
+
+# See all options
+python asr/evaluate_asr.py --help
 ```
 
 ### Testing

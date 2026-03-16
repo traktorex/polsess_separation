@@ -110,9 +110,10 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 - Test larger SPMamba configurations (6 layers vs. current 4)
 - Evaluate performance vs. model size trade-offs
 
-**⏳ Phase 2 Pending** — ASR Integration
-- Apply best separation model to CLARIN corpus
-- Measure WER/CER improvements for downstream ASR
+**🔄 Phase 2 In Progress** — ASR Integration
+- Evaluate separation as ASR preprocessing via Whisper WER/CER
+- Two evaluation datasets: LibriSpeechMixASR (synthetic) and REAL-M (real-world)
+- SPMamba results: Libri2Mix WER=18.80%, REAL-M WER=63.31% (Whisper large)
 
 ### Key Commands
 
@@ -169,6 +170,24 @@ pytest
 pytest --cov=. --cov-report=html
 pytest tests/test_model.py
 pytest -v
+```
+
+**ASR Evaluation:**
+
+```bash
+# Evaluate separation model on REAL-M (WER/CER)
+python asr/evaluate_asr.py --checkpoint checkpoints/spmamba/SB/.../best.pt \
+    --dataset realm --mode separation --whisper-model large
+
+# Mixture baseline (no separation)
+python asr/evaluate_asr.py --dataset realm --mode mixture
+
+# Clean source baseline on LibriSpeech
+python asr/evaluate_asr.py --dataset librispeech --mode baseline
+
+# Custom Whisper model and device
+python asr/evaluate_asr.py --checkpoint path/to/model.pt \
+    --dataset librispeech --mode separation --whisper-model base.en --whisper-device cuda
 ```
 
 **Interactive Model Testing:**
@@ -271,6 +290,13 @@ polsess_separation/
 ├── train_sweep.py                 # Weights & Biases sweep entry point
 ├── evaluate.py                    # Evaluation with per-variant metrics
 ├── test_model_interactive.ipynb   # Interactive model testing with dropdowns
+├── asr/
+│   ├── __init__.py                # Public API
+│   ├── dataset.py                 # LibriSpeechMixDataset + RealMDataset
+│   ├── evaluate_asr.py            # Unified ASR evaluation (separation/mixture/baseline)
+│   ├── metrics.py                 # WER/CER via jiwer (micro-averaged)
+│   ├── transcribe.py              # WhisperTranscriber wrapper
+│   └── archive/                   # One-time data prep scripts (already run)
 ├── models/
 │   ├── __init__.py                # Model registry (dict-based, get_model)
 │   ├── factory.py                 # Config-driven model instantiation
@@ -368,8 +394,6 @@ data:
   dataset_type: polsess
   batch_size: 4
   task: SB
-  polsess:
-    data_root: /path/to/dataset
 
 model:
   model_type: dprnn
@@ -416,11 +440,15 @@ Key dependencies (from `requirements.txt`):
 - `pytest>=7.4.0` — Testing framework
 - `torchmetrics>=1.0.0` — Metrics (SI-SDR, PESQ, STOI)
 - `pyyaml>=6.0` — Config parsing
+- `jiwer` — WER/CER computation (ASR evaluation)
+- `openai-whisper` — ASR transcription (ASR evaluation)
 - `mamba-ssm` — Required for SPMamba (Linux + CUDA only)
 
 ### Environment Variables
 
 - `POLSESS_DATA_ROOT` — Path to PolSESS dataset (default hardcoded in `config.py`)
+- `REALM_DATA_ROOT` — Path to REAL-M dataset (default: `~/datasets/REAL-M-v0.1.0/`)
+- `LIBRIMIX_ASR_ROOT` — Path to LibriSpeechMixASR dataset (default: `~/datasets/LibriSpeechMixASR/`)
 - `TF_ENABLE_ONEDNN_OPTS=0` — Disable TensorFlow warnings (set in `train.py`)
 
 ### Dataset Structure Expected
@@ -454,13 +482,22 @@ Libri2Mix/wav8k/min/test/
 ```
 Generated via `LibriMix/generate_librimix.sh` (test subset only, 3000 samples, 8kHz, min mode).
 
-**REAL-M** (evaluation only — real-world ASR-based WER benchmark, not yet integrated):
+**LibriSpeechMixASR** (ASR evaluation — synthetic 2-speaker mixes with transcriptions):
+```
+LibriSpeechMixASR/
+├── {split}/                        # dev, test
+│   ├── mix/                        # 2-speaker mixtures at 16kHz
+│   ├── s1/, s2/                    # Clean source audio
+│   └── metadata.csv                # sample_id, transcript1, transcript2, s1_path, s2_path, mix_path
+```
+
+**REAL-M** (ASR evaluation — 1,436 real-world 2-speaker mixtures):
 ```
 REAL-M-v0.1.0/
-├── audio_files_converted_8000Hz/   # 1436 real 2-speaker mixtures at 8kHz
+├── audio_files_converted_8000Hz/   # Real 2-speaker mixtures at 8kHz
 │   └── {session_id}/mixture_*.wav
 ├── transcriptions/                 # Per-speaker text transcripts (CSV)
-│   └── {session_id}.csv            # columns: sentence1, sentence2, filename
+│   └── {session_id}.csv            # Two CSV formats (early vs newer collections)
 └── separations/                    # Pre-computed SepFormer separations
 ```
 
@@ -482,24 +519,14 @@ REAL-M-v0.1.0/
 
 8. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr(sweep_config, key)` — not dict access — for compatibility with `wandb.config` objects.
 
-## Other Directories
-
-You should not concern yourself with what's there.
-
-- **Archive/**: Old coursework exercises (TEG) — largely inactive
-- **WUM/**: Coursework exercises — largely inactive
-- **speechbrain/**: Cloned SpeechBrain toolkit repository
-- **wandb/**: Local Weights & Biases run data
 
 ## Virtual Environment
 
 The repository uses a virtual environment at `venv/`. Activate before running:
 
 ```bash
-source venv/bin/activate
+polsess_venv
 ```
-
-single command for activating venv: `polsess_venv`
 
 ## Development Workflow
 
