@@ -276,6 +276,8 @@ def main():
     parser.add_argument("--variant", help="Specific MM-IPC variant to test (polsess only)")
     parser.add_argument("--librimix-root", help="Path to Libri2Mix root directory")
     parser.add_argument("--librimix-subset", default="test", choices=["test", "dev", "train-100"])
+    parser.add_argument("--mix-type", choices=["mix_clean", "mix_both"],
+                        help="Libri2Mix variant (default: evaluate both)")
     parser.add_argument("--max-samples", type=int, help="Limit number of samples per variant")
     parser.add_argument("--batch-size", type=int, help="Batch size")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
@@ -344,41 +346,53 @@ def main():
             max_samples=args.max_samples,
         )
     else:
-        # LibriMix evaluation
-        # TODO: config.data.librimix doesn't exist — DataConfig has no librimix field.
-        # If --librimix-root is not provided, this will crash with AttributeError.
-        # Fix: add LibriMixParams to DataConfig (similar to PolSESSParams), or always
-        # require --librimix-root when --dataset librimix is used.
+        # LibriMix evaluation (2-speaker separation)
         if not args.librimix_root:
             raise ValueError(
                 "--librimix-root is required when --dataset librimix is used"
             )
 
-        dataset = Libri2MixDataset(
-            args.librimix_root,
-            subset=args.librimix_subset,
-            max_samples=args.max_samples,
-        )
+        # Libri2Mix is always 2-speaker separation
+        config.data.task = "SB"
+        config.data.batch_size = 1
 
-        dataloader = DataLoader(
-            dataset,
-            batch_size=config.data.batch_size,
-            shuffle=False,
-            num_workers=config.data.num_workers,
-            collate_fn=libri2mix_collate_fn,
-        )
+        # Evaluate specified mix_type, or both if not specified
+        mix_types = [args.mix_type] if args.mix_type else ["mix_clean", "mix_both"]
+        results = {}
 
-        result = evaluate_model(
-            model,
-            dataloader,
-            device,
-            compute_pesq=not args.no_pesq,
-            compute_stoi=not args.no_stoi,
-            use_amp=False,
-            task=config.data.task,
-        )
+        for mix_type in mix_types:
+            variant_name = "Libri2Mix-Clean" if mix_type == "mix_clean" else "Libri2Mix-Noisy"
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Evaluating: {variant_name}")
+            logger.info(f"{'='*60}")
 
-        results = {"librimix": result}
+            dataset = Libri2MixDataset(
+                args.librimix_root,
+                subset=args.librimix_subset,
+                mix_type=mix_type,
+                max_samples=args.max_samples,
+            )
+
+            dataloader = DataLoader(
+                dataset,
+                batch_size=config.data.batch_size,
+                shuffle=False,
+                num_workers=config.data.num_workers,
+                collate_fn=libri2mix_collate_fn,
+            )
+
+            result = evaluate_model(
+                model,
+                dataloader,
+                device,
+                compute_pesq=not args.no_pesq,
+                compute_stoi=not args.no_stoi,
+                use_amp=False,
+                task="SB",
+            )
+
+            results[variant_name] = result
+            logger.info(f"{variant_name} SI-SDR: {result['si_sdr']:.2f} dB")
 
     # Print and save results
     print_summary(results)

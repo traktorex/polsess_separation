@@ -4,7 +4,8 @@ import pytest
 import torch
 from pathlib import Path
 from unittest.mock import Mock, patch
-from evaluate import load_model_for_evaluation, print_summary, save_results_csv
+from evaluate import print_summary, save_results_csv
+from utils.model_utils import load_model_for_inference
 
 
 class TestEvaluationLoading:
@@ -51,14 +52,13 @@ class TestEvaluationLoading:
         )
         
         # Test loading
-        loaded_model = load_model_for_evaluation(
-            str(checkpoint_path), config=None, device="cpu"
+        loaded_model, _ = load_model_for_inference(
+            str(checkpoint_path), device="cpu"
         )
-        
+
         assert loaded_model is not None
         assert not loaded_model.training  # Should be in eval mode
         assert loaded_model.N == 64
-        # Note: B is not exposed as attribute
 
     def test_load_model_for_evaluation_without_config_raises_error(self, tmp_path):
         """Test loading fails gracefully without config."""
@@ -75,9 +75,9 @@ class TestEvaluationLoading:
         )
         
         # Should raise error when no config provided
-        with pytest.raises(ValueError, match="No config in checkpoint"):
-            load_model_for_evaluation(
-                str(checkpoint_path), config=None, device="cpu"
+        with pytest.raises(ValueError, match="does not contain a config"):
+            load_model_for_inference(
+                str(checkpoint_path), device="cpu"
             )
 
     def test_load_model_sets_eval_mode(self, tmp_path):
@@ -114,10 +114,10 @@ class TestEvaluationLoading:
             checkpoint_path,
         )
         
-        loaded_model = load_model_for_evaluation(
-            str(checkpoint_path), config=None, device="cpu"
+        loaded_model, _ = load_model_for_inference(
+            str(checkpoint_path), device="cpu"
         )
-        
+
         assert not loaded_model.training
 
     # NOTE: This test is commented out as it creates an artificial scenario where
@@ -155,8 +155,8 @@ class TestEvaluationLoading:
     def test_load_model_nonexistent_file_raises_error(self):
         """Test loading from nonexistent file raises error."""
         with pytest.raises(FileNotFoundError):
-            load_model_for_evaluation(
-                "/nonexistent/path.pt", config=None, device="cpu"
+            load_model_for_inference(
+                "/nonexistent/path.pt", device="cpu"
             )
 
 
