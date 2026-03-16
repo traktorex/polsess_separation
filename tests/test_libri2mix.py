@@ -1,7 +1,7 @@
 """Tests for Libri2Mix dataset loader.
 
 LibriMix is used for cross-dataset evaluation to test model generalization.
-Tests validate the mix_single variant (1 speaker + noise) for ES task.
+Tests validate 2-speaker separation (SB task) with mix_clean and mix_both variants.
 """
 
 import pytest
@@ -147,30 +147,30 @@ class TestLibri2MixCollateFunction:
 
     def test_libri2mix_collate_padding(self):
         """Test that collate function pads sequences to max length."""
-        # Create batch with different lengths
+        # Create batch with different lengths — clean is [2, T] (2 speakers)
         batch = [
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "file1.wav"},
-            {"mix": torch.randn(10000), "clean": torch.randn(10000), "filename": "file2.wav"},
-            {"mix": torch.randn(9000), "clean": torch.randn(9000), "filename": "file3.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "file1.wav"},
+            {"mix": torch.randn(10000), "clean": torch.randn(2, 10000), "filename": "file2.wav"},
+            {"mix": torch.randn(9000), "clean": torch.randn(2, 9000), "filename": "file3.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         # Check that all sequences padded to max length (10000)
         assert result["mix"].shape == (3, 10000)
-        assert result["clean"].shape == (3, 10000)
+        assert result["clean"].shape == (3, 2, 10000)
         assert len(result["lengths"]) == 3
         assert len(result["filenames"]) == 3
 
     def test_libri2mix_collate_lengths_tracking(self):
         """Test that collate function tracks original lengths."""
         batch = [
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "file1.wav"},
-            {"mix": torch.randn(12000), "clean": torch.randn(12000), "filename": "file2.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "file1.wav"},
+            {"mix": torch.randn(12000), "clean": torch.randn(2, 12000), "filename": "file2.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         # Verify lengths are tracked correctly
         assert result["lengths"][0] == 8000
         assert result["lengths"][1] == 12000
@@ -178,43 +178,44 @@ class TestLibri2MixCollateFunction:
     def test_libri2mix_collate_preserves_filenames(self):
         """Test that collate function preserves filenames."""
         batch = [
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "test1.wav"},
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "test2.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "test1.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "test2.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         assert result["filenames"] == ["test1.wav", "test2.wav"]
 
     def test_libri2mix_collate_batch_stacking(self):
         """Test that collate function properly stacks batch."""
         batch = [
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "file1.wav"},
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "file2.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "file1.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "file2.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         # Verify proper batching
         assert isinstance(result["mix"], torch.Tensor)
         assert isinstance(result["clean"], torch.Tensor)
         assert result["mix"].dim() == 2  # [B, T]
-        assert result["clean"].dim() == 2  # [B, T]
+        assert result["clean"].dim() == 3  # [B, 2, T]
         assert result["mix"].shape[0] == 2  # Batch size
 
     def test_libri2mix_collate_zero_padding(self):
         """Test that padding uses zeros."""
         batch = [
-            {"mix": torch.ones(5000), "clean": torch.ones(5000), "filename": "file1.wav"},
-            {"mix": torch.ones(8000), "clean": torch.ones(8000), "filename": "file2.wav"},
+            {"mix": torch.ones(5000), "clean": torch.ones(2, 5000), "filename": "file1.wav"},
+            {"mix": torch.ones(8000), "clean": torch.ones(2, 8000), "filename": "file2.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         # First sample should have zeros in padded region
-        # Check last 3000 samples (padded region)
         padded_region = result["mix"][0, 5000:]
-        assert torch.all(padded_region == 0), "Padded region should be zeros"
+        assert torch.all(padded_region == 0), "Mix padded region should be zeros"
+        padded_region_clean = result["clean"][0, :, 5000:]
+        assert torch.all(padded_region_clean == 0), "Clean padded region should be zeros"
 
 
 class TestLibri2MixCrossDatasetCompatibility:
@@ -224,25 +225,25 @@ class TestLibri2MixCrossDatasetCompatibility:
         """Test that Libri2Mix returns same interface as PolSESS dataset."""
         # Both should return dict with "mix" and "clean" keys
         batch = [
-            {"mix": torch.randn(8000), "clean": torch.randn(8000), "filename": "file.wav"},
+            {"mix": torch.randn(8000), "clean": torch.randn(2, 8000), "filename": "file.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
+
         # Same keys as PolSESS collate output
-        required_keys = {"mix", "clean"} 
+        required_keys = {"mix", "clean"}
         assert required_keys.issubset(set(result.keys()))
 
     def test_libri2mix_tensor_format_compatibility(self):
         """Test that tensors are in compatible format for models."""
         batch = [
-            {"mix": torch.randn(16000), "clean": torch.randn(16000), "filename": "file.wav"},
+            {"mix": torch.randn(16000), "clean": torch.randn(2, 16000), "filename": "file.wav"},
         ]
-        
+
         result = libri2mix_collate_fn(batch)
-        
-        # Should be 2D [B, T] format like PolSESS
+
+        # mix: [B, T], clean: [B, 2, T]
         assert result["mix"].dim() == 2
-        assert result["clean"].dim() == 2
+        assert result["clean"].dim() == 3
         assert result["mix"].shape[0] == 1  # Batch dimension
-        assert result["clean"].shape[0] == 1
+        assert result["clean"].shape == (1, 2, 16000)

@@ -1,7 +1,11 @@
 """Libri2Mix dataset loader for cross-dataset evaluation.
 
-Supports Libri2Mix mix_single variant (1 speaker + noise) for ES task evaluation.
-Compatible with PolSESS-trained models.
+Supports Libri2Mix for 2-speaker separation (SB task) evaluation.
+Two variants available:
+  - Libri2Mix-Clean (mix_clean): s1 + s2, no noise
+  - Libri2Mix-Noisy (mix_both): s1 + s2 + WHAM noise
+
+Compatible with PolSESS-trained separation models.
 """
 
 import logging
@@ -15,30 +19,29 @@ logger = logging.getLogger("polsess")
 
 
 class Libri2MixDataset(Dataset):
-    """Libri2Mix dataset for speech enhancement evaluation.
-
-    Loads mix_single variant: 1 speaker + noise mixtures.
-    Returns same interface as PolSESSDataset for compatibility.
+    """Libri2Mix dataset for 2-speaker separation evaluation.
 
     Args:
-        data_root: Path to Libri2Mix root (e.g., "C:/datasety/LibriMix/generated/Libri2Mix")
+        data_root: Path to Libri2Mix root (contains wav8k/, wav16k/)
         subset: Dataset split - "test", "dev", or "train-100"
         sample_rate: Target sample rate (8000 or 16000)
         mode: "min" or "max" (utterance length mode)
-        max_samples: Limit number of samples (None = all samples)
+        mix_type: "mix_clean" (Libri2Mix-Clean) or "mix_both" (Libri2Mix-Noisy)
+        max_samples: Limit number of samples (None = all)
 
     Expected directory structure:
         data_root/wav{sample_rate}k/{mode}/{subset}/
-            mix_single/  - Mixture files (speech + noise)
-            s1/          - Clean speech target
-            noise/       - Noise component (not used)
-            s2/          - Second speaker (not used for mix_single)
+            mix_clean/  - Clean mixture (s1 + s2)
+            mix_both/   - Noisy mixture (s1 + s2 + noise)
+            s1/         - Speaker 1 target
+            s2/         - Speaker 2 target
+            noise/      - Noise component
 
     Returns:
         Dictionary with keys:
             - "mix": Mixed audio tensor [T]
-            - "clean": Clean speech tensor [T]
-            - "filename": Audio filename (for tracking)
+            - "clean": Stacked speaker targets [2, T]
+            - "filename": Audio filename
     """
 
     def __init__(
@@ -47,102 +50,76 @@ class Libri2MixDataset(Dataset):
         subset: Literal["test", "dev", "train-100"] = "test",
         sample_rate: int = 8000,
         mode: Literal["min", "max"] = "min",
+        mix_type: Literal["mix_clean", "mix_both"] = "mix_clean",
         max_samples: int = None,
     ):
         self.data_root = Path(data_root)
         self.subset = subset
         self.sample_rate = sample_rate
         self.mode = mode
+        self.mix_type = mix_type
         self.max_samples = max_samples
 
-        # Construct paths
         sr_str = f"wav{sample_rate // 1000}k"
         self.base_path = self.data_root / sr_str / mode / subset
 
-        self.mix_dir = self.base_path / "mix_single"
-        self.clean_dir = self.base_path / "s1"
+        self.mix_dir = self.base_path / mix_type
+        self.s1_dir = self.base_path / "s1"
+        self.s2_dir = self.base_path / "s2"
 
-        # Verify directories exist
-        if not self.mix_dir.exists():
-            raise FileNotFoundError(
-                f"Mix directory not found: {self.mix_dir}\n"
-                f"Expected structure: {data_root}/wav{sample_rate//1000}k/{mode}/{subset}/mix_single/"
-            )
-        if not self.clean_dir.exists():
-            raise FileNotFoundError(
-                f"Clean directory not found: {self.clean_dir}\n"
-                f"Expected structure: {data_root}/wav{sample_rate//1000}k/{mode}/{subset}/s1/"
-            )
+        for name, path in [("Mix", self.mix_dir), ("S1", self.s1_dir), ("S2", self.s2_dir)]:
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"{name} directory not found: {path}\n"
+                    f"Expected: {data_root}/{sr_str}/{mode}/{subset}/{path.name}/"
+                )
 
-        # Get list of audio files
         self.mix_files = sorted(list(self.mix_dir.glob("*.wav")))
 
         if len(self.mix_files) == 0:
             raise ValueError(f"No .wav files found in {self.mix_dir}")
 
-        # Apply max_samples limit
         if max_samples is not None:
             self.mix_files = self.mix_files[:max_samples]
 
-        logger.info(f"Loaded Libri2Mix {subset} set: {len(self.mix_files)} samples")
-        logger.info(f"  Mix dir: {self.mix_dir}")
-        logger.info(f"  Clean dir: {self.clean_dir}")
+        variant_name = "Libri2Mix-Clean" if mix_type == "mix_clean" else "Libri2Mix-Noisy"
+        logger.info(f"Loaded {variant_name} {subset}: {len(self.mix_files)} samples")
 
     def __len__(self):
         return len(self.mix_files)
 
     def __getitem__(self, idx):
-        """Load mixture and clean speech pair.
-
-        Returns:
-            dict: {"mix": tensor [T], "clean": tensor [T], "filename": str}
-        """
         mix_path = self.mix_files[idx]
         filename = mix_path.name
 
-        # Corresponding clean file has same name
-        clean_path = self.clean_dir / filename
+        s1_path = self.s1_dir / filename
+        s2_path = self.s2_dir / filename
 
-        if not clean_path.exists():
-            raise FileNotFoundError(
-                f"Clean file not found: {clean_path}\n"
-                f"Mix file: {mix_path}"
-            )
+        for label, path in [("s1", s1_path), ("s2", s2_path)]:
+            if not path.exists():
+                raise FileNotFoundError(f"{label} file not found: {path}")
 
-        # Load audio files
-        mix_audio, mix_sr = torchaudio.load(mix_path)
-        clean_audio, clean_sr = torchaudio.load(clean_path)
-
-        # Verify sample rates match
-        if mix_sr != self.sample_rate:
-            raise ValueError(
-                f"Mix file sample rate mismatch: expected {self.sample_rate}, got {mix_sr}\n"
-                f"File: {mix_path}"
-            )
-        if clean_sr != self.sample_rate:
-            raise ValueError(
-                f"Clean file sample rate mismatch: expected {self.sample_rate}, got {clean_sr}\n"
-                f"File: {clean_path}"
-            )
-
-        # Convert to mono if needed (should already be mono)
-        if mix_audio.shape[0] > 1:
-            mix_audio = mix_audio.mean(dim=0, keepdim=True)
-        if clean_audio.shape[0] > 1:
-            clean_audio = clean_audio.mean(dim=0, keepdim=True)
+        mix_audio, _ = torchaudio.load(mix_path)
+        s1_audio, _ = torchaudio.load(s1_path)
+        s2_audio, _ = torchaudio.load(s2_path)
 
         # Squeeze to 1D [T]
         mix_audio = mix_audio.squeeze(0)
-        clean_audio = clean_audio.squeeze(0)
+        s1_audio = s1_audio.squeeze(0)
+        s2_audio = s2_audio.squeeze(0)
 
-        # Ensure same length (trim to shorter if needed)
-        min_len = min(len(mix_audio), len(clean_audio))
+        # Ensure same length
+        min_len = min(len(mix_audio), len(s1_audio), len(s2_audio))
         mix_audio = mix_audio[:min_len]
-        clean_audio = clean_audio[:min_len]
+        s1_audio = s1_audio[:min_len]
+        s2_audio = s2_audio[:min_len]
+
+        # Stack speakers as [2, T] — same format as PolSESS SB task
+        clean = torch.stack([s1_audio, s2_audio])
 
         return {
             "mix": mix_audio,
-            "clean": clean_audio,
+            "clean": clean,
             "filename": filename,
         }
 
@@ -150,22 +127,17 @@ class Libri2MixDataset(Dataset):
 def libri2mix_collate_fn(batch: List[Dict]) -> Dict:
     """Collate function for variable-length Libri2Mix sequences.
 
-    Pads all sequences in the batch to the maximum length.
-
-    Args:
-        batch: List of samples from dataset
+    Pads all sequences to the maximum length in the batch.
 
     Returns:
-        Dictionary with padded tensors:
-            - "mix": [B, T_max] padded mixtures
-            - "clean": [B, T_max] padded clean speech
-            - "lengths": [B] original lengths before padding
+        Dictionary with:
+            - "mix": [B, T_max]
+            - "clean": [B, 2, T_max]
+            - "lengths": [B] original lengths
             - "filenames": List of filenames
     """
-    # Find max length in batch
     max_len = max(sample["mix"].shape[0] for sample in batch)
 
-    # Pad all sequences to max length
     mix_padded = []
     clean_padded = []
     lengths = []
@@ -176,13 +148,10 @@ def libri2mix_collate_fn(batch: List[Dict]) -> Dict:
         clean = sample["clean"]
         orig_len = mix.shape[0]
 
-        # Pad to max_len
         if orig_len < max_len:
             pad_len = max_len - orig_len
-            mix = torch.nn.functional.pad(mix, (0, pad_len), mode="constant", value=0)
-            clean = torch.nn.functional.pad(
-                clean, (0, pad_len), mode="constant", value=0
-            )
+            mix = torch.nn.functional.pad(mix, (0, pad_len))
+            clean = torch.nn.functional.pad(clean, (0, pad_len))
 
         mix_padded.append(mix)
         clean_padded.append(clean)
