@@ -1,0 +1,59 @@
+# SepFormer-Small: reduced architecture to combat overfitting
+# Original SepFormer (25.7M params) overfits on PolSESS (~16K samples)
+# This variant (2.2M params) is in line with DPRNN/SPMamba parameter range
+# Training HPs from happy-sweep-19 (best HPO result for SepFormer)
+
+data:
+  dataset_type: polsess
+  batch_size: 8  # Smaller model allows larger batch
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 128          # Encoder channels (was 256)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 4   # Transformer layers (was 8)
+    d_model: 128    # Transformer dimension (was 256)
+    nhead: 4        # Attention heads (was 8)
+    d_ffn: 256      # Feed-forward dimension (was 1024)
+    dropout: 0.1    # Regularization (was 0.0)
+    chunk_size: 250
+    hop_size: 125
+
+training:
+  lr: 0.001
+  weight_decay: 7.02e-6
+  grad_clip_norm: 4.87
+  lr_factor: 0.912
+  lr_patience: 3
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: null
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

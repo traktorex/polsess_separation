@@ -1,0 +1,58 @@
+# SepFormer-Medium-Large: between Medium (8.5M) and Original (25.7M)
+# 16.2M params — tests whether full d_model=256 with fewer layers and
+# dropout can avoid the Original's overfitting while retaining capacity
+
+data:
+  dataset_type: polsess
+  batch_size: 4
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256          # Same as Original
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 6   # Reduced (Medium=6, Original=8)
+    d_model: 256    # Same as Original
+    nhead: 8        # Same as Original
+    d_ffn: 768      # Reduced (Medium=512, Original=1024)
+    dropout: 0.1    # Regularization against overfitting
+    chunk_size: 250
+    hop_size: 125
+
+training:
+  lr: 0.0005
+  weight_decay: 7.02e-6
+  grad_clip_norm: 4.87
+  lr_factor: 0.912
+  lr_patience: 3
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: null
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
