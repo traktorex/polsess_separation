@@ -574,7 +574,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     Supported sweep override keys: model_B, model_H, weight_decay,
     grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
     task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants
+    validation_variants, dropout, chunk_size, rnn_type
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -619,6 +619,12 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         config.model.convtasnet.B = sweep_config.model_B
     if "model_H" in sweep_config:
         config.model.convtasnet.H = sweep_config.model_H
+
+    # Special cases: DPRNN architecture overrides (nested)
+    DPRNN_OVERRIDES = ["dropout", "chunk_size", "rnn_type"]
+    for key in DPRNN_OVERRIDES:
+        if key in sweep_config and config.model.dprnn is not None:
+            setattr(config.model.dprnn, key, getattr(sweep_config, key))
 
     # Validate and return
     config.__post_init__()

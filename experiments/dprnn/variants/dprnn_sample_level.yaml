@@ -1,0 +1,59 @@
+# DPRNN with sample-level encoder (kernel_size=2, stride=1)
+# The original DPRNN paper reports best performance with this config,
+# as it processes at near-waveform resolution.
+# Training HPs from best HPO result (fancy-sweep-62)
+# Note: 8x longer encoded sequences than kernel=16 — slower training
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # Reduced from 16 — longer sequences use more memory
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: dprnn
+  dprnn:
+    N: 64
+    kernel_size: 2   # Sample-level (was 16)
+    stride: 1        # Hop=1 sample (was 8)
+    C: 2
+    num_layers: 6
+    chunk_size: 250   # sqrt(2 * 32000) ≈ 253, rounded to 250
+    rnn_type: LSTM
+    hidden_size: 128
+    num_rnn_layers: 1
+    dropout: 0.0
+    bidirectional: true
+    norm_type: ln
+
+training:
+  lr: 0.00015625
+  weight_decay: 2.1e-5
+  grad_clip_norm: 2.76
+  lr_factor: 0.863
+  lr_patience: 3
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: null
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
