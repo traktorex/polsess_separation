@@ -1,0 +1,65 @@
+# DPRNN Sample-Level Sweep (kernel_size=2, 8K samples)
+# Sweeps training HPs + dropout + chunk_size + rnn_type
+# Batch size fixed at 2 (OOM at higher values with kernel_size=2)
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15
+  s: 2
+
+parameters:
+  # Fixed parameters
+  config:
+    value: experiments/dprnn/variants/dprnn_sample_level_8k.yaml
+
+  num_epochs:
+    value: 100
+
+  seed:
+    values: [42]
+
+  early_stopping_patience:
+    value: 15
+
+  # --- Training hyperparameters ---
+  lr:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 3e-3
+
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-3
+
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.1
+    max: 10.0
+
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.95
+
+  lr_patience:
+    values: [2, 3, 4, 5]
+
+  # --- New: model/architecture HPs ---
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.4
+
+
+  rnn_type:
+    values: ["LSTM", "GRU"]
+    
+project: polsess-thesis-experiments
+name: 3-dprnn-sample-level-8k
