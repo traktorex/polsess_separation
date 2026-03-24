@@ -55,6 +55,7 @@ class SepFormerParams:
     dropout: float = 0.0  # Dropout rate
     chunk_size: int = 250  # Chunk size for dual-path processing
     hop_size: int = 125  # Hop size between chunks
+    use_positional_encoding: bool = True  # Sinusoidal PE (paper default; False for pre-2026-03 checkpoints)
 
 
 @dataclass
@@ -277,6 +278,7 @@ class Config:
                 f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
                 f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.d_model}",
                 f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
+                f"  Positional encoding: {p.use_positional_encoding}",
                 f"  Chunking: chunk={p.chunk_size}, hop={p.hop_size}",
                 f"  Output: C={p.C}",
             ])

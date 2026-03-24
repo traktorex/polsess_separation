@@ -132,6 +132,12 @@ def load_model_for_inference(
     model_type = config.get("model", {}).get("model_type", "convtasnet")
     model_params = config.get("model", {}).get(model_type, {})
 
+    # Backward compat: SepFormer checkpoints before 2026-03 were trained without
+    # positional encoding (see models/sepformer.py module docstring for details).
+    # Their saved configs lack this key, so default to False to match trained weights.
+    if model_type == "sepformer" and "use_positional_encoding" not in model_params:
+        model_params["use_positional_encoding"] = False
+
     # Instantiate model and load weights
     model_class = get_model(model_type)
     model = model_class(**model_params)

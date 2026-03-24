@@ -1,23 +1,31 @@
-"""SepFormer using SpeechBrain's built-in Dual_Path_Model."""
+"""SepFormer using SpeechBrain's built-in Dual_Path_Model.
+
+NOTE on positional encoding (March 2026):
+    The original SepFormer paper (Subakan et al. 2021) uses sinusoidal positional
+    encoding in both the intra-chunk and inter-chunk transformers. Our initial
+    implementation (used for all baseline and HPO experiments in Series 1-3) was
+    missing this — it used raw TransformerEncoder blocks without positional encoding.
+
+    This was fixed by switching to SpeechBrain's SBTransformerBlock, which adds
+    sinusoidal positional encoding before each transformer stack. The parameter
+    `use_positional_encoding` controls this behavior:
+      - True  (default): matches the original paper — use for new experiments
+      - False: reproduces the old behavior — used automatically when loading
+               checkpoints that predate this fix (see load_model_for_inference)
+
+    All existing checkpoints (baselines, HPO sweeps, size variants) were trained
+    WITHOUT positional encoding. Their saved configs lack this parameter, so
+    load_model_for_inference defaults to False for backward compatibility.
+"""
 
 import torch
 import torch.nn as nn
-from speechbrain.lobes.models.dual_path import Encoder, Decoder, Dual_Path_Model
-from speechbrain.nnet.containers import Sequential
-from speechbrain.lobes.models.transformer.Transformer import TransformerEncoder
-
-
-class TransformerWrapper(nn.Module):
-    """Wrapper for TransformerEncoder to return only output (not attention weights)."""
-
-    def __init__(self, transformer):
-        super().__init__()
-        self.transformer = transformer
-
-    def forward(self, x):
-        """Forward pass returning only output, not attention weights."""
-        output, _ = self.transformer(x)
-        return output
+from speechbrain.lobes.models.dual_path import (
+    Encoder,
+    Decoder,
+    Dual_Path_Model,
+    SBTransformerBlock,
+)
 
 
 class SepFormer(nn.Module):
@@ -38,39 +46,34 @@ class SepFormer(nn.Module):
         dropout: float = 0.0,
         chunk_size: int = 250,
         hop_size: int = 125,
+        use_positional_encoding: bool = True,
     ):
         super().__init__()
 
         # Encoder
         self.encoder = Encoder(kernel_size=kernel_size, out_channels=N, in_channels=1)
 
-        # Intra-chunk transformer
-        intra_transformer = TransformerEncoder(
+        # Intra-chunk and inter-chunk transformers via SBTransformerBlock.
+        # SBTransformerBlock wraps TransformerEncoder and optionally adds
+        # sinusoidal positional encoding (matching the original paper).
+        intra_model = SBTransformerBlock(
             num_layers=num_layers,
             d_model=d_model,
             nhead=nhead,
             d_ffn=d_ffn,
             dropout=dropout,
-            activation=nn.ReLU,
-            normalize_before=True,
-            causal=causal,
+            use_positional_encoding=use_positional_encoding,
+            norm_before=True,
         )
-
-        # Inter-chunk transformer
-        inter_transformer = TransformerEncoder(
+        inter_model = SBTransformerBlock(
             num_layers=num_layers,
             d_model=d_model,
             nhead=nhead,
             d_ffn=d_ffn,
             dropout=dropout,
-            activation=nn.ReLU,
-            normalize_before=True,
-            causal=causal,
+            use_positional_encoding=use_positional_encoding,
+            norm_before=True,
         )
-
-        # Wrap transformers to return only output (not attention weights)
-        wrapped_intra = TransformerWrapper(intra_transformer)
-        wrapped_inter = TransformerWrapper(inter_transformer)
 
         # Dual-Path Model handles chunking, dual-path processing, overlap-add
         self.masknet = Dual_Path_Model(
@@ -79,8 +82,8 @@ class SepFormer(nn.Module):
             out_channels=d_model,
             num_layers=num_blocks,
             K=chunk_size,
-            intra_model=wrapped_intra,
-            inter_model=wrapped_inter,
+            intra_model=intra_model,
+            inter_model=inter_model,
             norm="ln",
             linear_layer_after_inter_intra=False,
             skip_around_intra=True,
