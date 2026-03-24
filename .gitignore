@@ -50,3 +50,8 @@ Thumbs.db
 /archive
 /mobile
 /asr/archive
+
+/venv_mamba3
+/venv_backup
+
+*.csv
