@@ -57,6 +57,7 @@ def evaluate_model(
         stoi_metric = ShortTimeObjectiveIntelligibility(SAMPLE_RATE).to(device)
 
     si_sdr_scores = []
+    si_sdri_scores = []
     pesq_scores = []
     stoi_scores = []
 
@@ -78,6 +79,7 @@ def evaluate_model(
             min_len = min(estimates.shape[-1], clean.shape[-1])
             estimates = estimates[..., :min_len]
             clean = clean[..., :min_len]
+            mix_trimmed = mix[..., :min_len]
 
             # Compute SI-SDR based on task
             if task == "SB":
@@ -85,6 +87,14 @@ def evaluate_model(
                 loss = pit_sisdr(estimates, clean)
                 si_sdr = -loss
                 si_sdr_scores.append(si_sdr.item())
+
+                # Mixture baseline: SI-SDR(mix, clean) averaged over speakers
+                # mix is [B, T], clean is [B, C, T]
+                mix_baseline = 0.0
+                for spk in range(clean.shape[1]):
+                    mix_baseline += si_sdr_metric(mix_trimmed, clean[:, spk]).item()
+                mix_baseline /= clean.shape[1]
+                si_sdri_scores.append(si_sdr.item() - mix_baseline)
             else:
                 # Enhancement: standard SI-SDR
                 if clean.dim() == 3 and clean.shape[1] == 1:
@@ -93,7 +103,9 @@ def evaluate_model(
                     estimates = estimates.squeeze(1)
 
                 si_sdr = si_sdr_metric(estimates, clean)
+                si_sdr_mix = si_sdr_metric(mix_trimmed, clean)
                 si_sdr_scores.append(si_sdr.item())
+                si_sdri_scores.append(si_sdr.item() - si_sdr_mix.item())
 
             # PESQ and STOI only for enhancement tasks
             if task != "SB":
@@ -112,6 +124,7 @@ def evaluate_model(
 
     results = {
         "si_sdr": sum(si_sdr_scores) / len(si_sdr_scores) if si_sdr_scores else 0,
+        "si_sdri": sum(si_sdri_scores) / len(si_sdri_scores) if si_sdri_scores else 0,
         "num_samples": len(dataloader.dataset),
     }
 
@@ -188,6 +201,7 @@ def evaluate_by_variant(
 
         logger.info(f"{variant} Results:")
         logger.info(f"  SI-SDR: {variant_results['si_sdr']:.2f} dB")
+        logger.info(f"  SI-SDRi: {variant_results['si_sdri']:.2f} dB")
         if "pesq" in variant_results:
             logger.info(f"  PESQ: {variant_results['pesq']:.2f}")
         if "stoi" in variant_results:
@@ -206,7 +220,7 @@ def print_summary(results: dict):
     has_pesq = any("pesq" in r for r in results.values())
     has_stoi = any("stoi" in r for r in results.values())
 
-    headers = ["Variant", "SI-SDR (dB)"]
+    headers = ["Variant", "SI-SDR (dB)", "SI-SDRi (dB)"]
     if has_pesq:
         headers.append("PESQ")
     if has_stoi:
@@ -215,7 +229,7 @@ def print_summary(results: dict):
 
     table_data = []
     for variant, metrics in sorted(results.items()):
-        row = [variant, f"{metrics['si_sdr']:.2f}"]
+        row = [variant, f"{metrics['si_sdr']:.2f}", f"{metrics['si_sdri']:.2f}"]
         if has_pesq:
             row.append(f"{metrics['pesq']:.2f}" if "pesq" in metrics else "N/A")
         if has_stoi:
@@ -227,6 +241,7 @@ def print_summary(results: dict):
         avg_row = [
             "AVERAGE",
             f"{sum(r['si_sdr'] for r in results.values()) / len(results):.2f}",
+            f"{sum(r['si_sdri'] for r in results.values()) / len(results):.2f}",
         ]
         if has_pesq:
             pesq_values = [r["pesq"] for r in results.values() if "pesq" in r]
@@ -252,6 +267,7 @@ def save_results_csv(results: dict, output_path: str):
         row = {
             "variant": variant,
             "si_sdr_db": metrics["si_sdr"],
+            "si_sdri_db": metrics["si_sdri"],
             "num_samples": metrics["num_samples"],
         }
         if "pesq" in metrics:
@@ -392,7 +408,7 @@ def main():
             )
 
             results[variant_name] = result
-            logger.info(f"{variant_name} SI-SDR: {result['si_sdr']:.2f} dB")
+            logger.info(f"{variant_name} SI-SDR: {result['si_sdr']:.2f} dB | SI-SDRi: {result['si_sdri']:.2f} dB")
 
     # Print and save results
     print_summary(results)

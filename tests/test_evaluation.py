@@ -227,8 +227,8 @@ class TestEvaluationFormatting:
     def test_print_summary_basic(self, capsys):
         """Test print_summary doesn't crash with basic results."""
         results = {
-            "variant1": {"si_sdr": 10.5, "num_samples": 100},
-            "variant2": {"si_sdr": 12.3, "num_samples": 150},
+            "variant1": {"si_sdr": 10.5, "si_sdri": 8.2, "num_samples": 100},
+            "variant2": {"si_sdr": 12.3, "si_sdri": 10.1, "num_samples": 150},
         }
         
         print_summary(results)
@@ -243,6 +243,7 @@ class TestEvaluationFormatting:
         results = {
             "variant1": {
                 "si_sdr": 10.5,
+                "si_sdri": 8.2,
                 "pesq": 2.8,
                 "stoi": 0.85,
                 "num_samples": 100,
@@ -258,9 +259,9 @@ class TestEvaluationFormatting:
     def test_print_summary_multiple_variants_shows_average(self, capsys):
         """Test that average row is shown for multiple variants."""
         results = {
-            "C": {"si_sdr": 10.0, "num_samples": 50},
-            "S": {"si_sdr": 8.0, "num_samples": 50},
-            "E": {"si_sdr": 12.0, "num_samples": 50},
+            "C": {"si_sdr": 10.0, "si_sdri": 7.5, "num_samples": 50},
+            "S": {"si_sdr": 8.0, "si_sdri": 5.8, "num_samples": 50},
+            "E": {"si_sdr": 12.0, "si_sdri": 9.9, "num_samples": 50},
         }
         
         print_summary(results)
@@ -271,10 +272,10 @@ class TestEvaluationFormatting:
     def test_save_results_csv(self, tmp_path):
         """Test saving results to CSV."""
         output_path = tmp_path / "results.csv"
-        
+
         results = {
-            "variant1": {"si_sdr": 10.5, "num_samples": 100},
-            "variant2": {"si_sdr": 12.3, "pesq": 2.8, "num_samples": 150},
+            "variant1": {"si_sdr": 10.5, "si_sdri": 8.2, "num_samples": 100},
+            "variant2": {"si_sdr": 12.3, "si_sdri": 10.1, "pesq": 2.8, "num_samples": 150},
         }
         
         save_results_csv(results, str(output_path))
@@ -295,10 +296,11 @@ class TestEvaluationFormatting:
     def test_save_results_csv_with_all_metrics(self, tmp_path):
         """Test CSV includes all metrics when available."""
         output_path = tmp_path / "results.csv"
-        
+
         results = {
             "variant1": {
                 "si_sdr": 10.5,
+                "si_sdri": 8.2,
                 "pesq": 2.8,
                 "stoi": 0.85,
                 "num_samples": 100,
