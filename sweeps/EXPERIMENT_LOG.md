@@ -362,7 +362,7 @@ From 330+ runs across all 3-stage sweeps:
 
 ### SepFormer HPO (2-Stage)
 
-**Status**: Stage 1 ❌ Uninformative | Stage 2 ✅ Complete | Validation 🔄 Pending  
+**Status**: Stage 1 ❌ Uninformative | Stage 2 ✅ Complete | Validation ✅ Complete
 **Strategy**: Same 2-stage approach (2K → 8K), but Stage 1 failed to produce useful signal.
 
 #### Stage 1: Wide Search (2K samples) — ❌ Uninformative
@@ -402,7 +402,7 @@ Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K
 
 **Key Findings**: LR sweet spot ~2e-4 to 3e-4 (consistent with Stage 1 finding that low LR wins). ~73% of runs crashed or were killed — LR > 5e-4 generally leads to divergence. Weight decay tiny for top 2 (5-7e-6), higher for #3 (6.7e-5).
 
-#### Validation (16K samples, 3 seeds) — 🔄 Pending
+#### Validation (16K samples, 3 seeds) — ✅ Complete
 
 **Configs**: [`sepformer/3-hyperparamopt-stage2-vals/`](../experiments/sepformer/3-hyperparamopt-stage2-vals/)
 
@@ -412,7 +412,22 @@ Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K
 |------|--------|-----------|-------------------|-----------------|-------|-------|
 | 1 | dutiful-sweep-9 | 4.30 dB | Complete | 4.66 dB | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
 | 2 | happy-sweep-19 | 4.10 dB | Complete | 5.03 dB | 5.28, 4.84, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
-| 3 | stoic-sweep-3 | 3.96 dB | Running | N/A | N/A, 4.74, 4.02 dB | [73gkwwg4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/73gkwwg4), [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
+| 3 | stoic-sweep-3 | 3.96 dB | ✅ Complete | 4.50 dB | 4.73, 4.74, 4.02 dB | [73gkwwg4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/73gkwwg4), [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
+
+
+Sepformer variants:
+
+sepformer-small with lr=0.000279 | 
+SI-SDR: 2.82 dB at epoch 132
+
+sepformer-small with lr=0.001 | 
+SI-SDR: 3.15 dB at epoch 190
+
+sepformer-medium | 
+SI-SDR: 4.32 dB at epoch 136
+
+sepformer-medium-large | 
+SI-SDR: 4.85 dB at epoch 65
 
 ## Notes
 

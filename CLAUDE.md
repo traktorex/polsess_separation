@@ -65,7 +65,7 @@ If the answer to any is "no", simplify.
 
 ## Primary Project: PolSESS Speech Separation
 
-Located in `polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, and SPMamba architectures on the PolSESS dataset.
+Located in `polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, and SPMamba3 architectures on the PolSESS dataset.
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
@@ -106,9 +106,10 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 - Stage 2 (8K) sweep complete — best: dutiful-sweep-9 → **4.30 dB**
 - Validation (16K, 3 seeds) pending
 
-**📋 Phase 1C Planned** — Architecture Variants
-- Test larger SPMamba configurations (6 layers vs. current 4)
-- Evaluate performance vs. model size trade-offs
+**🔄 Phase 1C In Progress** — Architecture Variants
+- SPMamba3 implemented: SPMamba with Mamba-3 SSM blocks (novel — first Mamba-3 audio application)
+- Requires `venv_mamba3` (torch 2.11.0+cu130, triton 3.6.0, mamba-ssm from git with Mamba-3 code)
+- Config: `experiments/spmamba3/spmamba3_baseline.yaml`; all 11 unit tests passing
 
 **🔄 Phase 2 In Progress** — ASR Integration
 - Evaluate separation as ASR preprocessing via Whisper WER/CER
@@ -216,11 +217,12 @@ The project follows a modular architecture with clear separation of concerns:
 
 - Simple dict-based registry: `MODELS = {"convtasnet": ConvTasNet, ...}`
 - Retrieve with `get_model("model_name")` which returns the model class
-- Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`
+- Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`, `spmamba3`
   - **convtasnet**: Time-domain convolutional architecture (~8M params)
   - **sepformer**: Transformer-based separation (~26M params)
   - **dprnn**: Dual-path RNN with intra/inter-chunk processing (~2-3M params)
-  - **spmamba**: State-space model with Mamba blocks (~1.2M params, requires Linux + CUDA)
+  - **spmamba**: State-space model with Mamba-1 blocks (~1.2M params, requires Linux + CUDA)
+  - **spmamba3**: SPMamba with Mamba-3 blocks — exp-trapezoidal discretization, complex RoPE states (~1.5M params, requires `venv_mamba3`) (spmamba3 is on its own branch right now)
 
 **Dataset Registry (`datasets/__init__.py`):**
 
@@ -303,7 +305,8 @@ polsess_separation/
 │   ├── conv_tasnet.py             # ConvTasNet architecture
 │   ├── sepformer.py               # SepFormer architecture
 │   ├── dprnn.py                   # Dual-path RNN architecture
-│   └── spmamba.py                 # SPMamba with Mamba blocks (Linux + CUDA only)
+│   ├── spmamba.py                 # SPMamba with Mamba-1 blocks (Linux + CUDA only)
+│   └── spmamba3.py                # SPMamba3 with Mamba-3 blocks (requires venv_mamba3)
 ├── datasets/
 │   ├── __init__.py                # Dataset registry (dict-based, get_dataset)
 │   ├── polsess_dataset.py         # PolSESS with MM-IPC augmentation
@@ -520,13 +523,20 @@ REAL-M-v0.1.0/
 8. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr(sweep_config, key)` — not dict access — for compatibility with `wandb.config` objects.
 
 
-## Virtual Environment
+## Virtual Environments
 
-The repository uses a virtual environment at `venv/`. Activate before running:
+The repository uses two virtual environments:
 
+**Main (`venv/`)** — all models except SPMamba3:
 ```bash
 polsess_venv
 ```
+
+**SPMamba3 (`venv_mamba3/`)** — required for SPMamba3 only (torch 2.11.0+cu130, triton 3.6.0, Mamba-3 kernels):
+```bash
+source venv_mamba3/bin/activate
+```
+This venv is a clone of the main venv with Mamba-3 support added. The Mamba-3 Python files (not included in the standard mamba-ssm pip package) are manually copied from a bare repo clone of `state-spaces/mamba` at `/tmp/mamba_repo` into the installed package. Additional deps: `tilelang`, `quack-kernels`, `cuda-bindings`, `nvidia-cutlass-dsl`. To rebuild: clone main venv → fix all shebang lines in `bin/` to point to `venv_mamba3` → re-clone bare repo → extract files → install 4 deps → downgrade numpy to `<2.4`.
 
 ## Development Workflow
 

@@ -27,3 +27,10 @@
 SepALM: Audio Language Models Are Error Correctors for Robust Speech Separation
 https://www.semanticscholar.org/paper/SepALM%3A-Audio-Language-Models-Are-Error-Correctors-Mu-Yang/9248414ca6036956d41f73c52aeed10ec79d51a3
 !!!
+
+
+3.connecting to already existing wandb run when resuming
+
+4. use si-snr estimator
+https://huggingface.co/speechbrain/REAL-M-sisnr-estimator
+
