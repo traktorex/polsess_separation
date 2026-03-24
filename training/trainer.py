@@ -67,7 +67,7 @@ class Trainer:
             self.loss_fn = self._sisdr_loss_wrapper
 
         self.scaler = (
-            torch.amp.GradScaler("cuda")
+            torch.amp.GradScaler("cuda", init_scale=258)
             if (self.use_amp and device == "cuda")
             else None
         )
@@ -336,6 +336,9 @@ class Trainer:
                 )
                 self.logger.warning(f"  Loss: {loss.item()}, SI-SDR: {sisdr_value}")
                 self.optimizer.zero_grad()
+                # Release peak CUDA allocation from the overflow to prevent
+                # memory staying elevated for the rest of training
+                torch.cuda.empty_cache()
                 continue
 
             if self.scaler:
