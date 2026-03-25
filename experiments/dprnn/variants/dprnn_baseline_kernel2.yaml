@@ -29,11 +29,11 @@ model:
     norm_type: ln  # Layer normalization
 
 training:
-  lr: 0.001  # Paper uses 1.5e-4
+  lr: 0.001 
   weight_decay: 0.0  # Paper uses 0
   grad_clip_norm: 5.0  # Paper uses 5
-  lr_factor: 0.98 
-  lr_patience: 1
+  lr_factor: 0.50 
+  lr_patience: 2
   num_epochs: 200  
   use_amp: true
   amp_eps: 0.0001
@@ -45,7 +45,7 @@ training:
   log_file: null
   log_level: INFO
   resume_from: null
-  early_stopping_patience: 15
+  early_stopping_patience: 10
 
   validation_variants: ["SER", "SE"]
 
