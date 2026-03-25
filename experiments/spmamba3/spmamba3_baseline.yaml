@@ -1,0 +1,76 @@
+# SPMamba3 Baseline Configuration
+# SPMamba with Mamba-3 blocks (exp-trapezoidal discretization, complex RoPE states)
+# Architecture otherwise identical to SPMamba baseline
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+  polsess:
+    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
+
+model:
+  model_type: spmamba3
+  spmamba3:
+    input_dim: 64
+    n_srcs: 2         # Number of speakers
+    n_fft: 256        # Same as SPMamba paper
+    stride: 64        # Same as SPMamba paper
+    window: "hann"
+    n_layers: 6       # 6 GridNet blocks (same as SPMamba)
+    lstm_hidden_units: 256  # Hidden dimension (kept for API compatibility)
+    attn_n_head: 4    # 4 attention heads
+    attn_approx_qk_dim: 512  # Q/K dimension
+    emb_dim: 16       # Embedding dimension
+    emb_ks: 4         # Embedding kernel size
+    emb_hs: 1         # Embedding hop size
+    activation: "prelu"
+    eps: 1.0e-4       # Increased for numerical stability
+    sample_rate: 8000
+    # Mamba-3 specific
+    d_state: 64       # SSM state dim (reduced from Mamba-3 default of 128)
+    headdim: 32       # Must divide emb_dim * emb_ks = 64
+
+training:
+  # Optimizer settings (same as SPMamba baseline)
+  lr: 0.001
+  weight_decay: 1.0e-5
+  grad_clip_norm: 5.0
+
+  # Learning rate scheduler
+  lr_factor: 0.5
+  lr_patience: 2
+
+  # Training configuration
+  num_epochs: 100
+  use_amp: false
+
+  # Checkpointing and logging
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  wandb_entity: null
+  wandb_run_name: "spmamba3_sb_baseline"
+  log_file: null
+  log_level: "INFO"
+
+  # Hardware
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  # Validation and curriculum learning
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      lr_scheduler: start

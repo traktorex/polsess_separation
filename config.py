@@ -98,6 +98,35 @@ class SPMambaParams:
 
 
 @dataclass
+class SPMamba3Params:
+    """SPMamba3 (SPMamba with Mamba-3 blocks) model-specific parameters.
+
+    Identical to SPMambaParams plus Mamba-3 specific hyperparameters.
+    Mamba-3 replaces Mamba-1 selective scan with SSD + exp-trapezoidal
+    discretization and complex-valued states via RoPE.
+    """
+
+    input_dim: int = 64  # STFT input dimension (kept for compatibility)
+    n_srcs: int = 1  # Number of output sources (1 for enhancement, 2 for separation)
+    n_fft: int = 256  # FFT size
+    stride: int = 64  # STFT hop length
+    window: str = "hann"  # Window function
+    n_layers: int = 6  # Number of GridNet blocks
+    lstm_hidden_units: int = 256  # Hidden dimension (kept for API compatibility)
+    attn_n_head: int = 4  # Number of attention heads
+    attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
+    emb_dim: int = 16  # Embedding dimension
+    emb_ks: int = 4  # Embedding kernel size
+    emb_hs: int = 1  # Embedding hop size
+    activation: str = "prelu"  # Activation function
+    eps: float = 1.0e-5  # Epsilon for numerical stability
+    sample_rate: int = 16000  # Audio sample rate
+    # Mamba-3 specific parameters
+    d_state: int = 64  # SSM state dimension (Mamba-3 default: 128, reduced for small model)
+    headdim: int = 32  # Head dimension (must divide emb_dim * emb_ks)
+
+
+@dataclass
 class DataConfig:
     """Common data configuration across all datasets."""
 
@@ -121,12 +150,13 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba, spmamba3
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    spmamba3: Optional[SPMamba3Params] = None
 
     def __post_init__(self):
         """Initialize model-specific params if not provided."""
@@ -138,6 +168,8 @@ class ModelConfig:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "spmamba3" and self.spmamba3 is None:
+            self.spmamba3 = SPMamba3Params()
 
 
 @dataclass
@@ -208,6 +240,8 @@ class Config:
                 self.model.dprnn.C = 1
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 1
+            elif self.model.model_type == "spmamba3":
+                self.model.spmamba3.n_srcs = 1
         elif self.data.task == "SB":
             if self.model.model_type == "convtasnet":
                 self.model.convtasnet.C = 2
@@ -217,6 +251,8 @@ class Config:
                 self.model.dprnn.C = 2
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
+            elif self.model.model_type == "spmamba3":
+                self.model.spmamba3.n_srcs = 2
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -288,6 +324,15 @@ class Config:
                 f"  STFT: n_fft={p.n_fft}, stride={p.stride}, window={p.window}",
                 f"  Model: layers={p.n_layers}, input_dim={p.input_dim}",
                 f"  LSTM: hidden={p.lstm_hidden_units}",
+                f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
+                f"  Output: n_srcs={p.n_srcs}",
+            ])
+        elif mt == "spmamba3":
+            p = self.model.spmamba3
+            lines.extend([
+                f"  STFT: n_fft={p.n_fft}, stride={p.stride}, window={p.window}",
+                f"  Model: layers={p.n_layers}, input_dim={p.input_dim}",
+                f"  Mamba3: d_state={p.d_state}, headdim={p.headdim}",
                 f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
                 f"  Output: n_srcs={p.n_srcs}",
             ])
@@ -365,6 +410,9 @@ def load_config_from_yaml(yaml_path: str) -> Config:
     spmamba_dict = model_dict.pop("spmamba", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
 
+    spmamba3_dict = model_dict.pop("spmamba3", None)
+    spmamba3_params = SPMamba3Params(**spmamba3_dict) if spmamba3_dict else None
+
     data_config = DataConfig(**data_dict, polsess=polsess_params)
     model_config = ModelConfig(
         **model_dict,
@@ -372,6 +420,7 @@ def load_config_from_yaml(yaml_path: str) -> Config:
         sepformer=sepformer_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        spmamba3=spmamba3_params,
     )
     training_config = TrainingConfig(**training_dict)
 
@@ -398,7 +447,9 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba"]:
+        elif key == "spmamba3" and value is not None:
+            model_dict["spmamba3"] = value
+        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba", "spmamba3"]:
             model_dict[key] = value
 
     config_dict = {

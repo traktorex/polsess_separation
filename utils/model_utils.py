@@ -33,6 +33,13 @@ def apply_torch_compile(
             )
         return model
     
+    # SPMamba3 uses custom Mamba3 Triton kernels that are already JIT-compiled.
+    # torch.compile (inductor) causes stride mismatches in the backward pass.
+    if model.__class__.__name__ == "SPMamba3":
+        if logger:
+            logger.info("Skipping torch.compile for SPMamba3 (Mamba3 Triton kernels incompatible with inductor)")
+        return model
+
     try:
         if logger:
             logger.info(f"Compiling model with torch.compile (mode={mode})...")
