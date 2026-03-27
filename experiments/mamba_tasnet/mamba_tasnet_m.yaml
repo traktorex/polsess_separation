@@ -1,0 +1,54 @@
+# Mamba-TasNet M (Medium) — ~15.6M params
+# Based on: Jiang et al. 2024, Speech Slytherin (arXiv 2407.09732, Table 2)
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: mamba_tasnet
+  mamba_tasnet:
+    N: 256          # Encoder channels (paper M)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    bot_dim: 256    # Bottleneck matches N (paper M)
+    n_mamba: 32     # Paper M: 32 BiMamba blocks (Speech Slytherin Table 1)
+    d_state: 16
+    d_conv: 4
+    expand: 2
+
+training:
+  lr: 0.00015
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: mamba-tasnet-m
+  log_file: null
+  log_level: INFO
+  resume_from: null
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
