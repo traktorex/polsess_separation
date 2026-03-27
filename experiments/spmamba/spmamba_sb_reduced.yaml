@@ -26,10 +26,10 @@ model:
     attn_n_head: 2  # Reduced from 4 (saves 50% attention memory)
     attn_approx_qk_dim: 256  # Reduced from 512 (saves 50% Q/K memory)
     emb_dim: 16  # Keep same
-    emb_ks: 4  # Keep same
+    emb_ks: 8  # Keep same
     emb_hs: 1  # Keep same
     activation: "prelu"
-    eps: 1.0e-4  # Increased for numerical stability
+    eps: 1.0e-5
     sample_rate: 8000
 
 training:
@@ -44,7 +44,7 @@ training:
 
   # Training configuration
   num_epochs: 30
-  use_amp: false  # Disabled - use float32 for stability
+  use_amp: true
 
   # Checkpointing and logging
   save_dir: "checkpoints"

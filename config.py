@@ -90,11 +90,11 @@ class SPMambaParams:
     attn_n_head: int = 4  # Number of attention heads
     attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
     emb_dim: int = 16  # Embedding dimension
-    emb_ks: int = 4  # Embedding kernel size
+    emb_ks: int = 8  # Embedding kernel size (original librimix config uses 8)
     emb_hs: int = 1  # Embedding hop size
     activation: str = "prelu"  # Activation function
     eps: float = 1.0e-5  # Epsilon for numerical stability
-    sample_rate: int = 16000  # Audio sample rate
+    sample_rate: int = 8000  # Audio sample rate
 
 
 @dataclass

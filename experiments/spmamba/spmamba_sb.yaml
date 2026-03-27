@@ -7,7 +7,7 @@ data:
   batch_size: 1  # Start with 4, can increase if memory allows
   num_workers: 1
   prefetch_factor: 2
-  task: SB  # Single speaker enhancement
+  task: SB 
   train_max_samples: null
   val_max_samples: null
   polsess:
@@ -29,7 +29,7 @@ model:
     emb_ks: 8         # Embedding kernel size
     emb_hs: 1         # Embedding hop size
     activation: "prelu"
-    eps: 1.0e-4  # Increased for numerical stability
+    eps: 1.0e-5
     sample_rate: 8000
 
 training:
