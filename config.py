@@ -335,18 +335,11 @@ class Config:
         return "\n".join(lines)
 
 
-def load_config_from_yaml(yaml_path: str) -> Config:
-    """Load configuration from YAML file."""
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"Config file not found: {yaml_path}")
-
-    with open(yaml_path, "r") as f:
-        config_dict = yaml.safe_load(f)
-
-    data_dict = config_dict.get("data", {}) or {}
-    model_dict = config_dict.get("model", {}) or {}
-    training_dict = config_dict.get("training", {}) or {}
+def load_config_from_dict(config_dict: dict) -> Config:
+    """Load configuration from a nested dict (same structure as YAML/checkpoint configs)."""
+    data_dict = dict(config_dict.get("data", {}) or {})
+    model_dict = dict(config_dict.get("model", {}) or {})
+    training_dict = dict(config_dict.get("training", {}) or {})
 
     # Handle nested dataset-specific params
     polsess_dict = data_dict.pop("polsess", None)
@@ -376,6 +369,18 @@ def load_config_from_yaml(yaml_path: str) -> Config:
     training_config = TrainingConfig(**training_dict)
 
     return Config(data=data_config, model=model_config, training=training_config)
+
+
+def load_config_from_yaml(yaml_path: str) -> Config:
+    """Load configuration from YAML file."""
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Config file not found: {yaml_path}")
+
+    with open(yaml_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+
+    return load_config_from_dict(config_dict)
 
 
 def save_config_to_yaml(config: Config, yaml_path: str):
@@ -537,6 +542,7 @@ def get_config_from_args() -> Config:
     """Parse command-line arguments and create configuration.
 
     Main entry point that orchestrates config loading from CLI.
+    Config priority: --config YAML > checkpoint config > defaults.
 
     Note: Most parameters should be set in YAML config files.
     CLI args are for quick switches and overrides only.
@@ -545,6 +551,8 @@ def get_config_from_args() -> Config:
     Returns:
         Validated Config object with CLI overrides applied.
     """
+    import torch as _torch
+
     parser = create_config_parser()
     args = parser.parse_args()
 
@@ -552,6 +560,18 @@ def get_config_from_args() -> Config:
     if args.config:
         print(f"Loading config from: {args.config}")
         config = load_config_from_yaml(args.config)
+    elif args.resume:
+        # No --config but --resume: load config from checkpoint
+        print(f"Loading config from checkpoint: {args.resume}")
+        checkpoint = _torch.load(args.resume, map_location="cpu", weights_only=False)
+        ckpt_config = checkpoint.get("config")
+        if ckpt_config is None:
+            raise ValueError(
+                f"Checkpoint '{args.resume}' does not contain a config. "
+                "Please provide --config explicitly."
+            )
+        config = load_config_from_dict(ckpt_config)
+        del checkpoint  # free memory before training starts
     else:
         config = Config()
 
