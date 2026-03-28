@@ -55,6 +55,8 @@ training:
   log_file: null
   log_level: "INFO"
 
+  early_stopping_patience: 6
+
   # Hardware
   device: "cuda"
   seed: 42
@@ -70,5 +72,5 @@ training:
     - epoch: 3
       variants: ["C", "R", "SR", "S"]
     - epoch: 5
-      variants: ["R", "SR", "S", "SE", "E", "SER"]
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start
