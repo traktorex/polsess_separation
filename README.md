@@ -1,6 +1,6 @@
 # PolSESS Speech Separation for Polish ASR Preprocessing
 
-PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, SPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
+PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, SPMamba, Mamba-TasNet, DPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
 
 **Key Feature**: PolSESS includes realistic acoustic conditions simulation (reverb + scene sounds + events), unlike other datasets (LibriMix), leading to better generalization on real speech.
 
@@ -65,7 +65,13 @@ polsess_separation/
 │   ├── conv_tasnet.py        # Conv-TasNet implementation
 │   ├── dprnn.py              # Dual-Path RNN
 │   ├── sepformer.py          # SepFormer (Transformer-based)
-│   └── spmamba.py            # SPMamba (State-space model)
+│   ├── spmamba.py            # SPMamba (State-space model)
+│   ├── mamba_tasnet.py       # Mamba-TasNet (single-path BiMamba)
+│   ├── dpmamba.py            # DPMamba (dual-path BiMamba)
+│   └── mamba/                # BiMamba building blocks (from xi-j/Mamba-TasNet)
+│       ├── selective_scan_interface.py
+│       ├── bimamba.py
+│       └── mamba_blocks.py
 │
 ├── datasets/                  # Dataset handling
 │   ├── polsess_dataset.py    # PolSESS with MM-IPC augmentation
@@ -95,7 +101,9 @@ polsess_separation/
 │   ├── convtasnet/
 │   ├── dprnn/
 │   ├── sepformer/
-│   └── spmamba/
+│   ├── spmamba/
+│   ├── mamba_tasnet/          # XS/S/M/L configs
+│   └── dpmamba/               # XS/S/M/L configs
 │
 ├── sweeps/                    # W&B sweep configurations and logs
 │   ├── EXPERIMENT_LOG.md     # Complete experimental results
@@ -114,7 +122,7 @@ polsess_separation/
 
 ### Key Design Decisions
 
-- **Model Factory Pattern**: Justified for comparing 4 different architectures
+- **Model Factory Pattern**: Justified for comparing 6+ different architectures
 - **Direct DataLoader Creation**: Explicit and easy to modify (no dataset factory)
 - **Single `evaluate.py`**: All evaluation logic in one file (standard research pattern)
 - **Comprehensive Tests**: 264 tests ensuring correctness and reproducibility
@@ -243,6 +251,8 @@ All configuration is centralized in [`config.py`](config.py) with three sections
 - `DPRNNParams`: N, kernel_size, stride, C, num_layers, chunk_size, rnn_type, hidden_size, bidirectional
 - `SepFormerParams`: N, kernel_size, stride, C, num_blocks, num_layers, d_model, nhead, d_ffn, chunk_size
 - `SPMambaParams`: n_fft, stride, n_layers, lstm_hidden_units, attn_n_head, n_srcs
+- `MambaTasNetParams`: N, kernel_size, stride, C, bot_dim, n_mamba, d_state, d_conv, expand, bidirectional, rms_norm
+- `DPMambaParams`: N, kernel_size, stride, C, num_layers, chunk_size, n_mamba_dp, d_state, d_conv, expand, bidirectional, rms_norm, skip_around_intra
 
 **TrainingConfig:** lr, weight_decay, grad_clip_norm, lr_factor, lr_patience, num_epochs, use_amp, seed, curriculum_learning, early_stopping_patience, grad_accumulation_steps, use_wandb, resume_from
 
@@ -300,7 +310,7 @@ With batch_size=4:
 - **Cause:** Batch size too large, overflowing to system RAM
 - **Fix:** Reduce `batch_size` in YAML config, or use `grad_accumulation_steps` to maintain effective batch size
 
-### SPMamba on Windows
+### Mamba Models on Windows (SPMamba, Mamba-TasNet, DPMamba)
 - **Cause:** `mamba-ssm` requires Linux + CUDA
 - **Fix:** Use WSL2 with CUDA toolkit 12.4+
 
@@ -310,6 +320,7 @@ With batch_size=4:
 - **DPRNN:** [Dual-Path RNN: Efficient Long Sequence Modeling for Time-Domain Single-Channel Speech Separation](https://arxiv.org/abs/1910.06379)
 - **SepFormer:** [Attention is All You Need in Speech Separation](https://arxiv.org/abs/2010.13154)
 - **SPMamba:** [SPMamba: State-Space Model is All You Need in Speech Separation](https://arxiv.org/abs/2404.02063)
+- **DPMamba / Mamba-TasNet:** [Dual-Path Mamba: Short and Long-term Bidirectional Selective Structured State Space Models for Speech Separation](https://arxiv.org/abs/2403.18257) and [Speech Slytherin: Examining the Performance and Efficiency of Mamba for Speech Separation, Recognition, and Synthesis](https://arxiv.org/abs/2407.09732)
 - **SpeechBrain:** [SpeechBrain: A PyTorch-based Speech Toolkit](https://github.com/speechbrain/speechbrain)
 - **MM-IPC Augmentation:** Based on Klec et al.'s approach for PolSESS
 

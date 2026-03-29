@@ -109,6 +109,8 @@ class MambaTasNetParams:
     d_state: int = 16  # SSM state dimension
     d_conv: int = 4  # Local convolution width
     expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
 
 
 @dataclass
@@ -121,9 +123,13 @@ class DPMambaParams:
     C: int = 1  # Output sources
     num_layers: int = 8  # Number of dual-path iterations
     chunk_size: int = 250  # Chunk length K for dual-path segmentation
+    n_mamba_dp: int = 2  # Total BiMamba blocks across intra+inter (each gets half)
     d_state: int = 16  # SSM state dimension
     d_conv: int = 4  # Local convolution width
     expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    skip_around_intra: bool = False  # Residual around intra-chunk (True for M/L configs)
 
 
 
@@ -340,7 +346,7 @@ class Config:
             lines.extend([
                 f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
                 f"  Mamba: bot_dim={p.bot_dim}, n_mamba={p.n_mamba}, expand={p.expand}",
-                f"  SSM: d_state={p.d_state}, d_conv={p.d_conv}",
+                f"  SSM: d_state={p.d_state}, d_conv={p.d_conv}, rms_norm={p.rms_norm}",
                 f"  Output: C={p.C}",
             ])
         elif mt == "dpmamba":

@@ -20,9 +20,11 @@ model:
     C: 2
     num_layers: 16  # Paper L: 16 dual-path layers
     chunk_size: 250
+    n_mamba_dp: 2   # BiMamba blocks per intra/inter path (author default)
     d_state: 16
     d_conv: 4
     expand: 2
+    skip_around_intra: true  # Author uses skip for M/L configs
 
 training:
   lr: 0.00015

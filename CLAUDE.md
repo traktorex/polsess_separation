@@ -33,7 +33,7 @@ This is a speech processing research repository focused on speech separation and
 
 **DON'T:**
 - ❌ Over-engineer with excessive abstraction layers
-- ❌ Create factory patterns unless handling 4+ variants (we have model factory for 4 models — justified)
+- ❌ Create factory patterns unless handling 4+ variants (we have model factory for 6+ models — justified)
 - ❌ Split simple functions into separate files "for organization"
 - ❌ Use clever tricks that require explanation
 - ❌ Add features "for future extensibility" — implement what's needed now
@@ -65,7 +65,7 @@ If the answer to any is "no", simplify.
 
 ## Primary Project: PolSESS Speech Separation
 
-Located in `polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, and SPMamba3 architectures on the PolSESS dataset.
+Located in `polsess_separation/`, this is a PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, SPMamba3, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset.
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
@@ -217,12 +217,14 @@ The project follows a modular architecture with clear separation of concerns:
 
 - Simple dict-based registry: `MODELS = {"convtasnet": ConvTasNet, ...}`
 - Retrieve with `get_model("model_name")` which returns the model class
-- Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`, `spmamba3`
+- Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`, `spmamba3`, `mamba_tasnet`, `dpmamba`
   - **convtasnet**: Time-domain convolutional architecture (~8M params)
   - **sepformer**: Transformer-based separation (~26M params)
   - **dprnn**: Dual-path RNN with intra/inter-chunk processing (~2-3M params)
   - **spmamba**: State-space model with Mamba-1 blocks (~1.2M params, requires Linux + CUDA)
   - **spmamba3**: SPMamba with Mamba-3 blocks — exp-trapezoidal discretization, complex RoPE states (~1.5M params, requires `venv_mamba3`) (spmamba3 is on its own branch right now)
+  - **mamba_tasnet**: Single-path BiMamba separator (Jiang et al., 2024). LayerNorm → bottleneck → MambaBlocksSequential → mask. Configs: XS/S/M/L (2.2M–59.6M params). Requires Linux + CUDA.
+  - **dpmamba**: Dual-path BiMamba separator (Jiang et al., 2024). Uses SpeechBrain's Dual_Path_Model with MambaBlocksSequential for intra/inter paths. `n_mamba_dp` is total blocks across both paths (each gets half). Configs: XS/S/M/L (2.3M–59.8M params). Requires Linux + CUDA.
 
 **Dataset Registry (`datasets/__init__.py`):**
 
@@ -279,8 +281,8 @@ The project follows a modular architecture with clear separation of concerns:
   - Effective batch = `batch_size × grad_accumulation_steps`
   - Useful when VRAM limits physical batch size
 
-- **SPMamba Requirements:** Linux + CUDA only
-  - Requires `mamba-ssm` library (not available on Windows native)
+- **Mamba Models (SPMamba, Mamba-TasNet, DPMamba):** Linux + CUDA only
+  - Require `mamba-ssm` library (not available on Windows native)
   - Windows users must use WSL2 with CUDA toolkit 12.4+
 
 ### Module Structure
@@ -306,7 +308,14 @@ polsess_separation/
 │   ├── sepformer.py               # SepFormer architecture
 │   ├── dprnn.py                   # Dual-path RNN architecture
 │   ├── spmamba.py                 # SPMamba with Mamba-1 blocks (Linux + CUDA only)
-│   └── spmamba3.py                # SPMamba3 with Mamba-3 blocks (requires venv_mamba3)
+│   ├── spmamba3.py                # SPMamba3 with Mamba-3 blocks (requires venv_mamba3)
+│   ├── mamba_tasnet.py            # Mamba-TasNet: single-path BiMamba separator
+│   ├── dpmamba.py                 # DPMamba: dual-path BiMamba separator
+│   └── mamba/                     # Mamba building blocks (adapted from xi-j/Mamba-TasNet)
+│       ├── __init__.py            # Exports MambaBlocksSequential, MAMBA_AVAILABLE
+│       ├── selective_scan_interface.py  # MambaInnerFnNoOutProj (derived from mamba-ssm 2.3.1)
+│       ├── bimamba.py             # BiMamba v2 mixer (bidirectional SSM)
+│       └── mamba_blocks.py        # MambaBlocksSequential (N Block layers + GPT-2 init)
 ├── datasets/
 │   ├── __init__.py                # Dataset registry (dict-based, get_dataset)
 │   ├── polsess_dataset.py         # PolSESS with MM-IPC augmentation
@@ -330,7 +339,9 @@ polsess_separation/
 │   ├── convtasnet/
 │   ├── dprnn/
 │   ├── sepformer/
-│   └── spmamba/
+│   ├── spmamba/
+│   ├── mamba_tasnet/              # XS/S/M/L configs
+│   └── dpmamba/                   # XS/S/M/L configs
 └── sweeps/                        # W&B sweep configs and experiment log
     ├── EXPERIMENT_LOG.md
     ├── 1-baselines-SB/

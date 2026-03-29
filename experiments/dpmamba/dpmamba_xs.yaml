@@ -19,12 +19,13 @@ model:
     C: 2
     num_layers: 8   # Paper XS: 8 dual-path layers
     chunk_size: 250
+    n_mamba_dp: 2   # BiMamba blocks per intra/inter path (author default)
     d_state: 16
     d_conv: 4
     expand: 2
 
 training:
-  lr: 0.00015
+  lr: 0.0006
   weight_decay: 0.0
   grad_clip_norm: 5.0
   lr_factor: 0.5

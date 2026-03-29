@@ -1,29 +1,29 @@
 """Mamba-TasNet: Single-path Mamba for speech separation.
 
-Based on: "Dual-Path Mamba: Short and Long-term Bidirectional Selective Structured
-State Space Models for Speech Separation" (Jiang et al., 2024)
-and "Speech Slytherin: Examining the Performance and Efficiency of Mamba for
-Speech Separation, Recognition, and Synthesis" (Jiang et al., 2024)
+Adapted from xi-j/Mamba-TasNet's MaskNet (modules/mamba_masknet.py):
+  Encoder → LayerNorm → Bottleneck → MambaBlocksSequential → Mask → Decoder
 
-Architecture: Encoder → Sequential BiMamba blocks → Decoder
-Uses the same TasNet-style Conv1d encoder/decoder as ConvTasNet and DPRNN.
+References:
+  - "Dual-Path Mamba" (Jiang et al., 2024, arXiv 2403.18257)
+  - "Speech Slytherin" (Jiang et al., 2024, arXiv 2407.09732)
 
 Requires mamba-ssm library (Linux + CUDA only).
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from speechbrain.lobes.models.dual_path import Encoder, Decoder
 
-from .mamba_modules import BiMambaBlock, MAMBA_AVAILABLE
-
-# Conditional import — RMSNorm needed for norm_f
-if MAMBA_AVAILABLE:
-    from mamba_ssm.ops.triton.layer_norm import RMSNorm
+from .mamba import MambaBlocksSequential
 
 
 class MambaTasNet(nn.Module):
-    """Mamba-TasNet: Conv-TasNet with Mamba blocks replacing the TCN separator.
+    """Mamba-TasNet: Conv-TasNet with BiMamba blocks replacing the TCN separator.
+
+    Adapted from the author's MaskNet. The separator operates in [B, L, D]
+    format (time-first): LayerNorm → Linear bottleneck → MambaBlocksSequential
+    → Linear mask → ReLU → masking → Decoder.
 
     Args:
         N: Encoder/decoder channels.
@@ -35,6 +35,8 @@ class MambaTasNet(nn.Module):
         d_state: SSM state dimension.
         d_conv: Local convolution width in Mamba.
         expand: Inner dimension expansion factor in Mamba.
+        bidirectional: Use BiMamba (True) or standard Mamba (False).
+        rms_norm: Use RMSNorm instead of LayerNorm in Mamba blocks.
     """
 
     def __init__(
@@ -48,8 +50,12 @@ class MambaTasNet(nn.Module):
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
+        bidirectional: bool = True,
+        rms_norm: bool = True,
     ):
         super().__init__()
+        self.C = C
+        self.N = N
 
         # Shared TasNet encoder/decoder (same as ConvTasNet, DPRNN, SepFormer)
         self.encoder = Encoder(kernel_size=kernel_size, out_channels=N, in_channels=1)
@@ -58,18 +64,22 @@ class MambaTasNet(nn.Module):
             kernel_size=kernel_size, stride=stride, bias=False,
         )
 
-        # Separator: norm → bottleneck → Mamba blocks → mask projection
-        self.norm = nn.GroupNorm(1, N)  # Channel-wise layer norm
-        self.bottleneck = nn.Conv1d(N, bot_dim, 1)
-        self.mamba_blocks = nn.ModuleList([
-            BiMambaBlock(bot_dim, d_state=d_state, d_conv=d_conv, expand=expand)
-            for _ in range(n_mamba)
-        ])
-        self.norm_f = RMSNorm(bot_dim)  # Final norm after all Mamba blocks
-        self.mask_conv = nn.Conv1d(bot_dim, C * N, 1)
-
-        self.C = C
-        self.N = N
+        # Separator (adapted from author's MaskNet)
+        # All operations in [B, L, D] format after the initial transpose
+        self.layer_norm = nn.LayerNorm(N)
+        self.bottleneck = nn.Linear(N, bot_dim, bias=False)
+        self.mamba_net = MambaBlocksSequential(
+            n_mamba=n_mamba,
+            bidirectional=bidirectional,
+            d_model=bot_dim,
+            d_state=d_state,
+            expand=expand,
+            d_conv=d_conv,
+            rms_norm=rms_norm,
+            conv_bias=True,
+            bias=False,
+        )
+        self.mask_linear = nn.Linear(bot_dim, C * N, bias=False)
 
     def forward(self, mixture: torch.Tensor) -> torch.Tensor:
         """Separate mixture into C sources.
@@ -86,31 +96,30 @@ class MambaTasNet(nn.Module):
         # Encode: [B, T] → [B, N, L]
         mixture_w = self.encoder(mixture)
 
-        # Separator
-        x = self.norm(mixture_w)               # [B, N, L]
-        x = self.bottleneck(x)                 # [B, bot_dim, L]
-        x = x.transpose(1, 2)                  # [B, L, bot_dim] for Mamba
-        for block in self.mamba_blocks:
-            x = block(x)
-        x = self.norm_f(x)                     # Final norm (paper: MambaBlocksSequential.norm_f)
-        x = x.transpose(1, 2)                  # [B, bot_dim, L]
+        # Separator (matches author's MaskNet.forward)
+        # Transpose to [B, L, N] for channel-last processing
+        x = mixture_w.permute(0, 2, 1)
+        B, L, D = x.shape
+        x = self.layer_norm(x)
+        x = self.bottleneck(x)             # [B, L, bot_dim]
+        x = self.mamba_net(x)              # [B, L, bot_dim]
+        score = self.mask_linear(x)        # [B, L, C*N]
 
-        # Generate and apply masks
-        masks = self.mask_conv(x)              # [B, C*N, L]
-        B, _, L = masks.shape
-        masks = masks.view(B, self.C, self.N, L)
-        masks = torch.relu(masks)
+        # Reshape to [C, B, N, L] mask format (matches author's MaskNet)
+        score = score.reshape(B, L, self.C, D)
+        masks = score.permute(2, 0, 3, 1)  # [C, B, N, L]
+        masks = F.relu(masks)
 
         # Decode each source
         estimates = []
         for i in range(self.C):
-            masked = mixture_w * masks[:, i]   # [B, N, L]
-            decoded = self.decoder(masked)     # [B, T]
+            masked = mixture_w * masks[i]   # [B, N, L]
+            decoded = self.decoder(masked)  # [B, T]
             estimates.append(decoded)
 
         estimates = torch.stack(estimates, dim=1)  # [B, C, T]
 
         if self.C == 1:
-            estimates = estimates.squeeze(1)    # [B, T]
+            estimates = estimates.squeeze(1)  # [B, T]
 
         return estimates

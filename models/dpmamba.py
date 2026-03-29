@@ -1,11 +1,13 @@
 """DPMamba: Dual-Path Mamba for speech separation.
 
-Based on: "Dual-Path Mamba: Short and Long-term Bidirectional Selective Structured
-State Space Models for Speech Separation" (Jiang et al., 2024)
+Adapted from xi-j/Mamba-TasNet. Uses MambaBlocksSequential as intra-chunk and
+inter-chunk models within SpeechBrain's Dual_Path_Model framework.
 
-Architecture: Encoder → Dual_Path_Model(BiMamba intra, BiMamba inter) → Decoder
-Reuses SpeechBrain's Dual_Path_Model (same framework as DPRNN and SepFormer),
-swapping RNN/Transformer blocks for bidirectional Mamba blocks.
+The author's n_mamba_dp parameter is the total Mamba blocks across both paths:
+each path gets n_mamba_dp // 2 blocks (e.g. n_mamba_dp=2 → 1 block per path).
+
+References:
+  - "Dual-Path Mamba" (Jiang et al., 2024, arXiv 2403.18257)
 
 Requires mamba-ssm library (Linux + CUDA only).
 """
@@ -18,31 +20,16 @@ from speechbrain.lobes.models.dual_path import (
     Dual_Path_Model,
 )
 
-from .mamba_modules import BiMambaBlock
-
-
-class SBMambaBlock(nn.Module):
-    """Mamba block compatible with SpeechBrain's Dual_Path_Model.
-
-    Thin wrapper that matches the interface expected by Dual_Computation_Block:
-    forward(x: [B, L, N]) → [B, L, N].
-    """
-
-    def __init__(self, input_size: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
-        super().__init__()
-        self.bimamba = BiMambaBlock(input_size, d_state=d_state, d_conv=d_conv, expand=expand)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.bimamba(x)
+from .mamba import MambaBlocksSequential
 
 
 class DPMamba(nn.Module):
     """DPMamba: Dual-path processing with bidirectional Mamba blocks.
 
-    Uses the same encoder/decoder as ConvTasNet, DPRNN, and SepFormer.
-    The dual-path framework splits encoded features into overlapping chunks,
-    applies intra-chunk (local) and inter-chunk (global) Mamba processing,
-    then reconstructs via overlap-add.
+    Uses MambaBlocksSequential for each intra-chunk and inter-chunk path.
+    Each path gets n_mamba_dp // 2 blocks (matching the author's config).
+    SpeechBrain's Dual_Path_Model handles segmentation, overlap-add, and
+    the dual-path iteration.
 
     Args:
         N: Encoder/decoder channels.
@@ -51,9 +38,13 @@ class DPMamba(nn.Module):
         C: Number of output sources (1=enhancement, 2=separation).
         num_layers: Number of dual-path iterations.
         chunk_size: Chunk length K for dual-path segmentation.
+        n_mamba_dp: Total BiMamba blocks across intra+inter (each gets half).
         d_state: SSM state dimension.
         d_conv: Local convolution width in Mamba.
         expand: Inner dimension expansion factor in Mamba.
+        bidirectional: Use BiMamba (True) or standard Mamba (False).
+        rms_norm: Use RMSNorm instead of LayerNorm in Mamba blocks.
+        skip_around_intra: Add residual around intra-chunk processing.
     """
 
     def __init__(
@@ -64,22 +55,46 @@ class DPMamba(nn.Module):
         C: int = 1,
         num_layers: int = 8,
         chunk_size: int = 250,
+        n_mamba_dp: int = 2,
         d_state: int = 16,
         d_conv: int = 4,
         expand: int = 2,
+        bidirectional: bool = True,
+        rms_norm: bool = True,
+        skip_around_intra: bool = False,
     ):
         super().__init__()
+        self.C = C
+        self.N = N
 
         # Shared TasNet encoder/decoder
         self.encoder = Encoder(kernel_size=kernel_size, out_channels=N, in_channels=1)
+        self.decoder = Decoder(
+            in_channels=N, out_channels=1,
+            kernel_size=kernel_size, stride=stride, bias=False,
+        )
 
-        # Intra-chunk (local) and inter-chunk (global) Mamba blocks
-        intra_block = SBMambaBlock(N, d_state=d_state, d_conv=d_conv, expand=expand)
-        inter_block = SBMambaBlock(N, d_state=d_state, d_conv=d_conv, expand=expand)
+        # Intra-chunk (local) and inter-chunk (global) Mamba blocks.
+        # Author's convention: n_mamba_dp is total across both paths,
+        # each path gets n_mamba_dp // 2 blocks (e.g. 2 → 1 per path).
+        n_mamba_per_path = n_mamba_dp // 2
+        mamba_kwargs = dict(
+            n_mamba=max(n_mamba_per_path, 1),
+            bidirectional=bidirectional,
+            d_model=N,
+            d_state=d_state,
+            expand=expand,
+            d_conv=d_conv,
+            rms_norm=rms_norm,
+            conv_bias=True,
+            bias=False,
+        )
+        intra_block = MambaBlocksSequential(**mamba_kwargs)
+        inter_block = MambaBlocksSequential(**mamba_kwargs)
 
-        # Dual-path separator (same framework as DPRNN and SepFormer)
-        # linear_layer_after_inter_intra=False because BiMamba output dim == input dim
-        # (unlike SBRNNBlock which outputs 2*hidden_size when bidirectional)
+        # Dual-path separator (same framework as DPRNN and SepFormer).
+        # linear_layer_after_inter_intra=False because MambaBlocksSequential
+        # preserves dimension (unlike SBRNNBlock which doubles it).
         self.separator = Dual_Path_Model(
             in_channels=N,
             out_channels=N,
@@ -89,17 +104,9 @@ class DPMamba(nn.Module):
             norm="ln",
             K=chunk_size,
             num_spks=C,
-            skip_around_intra=True,
+            skip_around_intra=skip_around_intra,
             linear_layer_after_inter_intra=False,
         )
-
-        self.decoder = Decoder(
-            in_channels=N, out_channels=1,
-            kernel_size=kernel_size, stride=stride, bias=False,
-        )
-
-        self.C = C
-        self.N = N
 
     def forward(self, mixture: torch.Tensor) -> torch.Tensor:
         """Separate mixture into C sources.
@@ -122,14 +129,14 @@ class DPMamba(nn.Module):
         # Decode each source
         estimates = []
         for i in range(self.C):
-            mask = est_mask[i]                 # [B, N, L]
+            mask = est_mask[i]               # [B, N, L]
             masked = mixture_w * mask
-            decoded = self.decoder(masked)     # [B, T]
+            decoded = self.decoder(masked)   # [B, T]
             estimates.append(decoded)
 
         estimates = torch.stack(estimates, dim=1)  # [B, C, T]
 
         if self.C == 1:
-            estimates = estimates.squeeze(1)    # [B, T]
+            estimates = estimates.squeeze(1)  # [B, T]
 
         return estimates

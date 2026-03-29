@@ -24,7 +24,7 @@ model:
     expand: 2
 
 training:
-  lr: 0.00015
+  lr: 0.0012
   weight_decay: 0.0
   grad_clip_norm: 5.0
   lr_factor: 0.5
