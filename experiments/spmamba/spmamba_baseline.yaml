@@ -26,11 +26,11 @@ model:
     attn_n_head: 4  # 4 attention heads
     attn_approx_qk_dim: 512  # Q/K dimension
     emb_dim: 16  # Embedding dimension
-    emb_ks: 4  # Embedding kernel size (was 8 in paper for LibriMix)
+    emb_ks: 8  # Embedding kernel size (was 8 in paper for LibriMix)
     emb_hs: 1  # Embedding hop size
     activation: "prelu"
     eps: 1.0e-5
-    sample_rate: 16000
+    sample_rate: 8000
 
 training:
   # Optimizer settings
