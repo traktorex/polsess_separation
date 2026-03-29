@@ -6,7 +6,6 @@ from .dprnn import DPRNN
 from .spmamba import SPMamba
 from .mamba_tasnet import MambaTasNet
 from .dpmamba import DPMamba
-from .sepmamba import SepMamba
 
 # Model registry for easy switching between architectures
 MODELS = {
@@ -16,7 +15,6 @@ MODELS = {
     'spmamba': SPMamba,
     'mamba_tasnet': MambaTasNet,
     'dpmamba': DPMamba,
-    'sepmamba': SepMamba,
 }
 
 
@@ -33,6 +31,6 @@ def get_model(model_type: str):
 
 __all__ = [
     'ConvTasNet', 'SepFormer', 'DPRNN', 'SPMamba',
-    'MambaTasNet', 'DPMamba', 'SepMamba',
+    'MambaTasNet', 'DPMamba',
     'MODELS', 'get_model',
 ]
