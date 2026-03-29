@@ -94,7 +94,43 @@ class SPMambaParams:
     emb_hs: int = 1  # Embedding hop size
     activation: str = "prelu"  # Activation function
     eps: float = 1.0e-5  # Epsilon for numerical stability
-    sample_rate: int = 8000  # Audio sample rate
+
+
+@dataclass
+class MambaTasNetParams:
+    """Mamba-TasNet model-specific parameters."""
+
+    N: int = 256  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    bot_dim: int = 256  # Bottleneck dimension for Mamba blocks
+    n_mamba: int = 8  # Number of bidirectional Mamba blocks
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+
+
+@dataclass
+class DPMambaParams:
+    """DPMamba (Dual-Path Mamba) model-specific parameters."""
+
+    N: int = 64  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    num_layers: int = 8  # Number of dual-path iterations
+    chunk_size: int = 250  # Chunk length K for dual-path segmentation
+    n_mamba_dp: int = 2  # Total BiMamba blocks across intra+inter (each gets half)
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    skip_around_intra: bool = False  # Residual around intra-chunk (True for M/L configs)
+
 
 
 @dataclass
@@ -121,12 +157,14 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba, mamba_tasnet, dpmamba
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    mamba_tasnet: Optional[MambaTasNetParams] = None
+    dpmamba: Optional[DPMambaParams] = None
 
     def __post_init__(self):
         """Initialize model-specific params if not provided."""
@@ -138,6 +176,10 @@ class ModelConfig:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "mamba_tasnet" and self.mamba_tasnet is None:
+            self.mamba_tasnet = MambaTasNetParams()
+        elif self.model_type == "dpmamba" and self.dpmamba is None:
+            self.dpmamba = DPMambaParams()
 
 
 @dataclass
@@ -208,6 +250,10 @@ class Config:
                 self.model.dprnn.C = 1
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 1
+            elif self.model.model_type == "mamba_tasnet":
+                self.model.mamba_tasnet.C = 1
+            elif self.model.model_type == "dpmamba":
+                self.model.dpmamba.C = 1
         elif self.data.task == "SB":
             if self.model.model_type == "convtasnet":
                 self.model.convtasnet.C = 2
@@ -217,6 +263,10 @@ class Config:
                 self.model.dprnn.C = 2
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
+            elif self.model.model_type == "mamba_tasnet":
+                self.model.mamba_tasnet.C = 2
+            elif self.model.model_type == "dpmamba":
+                self.model.dpmamba.C = 2
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -291,6 +341,23 @@ class Config:
                 f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
                 f"  Output: n_srcs={p.n_srcs}",
             ])
+        elif mt == "mamba_tasnet":
+            p = self.model.mamba_tasnet
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Mamba: bot_dim={p.bot_dim}, n_mamba={p.n_mamba}, expand={p.expand}",
+                f"  SSM: d_state={p.d_state}, d_conv={p.d_conv}, rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "dpmamba":
+            p = self.model.dpmamba
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Dual-path: layers={p.num_layers}, chunk_size={p.chunk_size}",
+                f"  SSM: n_mamba_dp={p.n_mamba_dp}, d_state={p.d_state}, d_conv={p.d_conv}, expand={p.expand}",
+                f"  Norm: rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
+            ])
 
         # Training section
         lines.extend([
@@ -358,6 +425,12 @@ def load_config_from_dict(config_dict: dict) -> Config:
     spmamba_dict = model_dict.pop("spmamba", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
 
+    mamba_tasnet_dict = model_dict.pop("mamba_tasnet", None)
+    mamba_tasnet_params = MambaTasNetParams(**mamba_tasnet_dict) if mamba_tasnet_dict else None
+
+    dpmamba_dict = model_dict.pop("dpmamba", None)
+    dpmamba_params = DPMambaParams(**dpmamba_dict) if dpmamba_dict else None
+
     data_config = DataConfig(**data_dict, polsess=polsess_params)
     model_config = ModelConfig(
         **model_dict,
@@ -365,6 +438,8 @@ def load_config_from_dict(config_dict: dict) -> Config:
         sepformer=sepformer_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        mamba_tasnet=mamba_tasnet_params,
+        dpmamba=dpmamba_params,
     )
     training_config = TrainingConfig(**training_dict)
 
@@ -403,7 +478,11 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba"]:
+        elif key == "mamba_tasnet" and value is not None:
+            model_dict["mamba_tasnet"] = value
+        elif key == "dpmamba" and value is not None:
+            model_dict["dpmamba"] = value
+        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
             model_dict[key] = value
 
     config_dict = {

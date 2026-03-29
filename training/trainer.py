@@ -66,11 +66,7 @@ class Trainer:
             self.si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
             self.loss_fn = self._sisdr_loss_wrapper
 
-        self.scaler = (
-            torch.amp.GradScaler("cuda", init_scale=258)
-            if (self.use_amp and device == "cuda")
-            else None
-        )
+        self._setup_amp(model, device)
 
         self.best_val_sisdr = -float("inf")
         self.current_epoch = 0
@@ -81,6 +77,29 @@ class Trainer:
         self.lr_scheduler_enabled = (
             self.curriculum_schedule is None
         )  # Enabled by default if no curriculum
+
+    def _setup_amp(self, model, device):
+        """Configure AMP strategy based on model type.
+
+        Mamba models: bf16 autocast, no GradScaler — Mamba CUDA kernels accept
+        bf16 activations with float32 weights. GradScaler is unnecessary (bf16
+        has the same exponent range as float32) and harmful (grows unbounded
+        since the model internally runs float32).
+
+        Other models: fp16 autocast + GradScaler — standard mixed precision.
+        """
+        if not self.use_amp or device != "cuda":
+            self.scaler = None
+            self.amp_dtype = None
+            return
+
+        mamba_models = ("SPMamba", "SPMamba3", "DPMamba", "MambaTasNet")
+        if type(model).__name__ in mamba_models:
+            self.scaler = None
+            self.amp_dtype = torch.bfloat16
+        else:
+            self.scaler = torch.amp.GradScaler("cuda", init_scale=256)
+            self.amp_dtype = torch.float16
 
     def _get_curriculum_variants(self, epoch):
         """Get allowed variants for current epoch from curriculum schedule.
@@ -316,16 +335,16 @@ class Trainer:
             mix = batch["mix"].to(self.device)
             clean = batch["clean"].to(self.device)
 
-            if self.scaler:
-                with torch.amp.autocast("cuda"):
+            if self.use_amp:
+                with torch.amp.autocast("cuda", dtype=self.amp_dtype):
                     mix_input = mix.unsqueeze(1)
                     estimates = self.model(mix_input)
+                    loss, sisdr_value = self.loss_fn(estimates, clean)
             else:
                 mix_input = mix.unsqueeze(1)
                 estimates = self.model(mix_input)
+                loss, sisdr_value = self.loss_fn(estimates, clean)
 
-            loss, sisdr_value = self.loss_fn(estimates, clean)
-            
             # Scale loss for gradient accumulation
             if accum_steps > 1:
                 loss = loss / accum_steps
@@ -336,8 +355,9 @@ class Trainer:
                 )
                 self.logger.warning(f"  Loss: {loss.item()}, SI-SDR: {sisdr_value}")
                 self.optimizer.zero_grad()
-                # Release peak CUDA allocation from the overflow to prevent
-                # memory staying elevated for the rest of training
+                # Free the computation graph and intermediate tensors before
+                # calling empty_cache — otherwise they keep GPU memory pinned
+                del loss, estimates, mix_input, mix, clean
                 torch.cuda.empty_cache()
                 continue
 
@@ -349,9 +369,8 @@ class Trainer:
             # Only step optimizer every accum_steps batches (or at end of epoch)
             is_accum_step = (batch_idx + 1) % accum_steps == 0
             is_last_batch = (batch_idx + 1) == len(self.train_loader)
-            
+
             if is_accum_step or is_last_batch:
-                # Gradient clipping and optimizer step
                 if self.scaler:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
@@ -403,15 +422,15 @@ class Trainer:
                 mix = batch["mix"].to(self.device)
                 clean = batch["clean"].to(self.device)
 
-                if self.scaler:
-                    with torch.amp.autocast("cuda"):
+                if self.use_amp:
+                    with torch.amp.autocast("cuda", dtype=self.amp_dtype):
                         mix_input = mix.unsqueeze(1)
                         estimates = self.model(mix_input)
+                        _, sisdr_value = self.loss_fn(estimates, clean)
                 else:
                     mix_input = mix.unsqueeze(1)
                     estimates = self.model(mix_input)
-
-                _, sisdr_value = self.loss_fn(estimates, clean)
+                    _, sisdr_value = self.loss_fn(estimates, clean)
                 # Weight by actual batch size for correct averaging
                 batch_size = len(mix)
                 total_sisdr += sisdr_value * batch_size
