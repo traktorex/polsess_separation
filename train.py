@@ -21,6 +21,7 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 def main():
     setup_warnings()
+    torch.set_float32_matmul_precision('high')
     config = get_config_from_args()
     set_seed(config.training.seed)
 

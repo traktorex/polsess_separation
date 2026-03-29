@@ -1,5 +1,6 @@
 """Training script for W&B hyperparameter sweeps."""
 
+import torch
 import wandb
 from torch.utils.data import DataLoader
 
@@ -19,6 +20,7 @@ from utils import (
 
 def main():
     setup_warnings()
+    torch.set_float32_matmul_precision('high')
     run = wandb.init()
     sweep_config = wandb.config
 
