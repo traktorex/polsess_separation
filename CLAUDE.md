@@ -284,6 +284,7 @@ The project follows a modular architecture with clear separation of concerns:
 - **Mamba Models (SPMamba, Mamba-TasNet, DPMamba):** Linux + CUDA only
   - Require `mamba-ssm` library (not available on Windows native)
   - Windows users must use WSL2 with CUDA toolkit 12.4+
+  - AMP uses bfloat16 (no GradScaler) — Mamba CUDA kernels run float32 internally
 
 ### Module Structure
 
