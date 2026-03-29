@@ -353,7 +353,6 @@ class SPMamba(nn.Module):
         emb_hs: Embedding hop size (default: 1)
         activation: Activation function (default: prelu)
         eps: Epsilon for numerical stability
-        sample_rate: Audio sample rate (default: 16000)
     """
 
     def __init__(
@@ -372,7 +371,6 @@ class SPMamba(nn.Module):
         emb_hs=1,
         activation="prelu",
         eps=1.0e-5,
-        sample_rate=16000,
     ):
         super().__init__()
 
@@ -387,7 +385,6 @@ class SPMamba(nn.Module):
         self.n_fft = n_fft
         self.stride = stride
         self.window = window
-        self.sample_rate = sample_rate
 
         assert n_fft % 2 == 0
         n_freqs = n_fft // 2 + 1
@@ -444,25 +441,25 @@ class SPMamba(nn.Module):
         mix_std = torch.std(mixture, dim=1, keepdim=True) + 1e-8
         mixture = mixture / mix_std
 
-        # STFT encoding
-        window_tensor = torch.hann_window(self.n_fft, device=mixture.device)
-        spec = torch.stft(
-            mixture,
+        # STFT requires float32 (matching original SPMamba half-precision support).
+        # .float() is a no-op when input is already float32.
+        spectrum = torch.stft(
+            mixture.float(),
             n_fft=self.n_fft,
             hop_length=self.stride,
             win_length=self.n_fft,
-            window=window_tensor,
+            window=torch.hann_window(self.n_fft, device=mixture.device),
             return_complex=True,
             center=True,
-        )  # [B, F, T]
+        )
 
         # Separate real and imaginary parts
-        batch = torch.stack([spec.real, spec.imag], dim=1)  # [B, 2, F, T]
+        batch = torch.stack([spectrum.real, spectrum.imag], dim=1)  # [B, 2, F, T]
         batch = batch.transpose(2, 3)  # [B, 2, T, F]
 
         n_batch, _, n_frames, n_freqs = batch.shape
 
-        # Process through network
+        # Process through network (runs under autocast if AMP enabled)
         batch = self.conv(batch)
         for block in self.blocks:
             batch = block(batch)
@@ -471,12 +468,18 @@ class SPMamba(nn.Module):
         # Reshape for ISTFT: [B, n_srcs, 2, T, F]
         batch = batch.view([n_batch, self.n_srcs, 2, n_frames, n_freqs])
 
-        # Convert back to complex and apply ISTFT
+        # Convert back to complex and apply ISTFT (cast to float32 — torch.complex
+        # doesn't support bf16, matching original's stft.inverse(input.float()))
+        if batch.dtype == torch.bfloat16:
+            batch = batch.float()
+        window_tensor = torch.hann_window(self.n_fft, device=batch.device)
         estimates = []
         for src in range(self.n_srcs):
             src_spec = torch.complex(batch[:, src, 0], batch[:, src, 1])  # [B, T, F]
             src_spec = src_spec.transpose(1, 2)  # [B, F, T]
 
+            if src_spec.dtype in (torch.complex32,):
+                src_spec = src_spec.to(torch.complex64)
             src_wav = torch.istft(
                 src_spec,
                 n_fft=self.n_fft,
