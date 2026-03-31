@@ -1,0 +1,82 @@
+# SepFormer HPO v2 — Positional Encoding, Full 16K Dataset
+# Single-stage Bayesian sweep, 60 epochs, no curriculum learning.
+# Ranges narrowed from previous Stage 2 results (see EXPERIMENT_LOG.md).
+# Target: ~20-25 runs, then validate top 1-2 for 200 epochs × 3 seeds.
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15
+  s: 2
+
+parameters:
+  # Fixed
+  config:
+    value: experiments/sepformer/4-hpo-posenc/sepformer_16k_posenc.yaml
+
+  num_epochs:
+    value: 60
+
+  seed:
+    values: [42]
+
+  early_stopping_patience:
+    value: 8
+
+  # ========================================
+  # Search space (narrowed from Stage 2)
+  # ========================================
+
+  # Previous sweet spot: 2-3e-4. 73% of runs with LR > 5e-4 diverged.
+  lr:
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 5e-4
+
+  # Weak signal in previous sweep, but important for DPRNN — worth exploring.
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+
+  # Previous default 5.0 worked fine, but pos. enc. may change gradient norms.
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5
+    max: 5.0
+
+  # Previous best ~0.5. Narrowed range.
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.8
+
+  # Dropped 4 — too slow to react with 60-epoch budget.
+  lr_patience:
+    values: [1, 2, 3]
+
+  # ========================================
+  # Model parameters (no size change)
+  # ========================================
+
+  # 25.7M params on 16K samples — some dropout likely helps.
+  # Paper uses 0.0 but trained on much larger data (WSJ0-2mix + LibriMix).
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+
+  # Dual-path chunk size controls intra-transformer context length.
+  # Larger = more context per chunk but fewer chunks (shorter inter-path sequence).
+  # hop_size auto-set to chunk_size // 2 in config.py.
+  chunk_size:
+    values: [125, 200, 250, 300]
+
+
+project: polsess-thesis-experiments
+name: sepformer-hpo-posenc-16k

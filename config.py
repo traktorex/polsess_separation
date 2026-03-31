@@ -675,7 +675,10 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     Supported sweep override keys: model_B, model_H, weight_decay,
     grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
     task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants, dropout, chunk_size, rnn_type
+    validation_variants, dropout, chunk_size, rnn_type.
+    Note: dropout and chunk_size are routed to the active model's params
+    (DPRNN or SepFormer). For SepFormer, chunk_size also sets hop_size
+    to chunk_size // 2 automatically.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -726,6 +729,15 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     for key in DPRNN_OVERRIDES:
         if key in sweep_config and config.model.dprnn is not None:
             setattr(config.model.dprnn, key, getattr(sweep_config, key))
+
+    # Special cases: SepFormer architecture overrides (nested)
+    SEPFORMER_OVERRIDES = ["dropout", "chunk_size"]
+    for key in SEPFORMER_OVERRIDES:
+        if key in sweep_config and config.model.sepformer is not None:
+            setattr(config.model.sepformer, key, getattr(sweep_config, key))
+            # Keep hop_size = chunk_size // 2 (standard dual-path convention)
+            if key == "chunk_size":
+                config.model.sepformer.hop_size = getattr(sweep_config, key) // 2
 
     # Validate and return
     config.__post_init__()
