@@ -10,8 +10,6 @@ data:
   task: ES
   train_max_samples: null
   val_max_samples: null
-  polsess:
-    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
 
 model:
   model_type: spmamba

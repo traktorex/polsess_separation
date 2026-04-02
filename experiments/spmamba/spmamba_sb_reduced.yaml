@@ -10,8 +10,6 @@ data:
   task: SB
   train_max_samples: null
   val_max_samples: null
-  polsess:
-    data_root: "/home/user/datasets/PolSESS_C_both/PolSESS_C_both"
 
 model:
   model_type: spmamba
@@ -30,7 +28,6 @@ model:
     emb_hs: 1  # Keep same
     activation: "prelu"
     eps: 1.0e-5
-    sample_rate: 8000
 
 training:
   # Optimizer settings
