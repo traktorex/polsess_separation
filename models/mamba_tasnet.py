@@ -37,6 +37,7 @@ class MambaTasNet(nn.Module):
         expand: Inner dimension expansion factor in Mamba.
         bidirectional: Use BiMamba (True) or standard Mamba (False).
         rms_norm: Use RMSNorm instead of LayerNorm in Mamba blocks.
+        residual_in_fp32: Keep residual stream in fp32 under AMP (stabilizes deep models).
     """
 
     def __init__(
@@ -52,6 +53,7 @@ class MambaTasNet(nn.Module):
         expand: int = 2,
         bidirectional: bool = True,
         rms_norm: bool = True,
+        residual_in_fp32: bool = False,
     ):
         super().__init__()
         self.C = C
@@ -76,6 +78,7 @@ class MambaTasNet(nn.Module):
             expand=expand,
             d_conv=d_conv,
             rms_norm=rms_norm,
+            residual_in_fp32=residual_in_fp32,
             conv_bias=True,
             bias=False,
         )

@@ -24,11 +24,12 @@ model:
     d_conv: 4
     expand: 2
     skip_around_intra: true  # Author uses skip for M/L configs
+    residual_in_fp32: true
 
 training:
   lr: 0.00015
   weight_decay: 0.0
-  grad_clip_norm: 5.0
+  grad_clip_norm: 1.0
   lr_factor: 0.5
   lr_patience: 2
   num_epochs: 200

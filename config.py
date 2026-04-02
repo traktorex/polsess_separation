@@ -111,6 +111,7 @@ class MambaTasNetParams:
     expand: int = 2  # Inner dimension expansion factor
     bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
     rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    residual_in_fp32: bool = False  # Keep residual stream in fp32 (stabilizes deep models under AMP)
 
 
 @dataclass
@@ -130,6 +131,7 @@ class DPMambaParams:
     bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
     rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
     skip_around_intra: bool = False  # Residual around intra-chunk (True for M/L configs)
+    residual_in_fp32: bool = False  # Cast residual stream to fp32 between Mamba blocks (prevents bf16 precision loss)
 
 
 

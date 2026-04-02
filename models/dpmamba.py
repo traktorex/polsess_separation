@@ -45,6 +45,9 @@ class DPMamba(nn.Module):
         bidirectional: Use BiMamba (True) or standard Mamba (False).
         rms_norm: Use RMSNorm instead of LayerNorm in Mamba blocks.
         skip_around_intra: Add residual around intra-chunk processing.
+        residual_in_fp32: Cast residual stream to fp32 between Mamba blocks.
+            Prevents precision loss accumulation in deep sequential chains
+            when training with bf16 AMP.
     """
 
     def __init__(
@@ -62,6 +65,7 @@ class DPMamba(nn.Module):
         bidirectional: bool = True,
         rms_norm: bool = True,
         skip_around_intra: bool = False,
+        residual_in_fp32: bool = False,
     ):
         super().__init__()
         self.C = C
@@ -88,6 +92,7 @@ class DPMamba(nn.Module):
             rms_norm=rms_norm,
             conv_bias=True,
             bias=False,
+            residual_in_fp32=residual_in_fp32,
         )
         intra_block = MambaBlocksSequential(**mamba_kwargs)
         inter_block = MambaBlocksSequential(**mamba_kwargs)

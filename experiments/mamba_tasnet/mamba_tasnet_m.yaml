@@ -22,11 +22,12 @@ model:
     d_state: 16
     d_conv: 4
     expand: 2
+    residual_in_fp32: true
 
 training:
   lr: 0.0006
   weight_decay: 0.0
-  grad_clip_norm: 5.0
+  grad_clip_norm: 1.0
   lr_factor: 0.5
   lr_patience: 2
   num_epochs: 200
