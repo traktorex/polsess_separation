@@ -43,6 +43,7 @@ training:
   log_file: null
   log_level: INFO
   resume_from: null
+  early_stopping_patience: 10
 
   validation_variants: ["SER", "SE"]
 
