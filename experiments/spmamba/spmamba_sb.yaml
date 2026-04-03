@@ -24,7 +24,7 @@ model:
     attn_n_head: 4    # 4 attention heads
     attn_approx_qk_dim: 512  # Q/K dimension
     emb_dim: 16       # Embedding dimension
-    emb_ks: 4 #changed tentatively         # Embedding kernel size
+    emb_ks: 8         # Embedding kernel size
     emb_hs: 1         # Embedding hop size
     activation: "prelu"
     eps: 1.0e-5
