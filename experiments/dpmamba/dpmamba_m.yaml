@@ -27,7 +27,7 @@ model:
     residual_in_fp32: true
 
 training:
-  lr: 0.0003
+  lr: 0.00015
   weight_decay: 0.0
   grad_clip_norm: 1.0
   lr_factor: 0.5
