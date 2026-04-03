@@ -3,8 +3,8 @@
 
 data:
   dataset_type: polsess
-  batch_size: 1
-  num_workers: 1
+  batch_size: 2
+  num_workers: 2
   prefetch_factor: 2
   task: SB
   train_max_samples: null
@@ -27,7 +27,7 @@ model:
     residual_in_fp32: true
 
 training:
-  lr: 0.00015
+  lr: 0.0003
   weight_decay: 0.0
   grad_clip_norm: 1.0
   lr_factor: 0.5
