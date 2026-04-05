@@ -23,7 +23,7 @@ model:
     d_state: 16
     d_conv: 4
     expand: 2
-    skip_around_intra: true  # Author uses skip for M/L configs
+    skip_around_intra: false  # Disabled: causes NaN with bf16 AMP at 16 layers (residual accumulation)
     residual_in_fp32: true
 
 training:
