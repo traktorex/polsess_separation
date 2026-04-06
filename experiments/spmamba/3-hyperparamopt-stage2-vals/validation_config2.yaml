@@ -27,7 +27,6 @@ model:
     emb_hs: 1
     activation: "prelu"
     eps: 1.0e-5
-    sample_rate: 8000
 
 training:
   seed: 42
