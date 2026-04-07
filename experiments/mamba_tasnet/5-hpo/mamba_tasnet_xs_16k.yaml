@@ -1,0 +1,49 @@
+# MambaTasNet-XS HPO — Full 16K dataset, 60 epochs
+# Single-stage sweep: no curriculum learning, all variants from epoch 1.
+# Architecture: MambaTasNet XS (~2.2M params)
+
+data:
+  dataset_type: polsess
+  batch_size: 8
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: mamba_tasnet
+  mamba_tasnet:
+    N: 128          # Encoder channels (paper XS)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    bot_dim: 128    # Bottleneck matches N (paper XS)
+    n_mamba: 16     # Paper XS: 16 Mamba blocks
+    d_state: 16
+    d_conv: 4
+    expand: 2
+
+training:
+  lr: 0.0012
+  weight_decay: 0.0
+  grad_clip_norm: 1.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 60
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 10
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  # No curriculum — train on all variants from epoch 1
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
