@@ -1,0 +1,58 @@
+# SepFormer Posenc HPO Validation — Config 2
+# Source: happy-sweep-3 (jhuyxa6n), best_val_sisdr=6.032
+# Sweep: sepformer-posenc (0r4w3ep2)
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.15727880783494425
+    chunk_size: 300
+    hop_size: 150
+    use_positional_encoding: true
+
+training:
+  seed: 42
+  lr: 0.0002022160281991372
+  weight_decay: 6.083874548725881e-06
+  grad_clip_norm: 4.051950396006336
+  lr_factor: 0.7166316600329927
+  lr_patience: 2
+  num_epochs: 80
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
