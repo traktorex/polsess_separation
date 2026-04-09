@@ -69,16 +69,26 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 
 **Thesis Focus**: Training robust speech separation models on the PolSESS dataset for downstream Polish ASR preprocessing.
 
-## Current State (March 2026)
+## Current State (April 2026)
 
-### Baseline Experiments Complete (SB Task):
+### Baseline Experiments (SB Task):
 
-| Model | Avg SI-SDR | Best Run | Status |
-|-------|------------|----------|--------|
-| **SPMamba** 🏆 | **5.56 dB** | 5.68 dB | ✅ Baseline complete |
-| SepFormer | 5.10 dB | 5.26 dB | ✅ Baseline complete |
-| DPRNN | 3.03 dB | 3.20 dB | ✅ Baseline complete |
-| ConvTasNet | 2.95 dB | 3.28 dB | ✅ Baseline complete |
+| Model | SI-SDR | Params | Status |
+|-------|--------|--------|--------|
+| **SPMamba** 🏆 | **5.56 dB** (avg 3 seeds) | ~1.2M | ✅ Baseline complete |
+| MambaTasNet-L | 5.15 dB | 59.6M | ✅ Complete |
+| SepFormer (pos. enc.) | 5.16 dB (avg 3 seeds) | ~26M | ✅ Baseline complete |
+| SepFormer (original) | 5.10 dB (avg 3 seeds) | ~26M | ✅ Baseline complete |
+| MambaTasNet-M | 4.61 dB | ~15.6M | ✅ Complete |
+| DPRNN (kernel_size=2) | ~4.56 dB | 2.61M | ✅ Complete |
+| DPMamba-L | 4.40 dB | ~59.8M | ✅ Complete |
+| MambaTasNet-S | 4.33 dB | ~7.9M | ✅ Complete |
+| DPMamba-S | 3.84 dB | ~8.1M | ✅ Complete |
+| DPMamba-XS | 3.52 dB | ~2.3M | ✅ Complete |
+| DPMamba-M | 3.45 dB | ~15.9M | ✅ Complete |
+| MambaTasNet-XS | 3.33 dB | ~2.2M | ✅ Complete |
+| DPRNN (original) | 3.03 dB (avg 3 seeds) | ~2.6M | ✅ Baseline complete |
+| ConvTasNet | 2.95 dB (avg 3 seeds) | ~8M | ✅ Baseline complete |
 
 **Full Results**: See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md)
 
@@ -100,20 +110,31 @@ Located in `polsess_separation/`, this is a PyTorch implementation of speech sep
 **✅ Phase 1B Complete (SPMamba)** — 2-Stage HPO
 - Stage 2 sweeps + 16K validation complete (2 seeds per config)
 - Best: glowing-sweep-9 → **5.94 dB** (+0.38 dB vs baseline, +7%)
+- AMP test: no-AMP 6.02 dB vs AMP **6.28 dB** — AMP is fine
 
-**🔄 Phase 1B In Progress (SepFormer)** — 2-Stage HPO
+**✅ Phase 1B Complete (SepFormer)** — 2-Stage HPO
 - Stage 1 (2K) uninformative — SepFormer overfits severely on small subsets
 - Stage 2 (8K) sweep complete — best: dutiful-sweep-9 → **4.30 dB**
-- Validation (16K, 3 seeds) pending
+- Validation (16K, 3 seeds) complete — best: happy-sweep-19 → **5.03 dB** (+0.93 dB vs baseline)
 
-**🔄 Phase 1C In Progress** — Architecture Variants
-- SPMamba3 implemented: SPMamba with Mamba-3 SSM blocks (novel — first Mamba-3 audio application)
-- Requires `venv_mamba3` (torch 2.11.0+cu130, triton 3.6.0, mamba-ssm from git with Mamba-3 code)
-- Config: `experiments/spmamba3/spmamba3_baseline.yaml`; all 11 unit tests passing
+**🔄 Phase 1B In Progress (SepFormer v2)** — HPO with Positional Encoding
+- New baselines with pos. enc.: 5.16, 5.29, 5.02 dB (converge at epoch 20-30 vs 40 originally)
+- Single-stage Bayesian sweep on full 16K dataset, 60 epochs, no curriculum learning
+- Search: LR, weight_decay, grad_clip, lr_factor, lr_patience, dropout, chunk_size
 
-**🔄 Phase 2 In Progress** — ASR Integration
+**✅ MambaTasNet/DPMamba Baselines Complete** — Architecture Scaling
+- MambaTasNet XS→S→M→L: 3.33 → 4.33 → 4.61 → 5.15 dB
+- DPMamba XS→S→M→L: 3.52 → 3.84 → 3.45 → 4.40 dB (heavy overfitting, M worse than S)
+- NaN stability fix: `grad_clip_norm: 1.0` (was 5.0)
+
+**🔄 Phase 1B In Progress (MambaTasNet)** — HPO
+- MambaTasNet-XS sweep running (best so far: 4.05 dB, +0.72 dB over baseline)
+- MambaTasNet-S sweep config ready
+
+**🔄 Phase 2 Planned** — ASR Integration
 - Evaluate separation as ASR preprocessing via Whisper WER/CER
 - Two evaluation datasets: LibriSpeechMixASR (synthetic) and REAL-M (real-world)
+- Non-intrusive quality metrics via SQUIM for datasets without clean sources (REAL-M)
 - SPMamba results: Libri2Mix WER=18.80%, REAL-M WER=63.31% (Whisper large)
 
 ### Key Commands
@@ -149,7 +170,7 @@ python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 # Evaluate specific variant only
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --variant SER
 
-# Fast evaluation (skip PESQ and STOI)
+# Fast evaluation (skip PESQ and STOI — works for both ES and SB tasks)
 python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt --no-pesq --no-stoi
 
 # Evaluate on Libri2Mix (both Libri2Mix-Clean and Libri2Mix-Noisy)
@@ -176,14 +197,17 @@ pytest -v
 **ASR Evaluation:**
 
 ```bash
-# Evaluate separation model on REAL-M (WER/CER)
+# Evaluate separation model on REAL-M (WER/CER + SQUIM quality metrics by default)
 python asr/evaluate_asr.py --checkpoint checkpoints/spmamba/SB/.../best.pt \
     --dataset realm --mode separation --whisper-model large
 
 # Mixture baseline (no separation)
 python asr/evaluate_asr.py --dataset realm --mode mixture
 
-# Clean source baseline on LibriSpeech
+# Disable SQUIM metrics (WER/CER only)
+python asr/evaluate_asr.py --dataset realm --mode mixture --no-squim
+
+# Clean source baseline on LibriSpeech (shows best achievable WER + SQUIM)
 python asr/evaluate_asr.py --dataset librispeech --mode baseline
 
 # Custom Whisper model and device
@@ -215,7 +239,8 @@ The project follows a modular architecture with clear separation of concerns:
 
 **Model Registry (`models/__init__.py`):**
 
-- Simple dict-based registry: `MODELS = {"convtasnet": ConvTasNet, ...}`
+- Dict-based registry with conditional Mamba imports (`MAMBA_AVAILABLE` flag)
+- Mamba models (spmamba, mamba_tasnet, dpmamba) auto-excluded on Windows/without mamba-ssm
 - Retrieve with `get_model("model_name")` which returns the model class
 - Currently supports: `convtasnet`, `sepformer`, `dprnn`, `spmamba`, `spmamba3`, `mamba_tasnet`, `dpmamba`
   - **convtasnet**: Time-domain convolutional architecture (~8M params)
@@ -346,7 +371,8 @@ polsess_separation/
 └── sweeps/                        # W&B sweep configs and experiment log
     ├── EXPERIMENT_LOG.md
     ├── 1-baselines-SB/
-    └── 3-hyperparam-opt/
+    ├── 3-hyperparam-opt/
+    └── 4-hpo-posenc/              # SepFormer HPO v2 with positional encoding
 ```
 
 ### Adding New Models
@@ -526,7 +552,9 @@ REAL-M-v0.1.0/
 
 4. **Missing variants:** If evaluation fails, ensure `allowed_variants` parameter is correctly set in dataset instantiation.
 
-5. **SPMamba on Windows:** `mamba-ssm` requires Linux + CUDA. Use WSL2 with CUDA toolkit 12.4+ on Windows.
+5. **SPMamba on Windows:** `mamba-ssm` requires Linux + CUDA. Use WSL2 with CUDA toolkit 12.4+ on Windows. Non-Mamba models (ConvTasNet, SepFormer, DPRNN) work on Windows natively — the model registry auto-excludes Mamba models when `mamba-ssm` is unavailable.
+
+8. **MambaTasNet NaN instability:** Deep MambaTasNet (32 BiMamba blocks in M/L configs) can produce NaN cascades with bf16 AMP. Fix: set `grad_clip_norm: 1.0` (not 5.0). Optional safety net: `residual_in_fp32: true` in config (casts residual stream to fp32 between blocks, ~1-2% overhead).
 
 6. **torch.compile checkpoint loading:** Old checkpoints from compiled models may have `_orig_mod.` prefix issues. `load_model_from_checkpoint()` in `utils/model_utils.py` handles this automatically.
 

@@ -4,7 +4,7 @@
 
 **Project**: PolSESS Speech Separation for Polish ASR  
 **Task**: SB (Separate Both) - 2-speaker separation  
-**Models**: DPRNN, ConvTasNet, SPMamba, SepFormer
+**Models**: DPRNN, ConvTasNet, SPMamba, SepFormer, MambaTasNet, DPMamba
 
 > [!NOTE]
 > Most WandB links below are broken — the project was accidentally deleted on 2026-02-10.
@@ -17,12 +17,12 @@
 
 **Purpose**: Establish reference performance for each model architecture
 
-| Model | Avg SI-SDR | Runs (seed) | Std Dev | Runtime | Notes |
-|-------|------------|-------------|---------|---------|-------|
-| **SPMamba** 🏆 | **5.56 dB** | 5.68 (42), 5.45 (123), 5.55 (456) | 0.12 dB | ~90h | Run 1 diverged @ep21 (AMP+NaN), Runs 2-3 FP32 |
-| **SepFormer** | 5.10 dB | 5.14 (42), 5.26 (123), 4.89 (456) | 0.19 dB | ~54h | Run 3 resumed from checkpoint |
-| **DPRNN** | 3.03 dB | 3.01 (42), 2.87 (123), 3.20 (456) | 0.17 dB | ~11h | Run 2 early stopped @ep72 |
-| **ConvTasNet** | 2.95 dB | 3.28 (42), 2.70 (123), 2.86 (456) | 0.29 dB | ~32h | Runs 2-3 manually stopped |
+| Model          | Avg SI-SDR  | Runs (seed)                       | Std Dev | Runtime | Notes                                         |
+| -------------- | ----------- | --------------------------------- | ------- | ------- | --------------------------------------------- |
+| **SPMamba** 🏆  | **5.56 dB** | 5.68 (42), 5.45 (123), 5.55 (456) | 0.12 dB | ~90h    | Run 1 diverged @ep21 (AMP+NaN), Runs 2-3 FP32 |
+| **SepFormer**  | 5.10 dB     | 5.14 (42), 5.26 (123), 4.89 (456) | 0.19 dB | ~54h    | Run 3 resumed from checkpoint                 |
+| **DPRNN**      | 3.03 dB     | 3.01 (42), 2.87 (123), 3.20 (456) | 0.17 dB | ~11h    | Run 2 early stopped @ep72                     |
+| **ConvTasNet** | 2.95 dB     | 3.28 (42), 2.70 (123), 2.86 (456) | 0.29 dB | ~32h    | Runs 2-3 manually stopped                     |
 
 **Key Finding**: SPMamba outperforms all models, but DPRNN selected for hyperparameter optimization due to computational efficiency and thesis scope.
 
@@ -30,12 +30,12 @@
 
 ## Series 2: Model Comparison
 
-| Rank | Model | Avg SI-SDR | Improvement vs ConvTasNet |
-|------|-------|------------|---------------------------|
-| 🥇 | SPMamba | 5.56 dB | +2.61 dB (+88%) |
-| 🥈 | SepFormer | 5.10 dB | +2.15 dB (+73%) |
-| 🥉 | DPRNN | 3.03 dB | +0.08 dB (+3%) |
-| 4️⃣ | ConvTasNet | 2.95 dB | Baseline |
+| Rank | Model      | Avg SI-SDR | Improvement vs ConvTasNet |
+| ---- | ---------- | ---------- | ------------------------- |
+| 🥇    | SPMamba    | 5.56 dB    | +2.61 dB (+88%)           |
+| 🥈    | SepFormer  | 5.10 dB    | +2.15 dB (+73%)           |
+| 🥉    | DPRNN      | 3.03 dB    | +0.08 dB (+3%)            |
+| 4️⃣    | ConvTasNet | 2.95 dB    | Baseline                  |
 
 ---
 
@@ -47,11 +47,11 @@
 
 ### Three Optimization Strategies Compared
 
-| Approach | Dataset Progression | Compute | Best SI-SDR | Status |
-|----------|---------------------|---------|-------------|--------|
-| **3-Stage** | 2K→4K→8K→16K val | 322h | **4.67 dB** | ✅ Complete |
-| **Exp A** | 8K→16K val | ~105h | **4.37 dB** | ✅ Complete |
-| **Exp B** | 16K proxy→8K LR sweep→16K val | ~123h | **4.42 dB** | ✅ Complete |
+| Approach    | Dataset Progression           | Compute | Best SI-SDR | Status     |
+| ----------- | ----------------------------- | ------- | ----------- | ---------- |
+| **3-Stage** | 2K→4K→8K→16K val              | 322h    | **4.67 dB** | ✅ Complete |
+| **Exp A**   | 8K→16K val                    | ~105h   | **4.37 dB** | ✅ Complete |
+| **Exp B**   | 16K proxy→8K LR sweep→16K val | ~123h   | **4.42 dB** | ✅ Complete |
 
 ---
 
@@ -65,11 +65,11 @@
 
 **Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage1/dprnn.yaml) | **Sweep**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
 
-| Metric | Value |
-|--------|-------|
-| Runs | 91 (42 finished) |
-| Best SI-SDR | **1.75 dB** |
-| Runtime | 19.8h |
+| Metric            | Value                        |
+| ----------------- | ---------------------------- |
+| Runs              | 91 (42 finished)             |
+| Best SI-SDR       | **1.75 dB**                  |
+| Runtime           | 19.8h                        |
 | Early Termination | Hyperband (s=2, min_iter=10) |
 
 **Search Space**:
@@ -87,11 +87,11 @@
 
 **Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage2/dprnn.yaml) | **Sweep**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
 
-| Metric | Value |
-|--------|-------|
-| Runs | 131 (48 finished) |
+| Metric      | Value                             |
+| ----------- | --------------------------------- |
+| Runs        | 131 (48 finished)                 |
 | Best SI-SDR | **3.06 dB** (+1.31 dB vs Stage 1) |
-| Runtime | 48.7h |
+| Runtime     | 48.7h                             |
 
 **Refined Search Space** (based on Stage 1):
 - LR: [5e-4, 2e-3] (narrowed)
@@ -130,13 +130,13 @@ Two parallel strategies:
 **Top 5 configs** selected from Stage 3 based on performance and diversity.
 **Configs**: (experiments/dprnn/3-hyperparamopt-3stage-vals) 
 
-| Rank | Strategy | Config | Mean SI-SDR | Std | 8K→16K Gain | Individual Results | Links |
-|------|----------|--------|-------------|-----|-------------|-------------------|-------|
+| Rank  | Strategy      | Config             | Mean SI-SDR | Std      | 8K→16K Gain  | Individual Results  | Links                                                                                                                                                                                                                                                                                                                                                         |
+| ----- | ------------- | ------------------ | ----------- | -------- | ------------ | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **🥇** | **Hyperband** | **fancy-sweep-62** | **4.67 dB** | **0.07** | **+0.59 dB** | 4.65, 4.62, 4.75 dB | [722e8mux](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/722e8mux), [8vda24q0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/8vda24q0), [dzfpezdn](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/dzfpezdn) |
-| 🥈 | Hyperband | rose-sweep-41 | 4.29 dB | 0.07 | +0.45 dB | 4.21, 4.31, 4.34 dB | [2pfhn3vw](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/2pfhn3vw), [qz2y4s67](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/qz2y4s67), [v9k57wnb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/v9k57wnb) |
-| 🥉 | Hyperband | spring-sweep-67 | 4.28 dB | 0.12 | +0.50 dB | 4.24, 4.42, 4.19 dB | [d5puian1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/d5puian1), [hjpbov0z](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hjpbov0z), [3efoaqli](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/3efoaqli) |
-| 4 | Conservative | exalted-sweep-12 | 4.24 dB | 0.13 | +0.50 dB | 4.09, 4.35, 4.27 dB | [ka2iinu4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ka2iinu4), [aigaiez1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/aigaiez1), [bbc7repc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bbc7repc) |
-| 5 | Conservative | sunny-sweep-2 | 4.17 dB | 0.10 | +0.45 dB | 4.06, 4.25, 4.21 dB | [htyogmgo](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/htyogmgo), [4z7p2xjd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/4z7p2xjd), [8vcr3smx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/8vcr3smx)  |
+| 🥈     | Hyperband     | rose-sweep-41      | 4.29 dB     | 0.07     | +0.45 dB     | 4.21, 4.31, 4.34 dB | [2pfhn3vw](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/2pfhn3vw), [qz2y4s67](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/qz2y4s67), [v9k57wnb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/v9k57wnb) |
+| 🥉     | Hyperband     | spring-sweep-67    | 4.28 dB     | 0.12     | +0.50 dB     | 4.24, 4.42, 4.19 dB | [d5puian1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/d5puian1), [hjpbov0z](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hjpbov0z), [3efoaqli](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/3efoaqli) |
+| 4     | Conservative  | exalted-sweep-12   | 4.24 dB     | 0.13     | +0.50 dB     | 4.09, 4.35, 4.27 dB | [ka2iinu4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ka2iinu4), [aigaiez1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/aigaiez1), [bbc7repc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bbc7repc) |
+| 5     | Conservative  | sunny-sweep-2      | 4.17 dB     | 0.10     | +0.45 dB     | 4.06, 4.25, 4.21 dB | [htyogmgo](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/htyogmgo), [4z7p2xjd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/4z7p2xjd), [8vcr3smx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/8vcr3smx) |
 
 **Winner**: fancy-sweep-62
 
@@ -154,22 +154,22 @@ Two parallel strategies:
 **Config**: [`dprnn_onestage_8k.yaml`](sweeps/3-hyperparam-opt/baselines/dprnn_onestage_8k.yaml)  
 **Sweep**: [zp95xdye](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/zp95xdye)
 
-| Metric | Value |
-|--------|-------|
-| Runs | 130 finished |
-| Runtime | ~105h |
-| Best SI-SDR (8K) | **3.88 dB** |
+| Metric            | Value                  |
+| ----------------- | ---------------------- |
+| Runs              | 130 finished           |
+| Runtime           | ~105h                  |
+| Best SI-SDR (8K)  | **3.88 dB**            |
 | Early Termination | Hyperband (s=2, eta=3) |
 
 **Search Space**: Same wide ranges as 3-Stage Stage 1
 
 #### Top 3 Configs Selected for Validation
 
-| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
-|------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | lively-sweep-34 | 3.88 dB | ✅ Complete   | 4.22 dB | 4.17, 4.40, 4.11 dB | [ppl269tg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ppl269tg), [1havizhg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1havizhg), [1jlxplbd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1jlxplbd) |
-| 2 | glowing-sweep-124 | 3.87 dB | ✅ Complete | 4.37 dB | 4.40, 4.30, 4.41 dB | [ym3u4pm8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ym3u4pm8), [x620gqb7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/x620gqb7), [bzwnzgi9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bzwnzgi9) |
-| 3 | ruby-sweep-116 | 3.86 dB | ✅ Complete | 4.24 dB | 4.47, 4.10, 4.14 dB | [i5i35bwg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/i5i35bwg), [7mgb85uj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7mgb85uj), [wn99baaj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/wn99baaj) |
+| Rank | Config            | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results  | Links                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | ----------------- | --------- | ----------------- | --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | lively-sweep-34   | 3.88 dB   | ✅ Complete        | 4.22 dB         | 4.17, 4.40, 4.11 dB | [ppl269tg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ppl269tg), [1havizhg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1havizhg), [1jlxplbd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1jlxplbd) |
+| 2    | glowing-sweep-124 | 3.87 dB   | ✅ Complete        | 4.37 dB         | 4.40, 4.30, 4.41 dB | [ym3u4pm8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ym3u4pm8), [x620gqb7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/x620gqb7), [bzwnzgi9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bzwnzgi9) |
+| 3    | ruby-sweep-116    | 3.86 dB   | ✅ Complete        | 4.24 dB         | 4.47, 4.10, 4.14 dB | [i5i35bwg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/i5i35bwg), [7mgb85uj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7mgb85uj), [wn99baaj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/wn99baaj) |
 
 
 **Comparison vs 3-Stage**: Tests whether progressive scaling is necessary or if one-stage on medium data (8K) is sufficient
@@ -185,12 +185,12 @@ Two parallel strategies:
 **Config**: [`dprnn_fulldata_16k_proxy.yaml`](sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k_proxy.yaml)  
 **Sweep**: [igozsq0r](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/igozsq0r)
 
-| Metric | Value |
-|--------|-------|
-| Runs | ~70 finished |
-| Runtime | ~40h |
-| Search Params | LR, weight_decay, grad_clip_norm (NO lr_factor/lr_patience) |
-| Early Termination | Hyperband (min_iter=6, s=2, eta=3) |
+| Metric            | Value                                                       |
+| ----------------- | ----------------------------------------------------------- |
+| Runs              | ~70 finished                                                |
+| Runtime           | ~40h                                                        |
+| Search Params     | LR, weight_decay, grad_clip_norm (NO lr_factor/lr_patience) |
+| Early Termination | Hyperband (min_iter=6, s=2, eta=3)                          |
 
 **Top 3 Configs**:
 1. kind-sweep-68: **3.41 dB**
@@ -219,11 +219,11 @@ For each top-3 config, run grid search over LR scheduler params:
 
 **Phase 3 - Final Validation**: Best LR params from each config × 3 seeds × 80 epochs on 16K
 
-| Rank | Config | 2K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
-|------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | kind-sweep-68 | 3.41 dB | ✅ Complete   | 4.42 dB | 4.35, 4.69, 4.22 dB | [ff2i3l0v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ff2i3l0v), [bk0dmhqj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bk0dmhqj), [wmvnhx84](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/wmvnhx84) |
-| 2 | wise-sweep-64 | 3.36 dB | ✅ Complete | 4.16 dB | 4.17, 4.19, 4.11 dB | [l2xzaoon](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/l2xzaoon), [1bcg8abx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1bcg8abx), [305dk3qx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/305dk3qx) |
-| 3 | prime-sweep-35 | 3.34 dB | ✅ Complete | 3.96 dB | 4.00, 3.91, 3.96 dB | [xoaottd1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xoaottd1), [oanobnwm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/oanobnwm), [w5pcz9oe](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/w5pcz9oe) |
+| Rank | Config         | 2K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results  | Links                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | -------------- | --------- | ----------------- | --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | kind-sweep-68  | 3.41 dB   | ✅ Complete        | 4.42 dB         | 4.35, 4.69, 4.22 dB | [ff2i3l0v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ff2i3l0v), [bk0dmhqj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/bk0dmhqj), [wmvnhx84](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/wmvnhx84) |
+| 2    | wise-sweep-64  | 3.36 dB   | ✅ Complete        | 4.16 dB         | 4.17, 4.19, 4.11 dB | [l2xzaoon](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/l2xzaoon), [1bcg8abx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1bcg8abx), [305dk3qx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/305dk3qx) |
+| 3    | prime-sweep-35 | 3.34 dB   | ✅ Complete        | 3.96 dB         | 4.00, 3.91, 3.96 dB | [xoaottd1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xoaottd1), [oanobnwm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/oanobnwm), [w5pcz9oe](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/w5pcz9oe) |
 
 **Comparison vs 3-Stage**: Tests whether epoch-based proxy can replace data-based progressive scaling
 
@@ -231,11 +231,11 @@ For each top-3 config, run grid search over LR scheduler params:
 
 ## Summary: Optimization Strategies
 
-| Approach | Key Idea | Pros | Cons | Best 16K SI-SDR |
-|----------|----------|------|------|----------------|
-| **3-Stage** 🏆 | Progressive data scaling | Efficient search space refinement, excellent results | More complex | **4.67 dB** |
-| **Exp B** | Epoch proxy + LR sweep | Tests proxy hypothesis | Two-phase optimization | **4.42 dB** |
-| **Exp A** | One-stage wide search | Simpler, tests single-stage viability | No guidance from smaller data | **4.37 dB** |
+| Approach      | Key Idea                 | Pros                                                 | Cons                          | Best 16K SI-SDR |
+| ------------- | ------------------------ | ---------------------------------------------------- | ----------------------------- | --------------- |
+| **3-Stage** 🏆 | Progressive data scaling | Efficient search space refinement, excellent results | More complex                  | **4.67 dB**     |
+| **Exp B**     | Epoch proxy + LR sweep   | Tests proxy hypothesis                               | Two-phase optimization        | **4.42 dB**     |
+| **Exp A**     | One-stage wide search    | Simpler, tests single-stage viability                | No guidance from smaller data | **4.37 dB**     |
 
 ---
 
@@ -282,55 +282,55 @@ From 330+ runs across all 3-stage sweeps:
 
 #### Stage 1: Wide Search (2K samples) — ✅ Complete
 
-| Model | Runs | Completed | Best SI-SDR | Config |
-|-------|------|-----------|-------------|--------|
-| ConvTasNet | 27 | 21 | **1.41 dB** | [`stage1.yaml`](3-hyperparam-opt/convtasnet/stage1.yaml) |
-| SPMamba | 19 | 6 | **2.84 dB** | [`stage1.yaml`](3-hyperparam-opt/spmamba/stage1.yaml) |
+| Model      | Runs | Completed | Best SI-SDR | Config                                                   |
+| ---------- | ---- | --------- | ----------- | -------------------------------------------------------- |
+| ConvTasNet | 27   | 21        | **1.41 dB** | [`stage1.yaml`](3-hyperparam-opt/convtasnet/stage1.yaml) |
+| SPMamba    | 19   | 6         | **2.84 dB** | [`stage1.yaml`](3-hyperparam-opt/spmamba/stage1.yaml)    |
 
 **Stage 1 Search Space**:
 
-| HP | ConvTasNet | SPMamba |
-|----|-----------|---------|
-| LR | [1e-4, 1e-2] | [1e-4, 3e-3] |
-| Weight Decay | [1e-6, 1e-4] | [1e-6, 1e-4] |
-| Grad Clip | [0.5, 15.0] | [0.5, 10.0] |
-| LR Factor | [0.3, 0.95] | [0.3, 0.90] |
-| LR Patience | {1,2,3,4,5,6} | {1,2,3,4} |
+| HP           | ConvTasNet    | SPMamba      |
+| ------------ | ------------- | ------------ |
+| LR           | [1e-4, 1e-2]  | [1e-4, 3e-3] |
+| Weight Decay | [1e-6, 1e-4]  | [1e-6, 1e-4] |
+| Grad Clip    | [0.5, 15.0]   | [0.5, 10.0]  |
+| LR Factor    | [0.3, 0.95]   | [0.3, 0.90]  |
+| LR Patience  | {1,2,3,4,5,6} | {1,2,3,4}    |
 
 #### Stage 2: Refined Search (8K samples) — ✅ Complete
 
-| Model | Sweep | Runs | Finished | Best SI-SDR | Config |
-|-------|-------|------|----------|-------------|--------|
-| ConvTasNet | [71wtfegp](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/71wtfegp) | 34 | 11 | **3.36 dB** | [`stage2.yaml`](3-hyperparam-opt/convtasnet/stage2.yaml) |
-| SPMamba | [2wdpj22v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/2wdpj22v) | 20 | 4 | **5.26 dB** | [`stage2.yaml`](3-hyperparam-opt/spmamba/stage2.yaml) |
+| Model      | Sweep                                                                                                                         | Runs | Finished | Best SI-SDR | Config                                                   |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------- | ---- | -------- | ----------- | -------------------------------------------------------- |
+| ConvTasNet | [71wtfegp](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/71wtfegp) | 34   | 11       | **3.36 dB** | [`stage2.yaml`](3-hyperparam-opt/convtasnet/stage2.yaml) |
+| SPMamba    | [2wdpj22v](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/2wdpj22v) | 20   | 4        | **5.26 dB** | [`stage2.yaml`](3-hyperparam-opt/spmamba/stage2.yaml)    |
 
 **Stage 2 Refined Ranges** (based on Stage 1 analysis):
 
-| HP | ConvTasNet | SPMamba |
-|----|-----------|---------|
-| LR | [3e-4, 1.5e-3] | [3e-4, 2e-3] |
-| Weight Decay | [1e-6, 1e-4] | [1e-6, 5e-5] |
-| Grad Clip | [1.5, 15.0] | [1.5, 10.0] |
-| LR Factor | [0.3, 0.95] | [0.3, 0.90] |
-| LR Patience | {2,3,4} | {1,2,3} |
+| HP           | ConvTasNet     | SPMamba      |
+| ------------ | -------------- | ------------ |
+| LR           | [3e-4, 1.5e-3] | [3e-4, 2e-3] |
+| Weight Decay | [1e-6, 1e-4]   | [1e-6, 5e-5] |
+| Grad Clip    | [1.5, 15.0]    | [1.5, 10.0]  |
+| LR Factor    | [0.3, 0.95]    | [0.3, 0.90]  |
+| LR Patience  | {2,3,4}        | {1,2,3}      |
 
 ##### ConvTasNet Top 3
 
-| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
-|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
-| 🥇 | stilted-sweep-16 | **3.36 dB** | 4.57e-4 | 1.70e-6 | 4.49 | 0.327 | 3 | 48 |
-| 🥈 | major-sweep-31 | **3.34 dB** | 4.83e-4 | 1.59e-6 | 4.30 | 0.393 | 3 | 49 |
-| 🥉 | quiet-sweep-8 | **3.33 dB** | 9.73e-4 | 3.76e-6 | 5.74 | 0.703 | 4 | 62 |
+| Rank | Run              | SI-SDR      | LR      | WD      | Grad Clip | LR Factor | LR Pat | Epochs |
+| ---- | ---------------- | ----------- | ------- | ------- | --------- | --------- | ------ | ------ |
+| 🥇    | stilted-sweep-16 | **3.36 dB** | 4.57e-4 | 1.70e-6 | 4.49      | 0.327     | 3      | 48     |
+| 🥈    | major-sweep-31   | **3.34 dB** | 4.83e-4 | 1.59e-6 | 4.30      | 0.393     | 3      | 49     |
+| 🥉    | quiet-sweep-8    | **3.33 dB** | 9.73e-4 | 3.76e-6 | 5.74      | 0.703     | 4      | 62     |
 
 **Key Findings**: Top-5 tightly clustered (3.30–3.36 dB). LR sweet spot ~3.5e-4 to 6e-4. Weight decay essentially zero (1e-6 to 2e-5). Converged after run #16 — no improvement in last 18 runs.
 
 ##### SPMamba Top 3
 
-| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
-|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
-| 🥇 | glowing-sweep-9 | **5.26 dB** | 7.05e-4 | 4.89e-6 | 8.45 | 0.718 | 2 | 42 |
-| 🥈 | autumn-sweep-10 | **5.12 dB** | 4.67e-4 | 1.12e-6 | 6.76 | 0.806 | 1 | 40 |
-| 🥉 | cerulean-sweep-2 | **5.10 dB** | 4.61e-4 | 2.70e-6 | 4.78 | 0.497 | 2 | 36 |
+| Rank | Run              | SI-SDR      | LR      | WD      | Grad Clip | LR Factor | LR Pat | Epochs |
+| ---- | ---------------- | ----------- | ------- | ------- | --------- | --------- | ------ | ------ |
+| 🥇    | glowing-sweep-9  | **5.26 dB** | 7.05e-4 | 4.89e-6 | 8.45      | 0.718     | 2      | 42     |
+| 🥈    | autumn-sweep-10  | **5.12 dB** | 4.67e-4 | 1.12e-6 | 6.76      | 0.806     | 1      | 40     |
+| 🥉    | cerulean-sweep-2 | **5.10 dB** | 4.61e-4 | 2.70e-6 | 4.78      | 0.497     | 2      | 36     |
 
 **Key Findings**: Only 4/20 runs converged (rest killed by Hyperband). Top-3 ran 36–42 epochs before manual stop (no further improvement). LR sweet spot ~4.6e-4 to 7.0e-4. Weight decay tiny (1e-6 to 5e-6).
 
@@ -340,21 +340,21 @@ From 330+ runs across all 3-stage sweeps:
 
 **ConvTasNet validation runs:**
 
-| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
-|------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | stilted-sweep-16 | 3.36 dB | ✅ Complete   | 3.68 dB | 3.62, 3.76, 3.66 dB | [hh5wilky](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hh5wilky), [54op6g20](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/54op6g20), [kostulsf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/kostulsf) |
-| 2 | major-sweep-31 | 3.34 dB | ✅ Complete | 3.62 dB | 3.64, 3.67, 3.56 dB | [j9rat6z8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/j9rat6z8), [xwhj84pc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xwhj84pc), [taegu8ol](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/taegu8ol) |
-| 3 | quiet-sweep-8 | 3.33 dB | ✅ Complete | N/A | 3.56, 3.77, -2.23 dB | [s4xd0je8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/s4xd0je8), [6sbxpwmb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6sbxpwmb), [boq4ms4o](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/boq4ms4o)  |
+| Rank | Config           | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results   | Links                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | ---------------- | --------- | ----------------- | --------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | stilted-sweep-16 | 3.36 dB   | ✅ Complete        | 3.68 dB         | 3.62, 3.76, 3.66 dB  | [hh5wilky](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/hh5wilky), [54op6g20](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/54op6g20), [kostulsf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/kostulsf) |
+| 2    | major-sweep-31   | 3.34 dB   | ✅ Complete        | 3.62 dB         | 3.64, 3.67, 3.56 dB  | [j9rat6z8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/j9rat6z8), [xwhj84pc](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xwhj84pc), [taegu8ol](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/taegu8ol) |
+| 3    | quiet-sweep-8    | 3.33 dB   | ✅ Complete        | N/A             | 3.56, 3.77, -2.23 dB | [s4xd0je8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/s4xd0je8), [6sbxpwmb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6sbxpwmb), [boq4ms4o](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/boq4ms4o) |
 
 **Notes**: 2 out of 3 rank 3 (quiet-sweep-8) validation runs encountered NaN divergence - an anomaly I've never seen before in ConvTasNet.
 
 **SPMamba validation runs:**
 
-| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
-|------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | glowing-sweep-9 | 5.26 dB | ✅ Complete | 5.94 dB | 5.95, 5.94 dB | [6ieu8fjf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6ieu8fjf), [55vxrby8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/55vxrby8) |
-| 2 | autumn-sweep-10 | 5.12 dB | ✅ Complete | 5.89 dB | 6.12, 5.66 dB | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
-| 3 | cerulean-sweep-2 | 5.10 dB | ✅ Complete | 5.93 dB | 6.06, 5.80 dB | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
+| Rank | Config           | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links                                                                                                                                                                                                                                    |
+| ---- | ---------------- | --------- | ----------------- | --------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | glowing-sweep-9  | 5.26 dB   | ✅ Complete        | 5.94 dB         | 5.95, 5.94 dB      | [6ieu8fjf](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6ieu8fjf), [55vxrby8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/55vxrby8) |
+| 2    | autumn-sweep-10  | 5.12 dB   | ✅ Complete        | 5.89 dB         | 6.12, 5.66 dB      | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
+| 3    | cerulean-sweep-2 | 5.10 dB   | ✅ Complete        | 5.93 dB         | 6.06, 5.80 dB      | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
 
 **Notes**: Running 2 instead of 3 validation runs for SPMamba due to the runs taking 2 days each.
 
@@ -369,11 +369,11 @@ From 330+ runs across all 3-stage sweeps:
 
 **Sweep**: [m627m0ur](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/m627m0ur) | **Config**: [`stage1.yaml`](3-hyperparam-opt/sepformer/stage1.yaml)
 
-| Metric | Value |
-|--------|-------|
-| Runs | 19 (7 finished, 10 killed, 2 running) |
-| Best SI-SDR | **-1.15 dB** (fanciful-sweep-11) |
-| All runs | Below 0 dB |
+| Metric      | Value                                 |
+| ----------- | ------------------------------------- |
+| Runs        | 19 (7 finished, 10 killed, 2 running) |
+| Best SI-SDR | **-1.15 dB** (fanciful-sweep-11)      |
+| All runs    | Below 0 dB                            |
 
 **Root Cause**: SepFormer (~26M params) overfits on 2K samples. Training SI-SDR reaches 4–5 dB while validation stays at -1.1 to -3.8 dB — a 6+ dB generalization gap. The transformer's weak inductive bias (compared to CNNs/RNNs) perhaps makes it data-hungry; other models (DPRNN ~2.6M, ConvTasNet ~5M, SPMamba) achieved >0 dB on the same 2K subset.
 
@@ -385,20 +385,20 @@ From 330+ runs across all 3-stage sweeps:
 
 **Sweep**: [qqjh7cvm](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/qqjh7cvm) | **Config**: [`stage2.yaml`](3-hyperparam-opt/sepformer/stage2.yaml)
 
-| Metric | Value |
-|--------|-------|
-| Runs | 41 (11 finished, 17 crashed, 7 killed, 3 running, 2 failed) |
-| Best SI-SDR | **4.30 dB** (dutiful-sweep-9) |
+| Metric      | Value                                                       |
+| ----------- | ----------------------------------------------------------- |
+| Runs        | 41 (11 finished, 17 crashed, 7 killed, 3 running, 2 failed) |
+| Best SI-SDR | **4.30 dB** (dutiful-sweep-9)                               |
 
 Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K samples resolved the overfitting issue.
 
 ##### Top 3
 
-| Rank | Run | SI-SDR | LR | WD | Grad Clip | LR Factor | LR Pat | Epochs |
-|------|-----|--------|-----|-----|-----------|-----------|--------|--------|
-| 🥇 | dutiful-sweep-9 | **4.30 dB** | 2.89e-4 | 5.57e-6 | 1.65 | 0.625 | 2 | 70 |
-| 🥈 | happy-sweep-19 | **4.10 dB** | 2.79e-4 | 7.02e-6 | 4.87 | 0.912 | 3 | 80 |
-| 🥉 | stoic-sweep-3 | **3.96 dB** | 2.00e-4 | 6.74e-5 | 4.69 | 0.459 | 4 | 80 |
+| Rank | Run             | SI-SDR      | LR      | WD      | Grad Clip | LR Factor | LR Pat | Epochs |
+| ---- | --------------- | ----------- | ------- | ------- | --------- | --------- | ------ | ------ |
+| 🥇    | dutiful-sweep-9 | **4.30 dB** | 2.89e-4 | 5.57e-6 | 1.65      | 0.625     | 2      | 70     |
+| 🥈    | happy-sweep-19  | **4.10 dB** | 2.79e-4 | 7.02e-6 | 4.87      | 0.912     | 3      | 80     |
+| 🥉    | stoic-sweep-3   | **3.96 dB** | 2.00e-4 | 6.74e-5 | 4.69      | 0.459     | 4      | 80     |
 
 **Key Findings**: LR sweet spot ~2e-4 to 3e-4 (consistent with Stage 1 finding that low LR wins). ~73% of runs crashed or were killed — LR > 5e-4 generally leads to divergence. Weight decay tiny for top 2 (5-7e-6), higher for #3 (6.7e-5).
 
@@ -408,14 +408,14 @@ Stage 2 ranges kept identical to Stage 1 (no useful refinement from Stage 1). 8K
 
 **Sepformer validation runs:**
 
-| Rank | Config | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results | Links |
-|------|--------|-----------|-------------------|-----------------|-------|-------|
-| 1 | dutiful-sweep-9 | 4.30 dB | Complete | 4.66 dB | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
-| 2 | happy-sweep-19 | 4.10 dB | Complete | 5.03 dB | 5.28, 4.84, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
-| 3 | stoic-sweep-3 | 3.96 dB | ✅ Complete | 4.50 dB | 4.73, 4.74, 4.02 dB | [73gkwwg4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/73gkwwg4), [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
+| Rank | Config          | 8K SI-SDR | Validation Status | 16K Mean SI-SDR | Individual Results  | Links                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | --------------- | --------- | ----------------- | --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | dutiful-sweep-9 | 4.30 dB   | Complete          | 4.66 dB         | 4.58, 4.62, 4.78 db | [c56ooyx9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/c56ooyx9), [7durydp6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/7durydp6), [5rnk7e94](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/5rnk7e94) |
+| 2    | happy-sweep-19  | 4.10 dB   | Complete          | 5.03 dB         | 5.28, 4.84, 4.97 db | [nde6j46g](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nde6j46g), [umfxwh4j](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/umfxwh4j), [obqjofz0](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/obqjofz0) |
+| 3    | stoic-sweep-3   | 3.96 dB   | ✅ Complete        | 4.50 dB         | 4.73, 4.74, 4.02 dB | [73gkwwg4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/73gkwwg4), [xktp4tuu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/xktp4tuu), [p0zywfjh](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p0zywfjh) |
 
 
-Sepformer variants:
+Sepformer variants (without positional encoding — exploratory, before pos-enc fix):
 
 sepformer-small with lr=0.000279 | 
 SI-SDR: 2.82 dB at epoch 132
@@ -429,9 +429,154 @@ SI-SDR: 4.32 dB at epoch 136
 sepformer-medium-large | 
 SI-SDR: 4.85 dB at epoch 65
 
+---
+
+## DPRNN with kernel_size=2
+
+**Purpose**: The DPRNN paper recommends kernel_size=2 (sample-level processing). Original baselines used kernel_size=16.
+
+### Baselines (3 seeds)
+
+| Seed | SI-SDR      | Run ID                                                                                                              | State    | Epochs | Notes                             |
+| ---- | ----------- | ------------------------------------------------------------------------------------------------------------------- | -------- | ------ | --------------------------------- |
+| 42   | 4.58 dB     | [d9pw9f7x](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/d9pw9f7x) | crashed  | 52     |                                   |
+| 123  | 3.76 dB     | [qak7hopb](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/qak7hopb) | killed   | 27     | Training collapse — went negative |
+| 456  | **4.56 dB** | [mwxwnyvr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/mwxwnyvr) | finished | 51     |                                   |
+
+**Average (seeds 42+456)**: ~4.57 dB — **+1.54 dB** over kernel=16 baseline (3.03 dB). Seed 123 collapsed and is excluded.
+
+### HPO (abandoned)
+
+Two sweeps in polsess-thesis-experiments:
+- **3-dprnn-sample-level-8k** (variable chunk sizes): 14 runs, best 3.51 dB. Stopped — decided chunk_size=250 is sufficient.
+- **3-dprnn-sample-level-8k-250chunk** (fixed chunk=250): 7 runs, best 4.18 dB. Stopped — DPRNN unlikely to be used in further phases given SepFormer's stronger performance.
+
+---
+
+## SepFormer with Positional Encoding
+
+**Purpose**: Added positional encoding to SepFormer, which was missing from the original implementation. Positional encoding is standard in transformer architectures and helps the model learn position-dependent patterns.
+
+### Baselines (3 seeds)
+
+| Seed | SI-SDR      | Run ID                                                                                                              | State  | Epochs | Notes                             |
+| ---- | ----------- | ------------------------------------------------------------------------------------------------------------------- | ------ | ------ | --------------------------------- |
+| 42   | 5.16 dB     | [kvyxo3t9](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/kvyxo3t9) | killed | 37     | Converged, no further improvement |
+| 123  | **5.29 dB** | [iqc12vqd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/iqc12vqd) | killed | 60     |                                   |
+| 456  | 5.02 dB     | [nvaol6l1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/nvaol6l1) | killed | 36     |                                   |
+
+**Average: 5.16 dB** — slight improvement over non-posenc baselines (5.10 dB avg), but notably faster convergence (epoch 20–30 vs epoch 40 originally).
+
+### HPO — Single-Stage with Positional Encoding (🔄 Running)
+
+**Strategy**: Single-stage Bayesian sweep directly on full 16K dataset, 60 epochs, no curriculum learning. All variants from epoch 1, early stopping patience 8.
+
+**Sweep**: sepformer-hpo-posenc-16k in polsess-thesis-experiments (running on second PC)
+
+**Search space**: LR, weight_decay, grad_clip, lr_factor, lr_patience, dropout, chunk_size
+
+**Status**: 9 runs launched, 3 finished, 2 running. Best so far: **6.08 dB** (soft-sweep-6).
+
+Top configs will be documented once sweep completes.
+
+**Preliminary best: 6.08 dB** — improvement of **+0.92 dB** over pos-enc baselines (5.16 dB), **+0.14 dB** over previous best HPO without pos-enc (5.94 dB glowing-sweep-9).
+
+---
+
+## MambaTasNet Scaling
+
+**Purpose**: Evaluate MambaTasNet architecture at different scales (XS/S/M/L). Initial runs had AMP/NaN instability — fixed with `grad_clip_norm: 1.0` (was 5.0).
+
+### Post-Fix Results
+
+| Config | Params | SI-SDR      | Run ID                                                                                                              | State    | Epochs | Notes |
+| ------ | ------ | ----------- | ------------------------------------------------------------------------------------------------------------------- | -------- | ------ | ----- |
+| XS     | 2.2M   | 3.33 dB     | [s1pcwkoe](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/s1pcwkoe) | finished | 44     |       |
+| S      | —      | 4.33 dB     | [vyxxtapj](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/vyxxtapj) | finished | 44     |       |
+| M      | —      | 4.61 dB     | [vgophyks](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/vgophyks) | killed   | 26     |       |
+| L      | 59.6M  | **5.15 dB** | [85wrcraw](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/85wrcraw) | killed   | 20     |       |
+
+### Pre-Fix Results (before AMP/grad_clip fix, for reference)
+
+| Config | SI-SDR  | Run ID                                                                                                              |
+| ------ | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| XS     | 2.72 dB | [rss7e8xp](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/rss7e8xp) |
+| S      | 3.97 dB | [h3zddy6d](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/h3zddy6d) |
+| M      | 3.99 dB | [whu5yndg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/whu5yndg) |
+
+Fix improved all configs, especially XS (+0.61 dB) and M (+0.62 dB).
+
+**Observation**: Models show early overfitting — scores may benefit significantly from HPO.
+
+---
+
+## DPMamba Baselines — ✅ Complete
+
+**Purpose**: Evaluate DPMamba (dual-path BiMamba) at different scales.
+
+| Config | SI-SDR      | Run ID                                                                                                              | State    | Epochs | Train SI-SDR | Train-Val Gap |
+| ------ | ----------- | ------------------------------------------------------------------------------------------------------------------- | -------- | ------ | ------------ | ------------- |
+| XS     | 3.52 dB     | [s9js4360](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/s9js4360) | crashed  | 35     | —            | —             |
+| S      | 3.84 dB     | [mk9ktegx](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/mk9ktegx) | finished | 33     | —            | —             |
+| M      | 3.45 dB     | [zowq973l](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/zowq973l) | finished | 25     | 11.24 dB     | 7.8 dB        |
+| L      | **4.40 dB** | [6lwofwkd](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/6lwofwkd) | finished | 20     | 12.72 dB     | 8.3 dB        |
+
+**Observations**: Massive overfitting (7-8 dB train-val gap for M/L). DPMamba-M actually does worse than DPMamba-S (3.45 vs 3.84 dB). Both M and L were still improving at final epoch but with diminishing returns. DPMamba-L (4.40 dB) is still below MambaTasNet-L (5.15 dB) — consistent with the original papers' finding that single-path Mamba (MambaTasNet) can match or exceed dual-path (DPMamba).
+
+---
+
+## SPMamba Config Investigation
+
+**Purpose**: Discovered original configs had `emb_ks: 4` while the SPMamba paper uses `emb_ks: 8`. Also modified AMP mechanism for SPMamba. Test runs to compare:
+
+| Config     | emb_ks | SI-SDR  | Run ID                                                                                                              | Notes       |
+| ---------- | ------ | ------- | ------------------------------------------------------------------------------------------------------------------- | ----------- |
+| SB (full)  | 4      | 4.71 dB | [ib3besab](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ib3besab) |             |
+| SB (full)  | 8      | 4.02 dB | [dly2mgtg](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/dly2mgtg) |             |
+| SB_reduced | 4      | 5.11 dB | [1f9wvgt6](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1f9wvgt6) |             |
+| SB_reduced | 8      | 3.61 dB | [isywiyik](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/isywiyik) | ✅ finished |
+
+emb_ks=4 outperforms emb_ks=8 in both SB and SB_reduced configs.
+
+> **Note**: Original baselines (5.56 dB avg) used SB_reduced config **without AMP**. These new runs use AMP (bfloat16). The gap between SB_reduced emb_ks=4 here (5.11 dB) and the original baselines (5.56 dB) was investigated — see AMP test below.
+
+### AMP Test (HPO best config: glowing-sweep-9)
+
+Ran the same HPO-best config with and without AMP to check if AMP hurts SPMamba:
+
+| Config | AMP   | SI-SDR  | Run ID                                                                                                              | State    | Epochs |
+| ------ | ----- | ------- | ------------------------------------------------------------------------------------------------------------------- | -------- | ------ |
+| HPO best (glowing-sweep-9) | off | 6.02 dB | [ooqeswo4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/ooqeswo4) | finished | 36 |
+| HPO best (glowing-sweep-9) | on (bf16) | **6.28 dB** | [61jqo6w4](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/61jqo6w4) | killed | 36 |
+
+**Conclusion**: AMP does not hurt SPMamba — if anything, the AMP run reached a higher peak (6.28 vs 6.02 dB). The earlier gap between new runs (5.11 dB) and original baselines (5.56 dB) was not caused by AMP.
+
+---
+
+## MambaTasNet HPO (🔄 Running)
+
+**Purpose**: MambaTasNet-XS baseline (3.33 dB) shows heavy overfitting — HPO targeting weight_decay and regularization.
+
+### MambaTasNet-XS — Single-Stage (16K, 60 epochs)
+
+**Sweep**: mamba-tasnet-xs-hpo-16k in polsess-thesis-experiments
+**Config**: [`sweeps/5-hpo-mamba-tasnet/mamba_tasnet_xs.yaml`](5-hpo-mamba-tasnet/mamba_tasnet_xs.yaml)
+
+**Search space**: LR [5e-5, 1e-2], weight_decay [5e-7, 1e-3], grad_clip [0.5, 5.0], lr_factor [0.3, 0.9], lr_patience {1,2,3,4}
+
+**Status**: 7 runs, 4 finished, 1 running. Best so far: **4.05 dB** (rural-sweep-5, +0.72 dB over baseline).
+
+Top configs will be documented once sweep completes.
+
+**Early observations**: High weight decay (>1e-4) and very low LR (<2e-4) hurt. Best runs use LR ~1.5-2e-3, very low WD (~1e-6). One run collapsed (rose-sweep-6, NaN from AMP).
+
+---
+
 ## Notes
 
-- All experiments use curriculum learning with ["SER", "SE"] validation
-- DPRNN architecture: N=64, kernel=16, stride=8, 6 layers, chunk=100, LSTM hidden=128
+- All experiments use curriculum learning with ["SER", "SE"] validation variants
+- Validation SI-SDR is computed on SER and SE variants only; training SI-SDR uses all variants (a form of augmentation), so the two are not directly comparable
+- DPRNN architecture: N=64, kernel=16 (or 2 for kernel_size=2 experiments), stride=8, 6 layers, chunk=100 (or 250), LSTM hidden=128
 - Hyperparameter optimization: Bayesian search with Hyperband early termination
 - WandB project deleted 2026-02-10; data recovered from local logs into `all_runs.csv`
+- Some runs executed on second PC

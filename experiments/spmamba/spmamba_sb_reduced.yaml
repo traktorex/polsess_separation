@@ -24,7 +24,7 @@ model:
     attn_n_head: 2  # Reduced from 4 (saves 50% attention memory)
     attn_approx_qk_dim: 256  # Reduced from 512 (saves 50% Q/K memory)
     emb_dim: 16  # Keep same
-    emb_ks: 8
+    emb_ks: 4
     emb_hs: 1  # Keep same
     activation: "prelu"
     eps: 1.0e-5
