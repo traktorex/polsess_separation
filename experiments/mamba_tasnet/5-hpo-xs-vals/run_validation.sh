@@ -1,16 +1,16 @@
 #!/bin/bash
 # Run all 6 MambaTasNet-XS HPO validation experiments sequentially
-# 3 configs × 2 seeds each (seed 42 already used in sweep)
+# 3 configs × 3 seeds each
 #
 # Top-3 from sweep mamba-tasnet-xs (gbyurf31):
 #   Config 1: rosy-sweep-7     (best_val_sisdr=4.126)
 #   Config 2: valiant-sweep-23 (best_val_sisdr=4.062)
 #   Config 3: rural-sweep-5    (best_val_sisdr=4.047)
 
-echo "Starting MambaTasNet-XS HPO Validation (6 runs total)"
+echo "Starting MambaTasNet-XS HPO Validation (9 runs total)"
 echo "======================================================="
 
-SEEDS=(123 456)
+SEEDS=(42 123 456)
 
 for config_num in 1 2 3; do
     echo ""
