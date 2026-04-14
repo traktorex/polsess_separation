@@ -9,6 +9,7 @@
 #   chmod +x setup.sh
 #   ./setup.sh              # full setup (repo + deps + dataset)
 #   ./setup.sh --no-data    # skip dataset download (if already mounted)
+#   ./setup.sh --rclone     # also install rclone and configure Google Drive remote
 
 set -euo pipefail
 
@@ -34,9 +35,11 @@ POLSESS_URL="https://drive.google.com/uc?id=149d8LFyX9jr_AJNwb2BtTcffuuKqUg1B"
 # ============================================================================
 
 SKIP_DATA=false
+SETUP_RCLONE=false
 for arg in "$@"; do
     case $arg in
-        --no-data) SKIP_DATA=true ;;
+        --no-data)  SKIP_DATA=true ;;
+        --rclone)   SETUP_RCLONE=true ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
     esac
 done
@@ -114,6 +117,59 @@ ENVEOF
 ok "Environment configured"
 
 # ============================================================================
+# rclone (Google Drive backup, opt-in via --rclone)
+# ============================================================================
+
+if [ "$SETUP_RCLONE" = true ]; then
+    info "Installing rclone..."
+    curl https://rclone.org/install.sh | sudo bash
+    ok "rclone installed ($(rclone --version | head -1))"
+
+    if rclone listremotes 2>/dev/null | grep -q "^gdrive:"; then
+        ok "rclone gdrive remote already configured — skipping"
+    else
+        echo ""
+        echo "  ─────────────────────────────────────────────────────────────────"
+        echo "  rclone needs to authenticate with Google Drive."
+        echo "  Because this instance has no browser, you must authorize on your"
+        echo "  local PC:"
+        echo ""
+        echo "    1. Install rclone locally (rclone.org/install) if not already"
+        echo "    2. Run on your LOCAL machine:"
+        echo "         rclone authorize \"drive\""
+        echo "    3. A browser window will open — log in and allow access"
+        echo "    4. Copy the token JSON that appears in your local terminal"
+        echo "    5. Paste it when rclone config asks for it below"
+        echo "  ─────────────────────────────────────────────────────────────────"
+        echo ""
+        info "Starting rclone config — when prompted:"
+        echo "   n  (new remote)"
+        echo "   gdrive  (name)"
+        echo "   drive   (storage type, or pick from list)"
+        echo "   <Enter> for client_id, client_secret, scope 1, root_folder, service_account"
+        echo "   n  (don't edit advanced config)"
+        echo "   n  (no auto-config — this is a headless machine)"
+        echo "   paste the token from your local machine"
+        echo "   y  (confirm)"
+        echo "   q  (quit config)"
+        echo ""
+        rclone config
+
+        if rclone listremotes 2>/dev/null | grep -q "^gdrive:"; then
+            ok "gdrive remote configured"
+        else
+            warn "gdrive remote not found after config — run 'rclone config' manually to retry"
+        fi
+    fi
+
+    echo ""
+    echo "  To back up checkpoints and wandb logs to Google Drive:"
+    echo "    rclone copy $PROJECT_DIR/checkpoints gdrive:polsess_backups/\$(hostname)/checkpoints --progress"
+    echo "    rclone copy $PROJECT_DIR/wandb        gdrive:polsess_backups/\$(hostname)/wandb        --progress"
+    echo ""
+fi
+
+# ============================================================================
 # Download dataset
 # ============================================================================
 
@@ -159,7 +215,7 @@ print(f'PyTorch {torch.__version__}')
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'GPU: {torch.cuda.get_device_name(0)}')
-    print(f'VRAM: {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
+    print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 "
 
 if [ -d "$POLSESS_DATA_ROOT" ]; then
