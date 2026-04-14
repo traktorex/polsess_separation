@@ -354,3 +354,81 @@ class TestVariantList:
 
         expected = {"SER", "SR", "ER", "R", "SE", "S", "E", "C"}
         assert all_variants == expected
+
+
+class TestSBTaskPESQSTOI:
+    """Test PESQ/STOI computation for speaker separation (SB) task."""
+
+    def test_results_include_pesq_stoi_for_sb(self):
+        """Verify print_summary handles PESQ/STOI + improvement metrics."""
+        results = {
+            "SER": {
+                "si_sdr": 5.0,
+                "si_sdri": 3.0,
+                "pesq": 2.5,
+                "pesqi": 0.8,
+                "stoi": 0.75,
+                "stoii": 0.15,
+                "num_samples": 50,
+            }
+        }
+        # Should not raise — print_summary must handle the new keys
+        print_summary(results)
+
+    def test_print_summary_with_improvement_columns(self, capsys):
+        """PESQi and STOIi columns appear in the summary table."""
+        results = {
+            "SER": {
+                "si_sdr": 5.0,
+                "si_sdri": 3.0,
+                "pesq": 2.5,
+                "pesqi": 0.8,
+                "stoi": 0.75,
+                "stoii": 0.15,
+                "num_samples": 50,
+            }
+        }
+        print_summary(results)
+        output = capsys.readouterr().out
+        assert "PESQi" in output
+        assert "STOIi" in output
+        assert "0.8" in output  # PESQi value present
+        assert "0.15" in output  # STOIi value present
+
+    def test_save_csv_includes_improvement_metrics(self, tmp_path):
+        """CSV export includes pesqi and stoii columns."""
+        import pandas as pd
+
+        results = {
+            "SER": {
+                "si_sdr": 5.0,
+                "si_sdri": 3.0,
+                "pesq": 2.5,
+                "pesqi": 0.8,
+                "stoi": 0.75,
+                "stoii": 0.15,
+                "num_samples": 50,
+            }
+        }
+        output_path = tmp_path / "results.csv"
+        save_results_csv(results, str(output_path))
+
+        df = pd.read_csv(output_path)
+        assert "pesqi" in df.columns
+        assert "stoii" in df.columns
+        assert df.iloc[0]["pesqi"] == pytest.approx(0.8)
+        assert df.iloc[0]["stoii"] == pytest.approx(0.15)
+
+    def test_backward_compat_no_improvement_metrics(self):
+        """Results without improvement metrics still work in print_summary."""
+        results = {
+            "SER": {
+                "si_sdr": 5.0,
+                "si_sdri": 3.0,
+                "pesq": 2.5,
+                "stoi": 0.75,
+                "num_samples": 50,
+            }
+        }
+        # Should not raise
+        print_summary(results)
