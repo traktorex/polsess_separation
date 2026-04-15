@@ -1,6 +1,8 @@
 """Evaluate speech separation models on downstream ASR performance.
 
 Pipeline: mixture → separate (optional) → transcribe with Whisper → WER/CER.
+Optionally computes non-intrusive speech quality metrics (SQUIM) for datasets
+without clean source audio (e.g., REAL-M).
 
 Three evaluation modes:
     separation: Load model, separate mixture, transcribe, compute WER/CER.
@@ -10,14 +12,17 @@ Three evaluation modes:
                 Establishes best achievable WER for the dataset.
 
 Usage (from polsess_separation/ directory):
-    # Evaluate separation model on REAL-M
+    # Evaluate separation model on REAL-M (SQUIM metrics computed by default)
     python asr/evaluate_asr.py --checkpoint checkpoints/.../best.pt \\
         --dataset realm --mode separation --whisper-model large
 
     # Mixture baseline on REAL-M (no model needed)
     python asr/evaluate_asr.py --dataset realm --mode mixture
 
-    # Clean source baseline on LibriSpeech (no model needed)
+    # Disable SQUIM metrics
+    python asr/evaluate_asr.py --dataset realm --mode mixture --no-squim
+
+    # Clean source baseline on LibriSpeech
     python asr/evaluate_asr.py --dataset librispeech --split dev --mode baseline
 """
 
@@ -44,6 +49,48 @@ WHISPER_SAMPLE_RATE = 16000
 # Our separation models operate at 8kHz
 MODEL_SAMPLE_RATE = 8000
 
+# SQUIM requires 16kHz input (same as Whisper — no extra resampling needed)
+SQUIM_SAMPLE_RATE = 16000
+
+
+# --- SQUIM non-intrusive quality metrics ---
+
+
+def load_squim_model(device="cpu"):
+    """Load the SQUIM objective model for non-intrusive quality prediction.
+
+    Returns a model that predicts STOI, PESQ, and SI-SDR without reference audio.
+    Model weights are downloaded automatically on first use (~28MB).
+    """
+    from torchaudio.pipelines import SQUIM_OBJECTIVE
+
+    model = SQUIM_OBJECTIVE.get_model()
+    model.eval()
+    return model.to(device)
+
+
+def compute_squim_metrics(squim_model, waveform):
+    """Predict speech quality metrics without a reference signal using SQUIM.
+
+    Args:
+        squim_model: SQUIM objective model from torchaudio.pipelines.
+        waveform: Audio tensor (num_channels, samples) at 16kHz.
+
+    Returns:
+        List of dicts (one per channel) with squim_stoi, squim_pesq, squim_si_sdr.
+    """
+    with torch.no_grad():
+        stoi, pesq, si_sdr = squim_model(waveform.to(next(squim_model.parameters()).device))
+
+    results = []
+    for i in range(waveform.shape[0]):
+        results.append({
+            "squim_stoi": stoi[i].item(),
+            "squim_pesq": pesq[i].item(),
+            "squim_si_sdr": si_sdr[i].item(),
+        })
+    return results
+
 
 # --- Core evaluation functions ---
 
@@ -60,7 +107,8 @@ def separate_and_transcribe(model, mix, transcriber, resample_in, resample_out, 
         device: Torch device for model inference.
 
     Returns:
-        Tuple of (transcript_s1, transcript_s2) strings.
+        Tuple of (transcript_s1, transcript_s2, separated_16k) where
+        separated_16k is the (2, T) tensor at 16kHz (reused for SQUIM).
     """
     mix_input = mix.to(device)
 
@@ -73,14 +121,14 @@ def separate_and_transcribe(model, mix, transcriber, resample_in, resample_out, 
         separated = model(mix_input.unsqueeze(0))  # (1, 2, T)
         separated = separated.squeeze(0)  # (2, T)
 
-    # Resample to 16kHz for Whisper
-    separated = resample_out(separated.cpu())
+    # Resample to 16kHz for Whisper (and SQUIM)
+    separated_16k = resample_out(separated.cpu())
 
     # Transcribe both speakers
-    transcript_s1 = transcriber.transcribe(separated[0].numpy())
-    transcript_s2 = transcriber.transcribe(separated[1].numpy())
+    transcript_s1 = transcriber.transcribe(separated_16k[0].numpy())
+    transcript_s2 = transcriber.transcribe(separated_16k[1].numpy())
 
-    return transcript_s1, transcript_s2
+    return transcript_s1, transcript_s2, separated_16k
 
 
 def assign_speakers(hyp1, hyp2, ref1, ref2):
@@ -109,7 +157,7 @@ def assign_speakers(hyp1, hyp2, ref1, ref2):
 
 
 def evaluate_separation(model_checkpoint, dataset, transcriber, device="cuda",
-                        num_samples=None):
+                        num_samples=None, squim_model=None):
     """Evaluate separation model: separate → transcribe → WER/CER.
 
     Args:
@@ -118,9 +166,10 @@ def evaluate_separation(model_checkpoint, dataset, transcriber, device="cuda",
         transcriber: WhisperTranscriber instance.
         device: Torch device for model inference.
         num_samples: Number of samples to evaluate (None = all).
+        squim_model: SQUIM objective model (None to skip quality metrics).
 
     Returns:
-        Results dictionary with WER/CER metrics.
+        Results dictionary with WER/CER and optional SQUIM metrics.
     """
     model, checkpoint = load_model_for_inference(model_checkpoint, device)
     model_type = checkpoint.get("config", {}).get("model", {}).get("model_type", "unknown")
@@ -137,14 +186,22 @@ def evaluate_separation(model_checkpoint, dataset, transcriber, device="cuda",
 
     resample_out = torchaudio.transforms.Resample(MODEL_SAMPLE_RATE, WHISPER_SAMPLE_RATE)
 
+    # Resampler for mixture → 16kHz (for SQUIM on raw mixture)
+    resample_mix_16k = None
+    if squim_model is not None and dataset_sr != SQUIM_SAMPLE_RATE:
+        resample_mix_16k = torchaudio.transforms.Resample(dataset_sr, SQUIM_SAMPLE_RATE)
+
     print(f"Model: {model_type} | Dataset SR: {dataset_sr}Hz | Samples: {n}")
     print(f"Resampling: {dataset_sr}→{MODEL_SAMPLE_RATE} (model) → {WHISPER_SAMPLE_RATE} (Whisper)")
+    if squim_model is not None:
+        print("SQUIM non-intrusive quality metrics: enabled")
 
     results_s1, results_s2 = [], []
+    squim_separated_results, squim_mixture_results = [], []
 
     for i in tqdm(range(n), desc="Separating & transcribing"):
         sample = dataset[i]
-        hyp1, hyp2 = separate_and_transcribe(
+        hyp1, hyp2, separated_16k = separate_and_transcribe(
             model, sample["mix"], transcriber,
             resample_in, resample_out, device,
         )
@@ -154,10 +211,26 @@ def evaluate_separation(model_checkpoint, dataset, transcriber, device="cuda",
         results_s1.append(m_s1)
         results_s2.append(m_s2)
 
-    return _build_results(results_s1, results_s2, model_type, n)
+        if squim_model is not None:
+            # SQUIM on separated outputs (2 speakers)
+            squim_separated_results.append(compute_squim_metrics(squim_model, separated_16k))
+
+            # SQUIM on raw mixture (single channel)
+            mix_16k = sample["mix"]
+            if resample_mix_16k is not None:
+                mix_16k = resample_mix_16k(mix_16k)
+            squim_mixture_results.append(
+                compute_squim_metrics(squim_model, mix_16k)[0]
+            )
+
+    return _build_results(
+        results_s1, results_s2, model_type, n,
+        squim_separated=squim_separated_results or None,
+        squim_mixture=squim_mixture_results or None,
+    )
 
 
-def evaluate_mixture(dataset, transcriber, num_samples=None):
+def evaluate_mixture(dataset, transcriber, num_samples=None, squim_model=None):
     """Transcribe unseparated mixtures — shows ASR degradation without separation.
 
     This is expected to produce high WER since two speakers overlap.
@@ -173,7 +246,11 @@ def evaluate_mixture(dataset, transcriber, num_samples=None):
         resample = torchaudio.transforms.Resample(dataset_sr, WHISPER_SAMPLE_RATE)
 
     print(f"Mode: mixture (no separation) | Samples: {n}")
+    if squim_model is not None:
+        print("SQUIM non-intrusive quality metrics: enabled")
+
     results_s1, results_s2 = [], []
+    squim_mixture_results = []
 
     for i in tqdm(range(n), desc="Transcribing mixtures"):
         sample = dataset[i]
@@ -193,21 +270,42 @@ def evaluate_mixture(dataset, transcriber, num_samples=None):
         results_s1.append(m_s1)
         results_s2.append(m_s2)
 
-    return _build_results(results_s1, results_s2, "mixture_baseline", n)
+        if squim_model is not None:
+            # mix is (1, T) at 16kHz after resampling
+            squim_mixture_results.append(
+                compute_squim_metrics(squim_model, mix)[0]
+            )
+
+    return _build_results(
+        results_s1, results_s2, "mixture_baseline", n,
+        squim_mixture=squim_mixture_results or None,
+    )
 
 
-def evaluate_baseline(dataset, transcriber, num_samples=None):
+def evaluate_baseline(dataset, transcriber, num_samples=None, squim_model=None):
     """Transcribe clean source audio — best achievable WER (LibriSpeech only).
 
     Requires dataset to provide 's1' and 's2' keys (clean source audio).
+    When SQUIM is enabled, also reports best achievable quality scores.
     """
     if not hasattr(dataset, "s1_dir"):
         raise ValueError("Baseline mode requires clean source audio (LibriSpeech only)")
 
     n = min(num_samples or len(dataset), len(dataset))
     print(f"Mode: baseline (clean sources) | Samples: {n}")
+    if squim_model is not None:
+        print("SQUIM non-intrusive quality metrics: enabled (best achievable scores)")
+
+    # Determine dataset sample rate for SQUIM resampling
+    first_sample = dataset[0]
+    dataset_sr = first_sample["sample_rate"]
+
+    resample_to_16k = None
+    if squim_model is not None and dataset_sr != SQUIM_SAMPLE_RATE:
+        resample_to_16k = torchaudio.transforms.Resample(dataset_sr, SQUIM_SAMPLE_RATE)
 
     results_s1, results_s2 = [], []
+    squim_separated_results = []
 
     for i in tqdm(range(n), desc="Transcribing clean sources"):
         sample = dataset[i]
@@ -220,20 +318,43 @@ def evaluate_baseline(dataset, transcriber, num_samples=None):
         results_s1.append(m_s1)
         results_s2.append(m_s2)
 
-    return _build_results(results_s1, results_s2, "clean_baseline", n)
+        if squim_model is not None:
+            # Stack clean sources: (2, T) at 16kHz
+            s1 = sample["s1"]
+            s2 = sample["s2"]
+            clean_pair = torch.cat([s1, s2], dim=0)  # (2, T)
+            if resample_to_16k is not None:
+                clean_pair = resample_to_16k(clean_pair)
+            squim_separated_results.append(
+                compute_squim_metrics(squim_model, clean_pair)
+            )
+
+    return _build_results(
+        results_s1, results_s2, "clean_baseline", n,
+        squim_separated=squim_separated_results or None,
+    )
 
 
 # --- Helper functions ---
 
 
-def _build_results(results_s1, results_s2, model_type, num_samples):
-    """Aggregate per-sample metrics into a results dictionary."""
+def _build_results(results_s1, results_s2, model_type, num_samples,
+                    squim_separated=None, squim_mixture=None):
+    """Aggregate per-sample metrics into a results dictionary.
+
+    Args:
+        results_s1, results_s2: Per-sample WER/CER metrics for each speaker.
+        model_type: Model identifier string.
+        num_samples: Number of evaluated samples.
+        squim_separated: List of [speaker1_metrics, speaker2_metrics] per sample.
+        squim_mixture: List of mixture metrics dicts per sample.
+    """
     agg_s1 = aggregate_metrics(results_s1)
     agg_s2 = aggregate_metrics(results_s2)
     avg_wer = (agg_s1["wer"] + agg_s2["wer"]) / 2
     avg_cer = (agg_s1["cer"] + agg_s2["cer"]) / 2
 
-    return {
+    results = {
         "model_type": model_type,
         "num_samples": num_samples,
         "avg_wer": float(avg_wer),
@@ -241,6 +362,27 @@ def _build_results(results_s1, results_s2, model_type, num_samples):
         "speaker1": _to_python(agg_s1),
         "speaker2": _to_python(agg_s2),
     }
+
+    if squim_separated is not None:
+        squim = {}
+        for metric in ("squim_stoi", "squim_pesq", "squim_si_sdr"):
+            s1_vals = [s[0][metric] for s in squim_separated]
+            s2_vals = [s[1][metric] for s in squim_separated]
+            s1_mean = sum(s1_vals) / len(s1_vals)
+            s2_mean = sum(s2_vals) / len(s2_vals)
+            squim[f"separated_{metric}_s1"] = s1_mean
+            squim[f"separated_{metric}_s2"] = s2_mean
+            squim[f"separated_{metric}_avg"] = (s1_mean + s2_mean) / 2
+        results["squim"] = squim
+
+    if squim_mixture is not None:
+        squim = results.get("squim", {})
+        for metric in ("squim_stoi", "squim_pesq", "squim_si_sdr"):
+            vals = [m[metric] for m in squim_mixture]
+            squim[f"mixture_{metric}"] = sum(vals) / len(vals)
+        results["squim"] = squim
+
+    return results
 
 
 def _to_python(obj):
@@ -263,6 +405,29 @@ def print_results(results):
     print(f"  Speaker 1:  WER = {results['speaker1']['wer']:.2f}%,  CER = {results['speaker1']['cer']:.2f}%")
     print(f"  Speaker 2:  WER = {results['speaker2']['wer']:.2f}%,  CER = {results['speaker2']['cer']:.2f}%")
     print(f"  Average:    WER = {results['avg_wer']:.2f}%,  CER = {results['avg_cer']:.2f}%")
+
+    if "squim" in results:
+        squim = results["squim"]
+        print()
+        print("  SQUIM Speech Quality (non-intrusive):")
+
+        has_separated = "separated_squim_stoi_avg" in squim
+        has_mixture = "mixture_squim_stoi" in squim
+
+        if has_separated:
+            print(f"    Separated — STOI: {squim['separated_squim_stoi_avg']:.3f},"
+                  f"  PESQ: {squim['separated_squim_pesq_avg']:.2f},"
+                  f"  SI-SDR: {squim['separated_squim_si_sdr_avg']:.1f} dB")
+        if has_mixture:
+            print(f"    Mixture   — STOI: {squim['mixture_squim_stoi']:.3f},"
+                  f"  PESQ: {squim['mixture_squim_pesq']:.2f},"
+                  f"  SI-SDR: {squim['mixture_squim_si_sdr']:.1f} dB")
+        if has_separated and has_mixture:
+            print(f"    Improvement: "
+                  f"STOI: {squim['separated_squim_stoi_avg'] - squim['mixture_squim_stoi']:+.3f},"
+                  f"  PESQ: {squim['separated_squim_pesq_avg'] - squim['mixture_squim_pesq']:+.2f},"
+                  f"  SI-SDR: {squim['separated_squim_si_sdr_avg'] - squim['mixture_squim_si_sdr']:+.1f} dB")
+
     print("=" * 70)
 
 
@@ -308,6 +473,11 @@ def main():
     parser.add_argument("--whisper-device", type=str, default="cuda",
                         help="Device for Whisper")
 
+    # SQUIM
+    parser.add_argument("--no-squim", action="store_true",
+                        help="Skip SQUIM non-intrusive quality metrics "
+                             "(STOI, PESQ, SI-SDR predicted without reference)")
+
     # General
     parser.add_argument("--num-samples", type=int, default=None,
                         help="Limit number of samples (default: all)")
@@ -345,6 +515,12 @@ def main():
         device=args.whisper_device,
     )
 
+    # Load SQUIM model (enabled by default)
+    squim_model = None
+    if not args.no_squim:
+        squim_model = load_squim_model(device=args.device)
+        print("SQUIM objective model loaded")
+
     # Run evaluation
     if args.mode == "separation":
         results = evaluate_separation(
@@ -353,18 +529,21 @@ def main():
             transcriber=transcriber,
             device=args.device,
             num_samples=args.num_samples,
+            squim_model=squim_model,
         )
     elif args.mode == "mixture":
         results = evaluate_mixture(
             dataset=dataset,
             transcriber=transcriber,
             num_samples=args.num_samples,
+            squim_model=squim_model,
         )
     else:  # baseline
         results = evaluate_baseline(
             dataset=dataset,
             transcriber=transcriber,
             num_samples=args.num_samples,
+            squim_model=squim_model,
         )
 
     # Output
