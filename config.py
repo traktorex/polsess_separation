@@ -136,6 +136,13 @@ class DPMambaParams:
 
 
 @dataclass
+class AugmentationConfig:
+    """Training-time augmentation settings."""
+
+    snr_perturbation_db: float = 0.0  # Uniform ±dB range applied to non-speech background. 0 = disabled.
+
+
+@dataclass
 class DataConfig:
     """Common data configuration across all datasets."""
 
@@ -147,6 +154,7 @@ class DataConfig:
     train_max_samples: Optional[int] = None
     val_max_samples: Optional[int] = None
     polsess: Optional[PolSESSParams] = None
+    augmentation: Optional[AugmentationConfig] = None
 
     def __post_init__(self):
         """Initialize dataset-specific params if not provided."""
@@ -295,6 +303,9 @@ class Config:
             f"  Workers: {self.data.num_workers} (prefetch={self.data.prefetch_factor})",
         ])
 
+        if self.data.augmentation and self.data.augmentation.snr_perturbation_db > 0:
+            lines.append(f"  SNR perturbation: ±{self.data.augmentation.snr_perturbation_db:.1f} dB (train only)")
+
         if runtime_info:
             if "train_samples" in runtime_info:
                 lines.append(f"  Train samples: {runtime_info['train_samples']}")
@@ -414,6 +425,10 @@ def load_config_from_dict(config_dict: dict) -> Config:
     polsess_dict = data_dict.pop("polsess", None)
     polsess_params = PolSESSParams(**polsess_dict) if polsess_dict else None
 
+    # Handle augmentation params
+    augmentation_dict = data_dict.pop("augmentation", None)
+    augmentation_params = AugmentationConfig(**augmentation_dict) if augmentation_dict else None
+
     # Handle nested model-specific params
     convtasnet_dict = model_dict.pop("convtasnet", None)
     convtasnet_params = ConvTasNetParams(**convtasnet_dict) if convtasnet_dict else None
@@ -433,7 +448,7 @@ def load_config_from_dict(config_dict: dict) -> Config:
     dpmamba_dict = model_dict.pop("dpmamba", None)
     dpmamba_params = DPMambaParams(**dpmamba_dict) if dpmamba_dict else None
 
-    data_config = DataConfig(**data_dict, polsess=polsess_params)
+    data_config = DataConfig(**data_dict, polsess=polsess_params, augmentation=augmentation_params)
     model_config = ModelConfig(
         **model_dict,
         convtasnet=convtasnet_params,

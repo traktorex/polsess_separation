@@ -51,12 +51,17 @@ def main():
         train_variants = config.training.curriculum_learning[0].get("variants")
     
     # Create train dataset
+    snr_perturbation_db = (
+        config.data.augmentation.snr_perturbation_db
+        if config.data.augmentation else 0.0
+    )
     train_dataset = dataset_class(
         data_root,
         subset="train",
         task=config.data.task,
         max_samples=config.data.train_max_samples,
         allowed_variants=train_variants,
+        snr_perturbation_db=snr_perturbation_db,
     )
     train_loader = DataLoader(
         train_dataset,

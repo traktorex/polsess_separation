@@ -31,11 +31,13 @@ class PolSESSDataset(Dataset):
         task="ES",
         allowed_variants=None,
         max_samples=None,
+        snr_perturbation_db=0.0,
     ):
         self.data_root = Path(data_root)
         self.subset = subset
         self.task = task
         self.max_samples = max_samples
+        self.snr_perturbation_db = snr_perturbation_db
         self._allowed_variants = None  # Private attribute
 
         # Automatically derive CSV filename from data_root
@@ -98,6 +100,9 @@ class PolSESSDataset(Dataset):
         audio = self._lazy_load(paths, variant, has_reverb)
         mix = self._apply_mmipc(audio, has_reverb)
         clean = self._compute_clean(audio)
+
+        if self.snr_perturbation_db > 0 and self.subset == "train":
+            mix = self._apply_snr_perturbation(mix, audio, variant, has_reverb)
 
         return {"mix": mix, "clean": clean, "background_complexity": variant}
 
@@ -187,6 +192,17 @@ class PolSESSDataset(Dataset):
                 # ES task: always remove sp2_reverb (along with speaker2)
                 audio["sp2_reverb"], _ = torchaudio.load(paths["sp2_reverb"])
 
+        # Load kept background stems for SNR perturbation (train only).
+        # Stored under "kept_" keys so _apply_mmipc doesn't subtract them.
+        if self.snr_perturbation_db > 0 and self.subset == "train":
+            if "S" in variant and "scene" not in audio:
+                audio["kept_scene"], _ = torchaudio.load(paths["scene"])
+            if "E" in variant:
+                if "event" not in audio:
+                    audio["kept_event"], _ = torchaudio.load(paths["event"])
+                if has_reverb and "ev_reverb" not in audio:
+                    audio["kept_ev_reverb"], _ = torchaudio.load(paths["ev_reverb"])
+
         for key in audio:
             audio[key] = self._ensure_1d(audio[key])
 
@@ -196,6 +212,30 @@ class PolSESSDataset(Dataset):
         while tensor.dim() > 1 and tensor.shape[0] == 1:
             tensor = tensor.squeeze(0)
         return tensor
+
+    def _apply_snr_perturbation(self, mix, audio, variant, has_reverb):
+        """Scale non-speech background components in the mix by a random dB gain.
+
+        Only components that are kept in the mix (not removed by MM-IPC) are scaled.
+        Stems are stored under "kept_" keys by _lazy_load to avoid interference
+        with _apply_mmipc (which subtracts anything under the base keys).
+        Variants with no non-speech background ("C", "R") are returned unchanged.
+        """
+        kept_noise = torch.zeros_like(mix)
+        if "S" in variant:
+            kept_noise = kept_noise + audio["kept_scene"]
+        if "E" in variant:
+            kept_noise = kept_noise + audio["kept_event"]
+            if has_reverb:
+                kept_noise = kept_noise + audio["kept_ev_reverb"]
+
+        # No non-speech background to scale (e.g. "C" or "R" variants)
+        if kept_noise.abs().sum() == 0:
+            return mix
+
+        dB = random.uniform(-self.snr_perturbation_db, self.snr_perturbation_db)
+        gain = 10 ** (dB / 20)
+        return mix + (gain - 1) * kept_noise
 
     def _apply_mmipc(self, audio, has_reverb):
         """Apply MM-IPC by removing components from mix."""
