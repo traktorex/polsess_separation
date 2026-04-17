@@ -32,7 +32,7 @@ training:
   lr_factor: 0.5631598955808096
   lr_patience: 3
   num_epochs: 200
-  use_amp: true
+  use_amp: false
   amp_eps: 0.0001
   save_dir: checkpoints
   use_wandb: true
