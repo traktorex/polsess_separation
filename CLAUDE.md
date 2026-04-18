@@ -6,9 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset. Part of a master's thesis on speech separation for downstream Polish ASR preprocessing.
 
+Cross-workspace context (dataset naming, thesis phase, experiment log location): `~/thesis/CONTEXT.md`. Thesis prose and experiment logs live in `~/thesis/` — read, don't modify.
+
 ## Thesis Code Principles
 
 This code will be reviewed by academic supervisors. Prioritize: clarity over cleverness, simplicity over abstraction, reproducibility. Prefer explicit implementations that match cited papers. Don't over-engineer — no factories for <4 variants, no deep inheritance, no speculative features. Experiment logging is handled outside this repo.
+
+## Keeping This File Current
+
+After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md (and to `~/thesis/CONTEXT.md` if it touches cross-workspace facts). Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments.
 
 ## Key Commands
 
@@ -52,9 +58,23 @@ pytest --cov=. --cov-report=html
 pytest tests/test_model.py -v
 ```
 
+**Sweeps:**
+```bash
+# Launch a W&B sweep (the sweep YAML points at train_sweep.py as the program)
+wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml
+# then run agents against the returned sweep ID
+```
+
+**Benchmarks (thesis data):**
+```bash
+python scripts/benchmark_inference.py
+python scripts/benchmark_training.py
+```
+
 **Interactive:**
 ```bash
 jupyter notebook test_model_interactive.ipynb
+jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipeline (see ASR section)
 ```
 
 ## Architecture Overview
@@ -66,6 +86,10 @@ jupyter notebook test_model_interactive.ipynb
 - `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.6M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
+
+**ASR subsystem (`asr/`):** Two distinct pipelines for different recording regimes.
+- `evaluate_asr.py` / `evaluate_asr_intrusive.py` (+ `dataset.py`, `transcribe.py`, `metrics.py`): one-shot pipeline — separate the whole recording, then run ASR on each source. Targets REAL-M and the synthetic LibriMix-based dataset, which assume both speakers talking concurrently most of the time. Predates access to CLARIN.
+- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap. Builds a per-speaker stream using diarization and separates only the overlap regions. This is the pipeline planned for the final CLARIN-based thesis evaluation.
 
 **Training Flow:** `train.py` → config → dataloaders → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning).
 

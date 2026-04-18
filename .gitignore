@@ -55,3 +55,9 @@ Thumbs.db
 /venv_backup
 
 *.csv
+
+/.cache
+
+/.claude
+
+*.nsys-rep
