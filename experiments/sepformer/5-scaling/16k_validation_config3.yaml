@@ -43,7 +43,7 @@ training:
   early_stopping_patience: 15
 
   use_wandb: true
-  wandb_project: polsess-separation
+  wandb_project: polsess-separation-real16k
   wandb_run_name: 16k_test_valconfig3
   log_level: INFO
 

@@ -43,8 +43,8 @@ training:
   early_stopping_patience: 15
 
   use_wandb: true
-  wandb_project: polsess-separation-32k
-  wandb_run_name: 32k_test_valconfig2
+  wandb_project: polsess-separation-64k
+  wandb_run_name: 64k_test_valconfig2
   log_level: INFO
 
   validation_variants: ["SER", "SE"]
