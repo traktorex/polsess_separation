@@ -28,7 +28,6 @@ model:
     emb_hs: 1  # Keep same
     activation: "prelu"
     eps: 1.0e-4  # Increased for numerical stability
-    sample_rate: 8000
 
 training:
   # Optimizer settings

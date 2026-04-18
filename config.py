@@ -425,6 +425,10 @@ def load_config_from_dict(config_dict: dict) -> Config:
     dprnn_params = DPRNNParams(**dprnn_dict) if dprnn_dict else None
 
     spmamba_dict = model_dict.pop("spmamba", None)
+    if spmamba_dict:
+        # Backward compat: `sample_rate` was removed from SPMambaParams; drop it
+        # silently from legacy YAMLs and pre-2026-04 checkpoint configs.
+        spmamba_dict.pop("sample_rate", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
 
     mamba_tasnet_dict = model_dict.pop("mamba_tasnet", None)

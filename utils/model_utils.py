@@ -138,6 +138,11 @@ def load_model_for_inference(
     if model_type == "sepformer" and "use_positional_encoding" not in model_params:
         model_params["use_positional_encoding"] = False
 
+    # Backward compat: `sample_rate` was removed from SPMamba; drop it from
+    # legacy checkpoint configs so SPMamba(**model_params) doesn't TypeError.
+    if model_type == "spmamba":
+        model_params.pop("sample_rate", None)
+
     # Instantiate model and load weights
     model_class = get_model(model_type)
     model = model_class(**model_params)
