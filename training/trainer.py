@@ -93,8 +93,10 @@ class Trainer:
             self.amp_dtype = None
             return
 
-        mamba_models = ("SPMamba", "SPMamba3", "DPMamba", "MambaTasNet")
-        if type(model).__name__ in mamba_models:
+        # Dispatch on model_type rather than class name: torch.compile wraps the
+        # model in OptimizedModule, which would silently defeat a class-name check.
+        mamba_models = ("spmamba", "mamba_tasnet", "dpmamba")
+        if self.config.model.model_type in mamba_models:
             self.scaler = None
             self.amp_dtype = torch.bfloat16
         else:
