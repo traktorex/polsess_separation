@@ -1,4 +1,4 @@
-"""Tests for ASR evaluation module: metrics, speaker assignment, datasets."""
+"""Tests for ASR evaluation module: metrics, speaker assignment, datasets, SQUIM."""
 
 import csv
 import pytest
@@ -8,7 +8,9 @@ import torchaudio
 from asr.metrics import (
     word_error_rate, character_error_rate, compute_metrics, aggregate_metrics,
 )
-from asr.evaluate_asr import assign_speakers
+from asr.evaluate_asr import (
+    assign_speakers, compute_squim_metrics, load_squim_model, _build_results,
+)
 from asr.dataset import RealMDataset, LibriSpeechMixDataset
 
 
@@ -290,3 +292,108 @@ class TestLibriSpeechMixDataset:
         (tmp_path / "dev").mkdir()
         with pytest.raises(FileNotFoundError, match="Metadata file not found"):
             LibriSpeechMixDataset(dataset_root=str(tmp_path), split="dev")
+
+
+# --- SQUIM non-intrusive quality metrics tests ---
+
+
+@pytest.fixture(scope="module")
+def squim_model():
+    """Load SQUIM model once for all tests (downloads on first use)."""
+    return load_squim_model()
+
+
+class TestSQUIMMetrics:
+    """Non-intrusive speech quality prediction via SQUIM."""
+
+    def test_returns_correct_keys(self, squim_model):
+        waveform = torch.randn(1, 16000)  # 1 channel, 1 second at 16kHz
+        results = compute_squim_metrics(squim_model, waveform)
+        assert len(results) == 1
+        assert set(results[0].keys()) == {"squim_stoi", "squim_pesq", "squim_si_sdr"}
+
+    def test_two_speakers(self, squim_model):
+        waveform = torch.randn(2, 16000)  # 2 channels
+        results = compute_squim_metrics(squim_model, waveform)
+        assert len(results) == 2
+        for r in results:
+            assert set(r.keys()) == {"squim_stoi", "squim_pesq", "squim_si_sdr"}
+
+    def test_values_are_finite(self, squim_model):
+        waveform = torch.randn(2, 16000)
+        results = compute_squim_metrics(squim_model, waveform)
+        for r in results:
+            for key, value in r.items():
+                assert isinstance(value, float), f"{key} is not a float"
+                assert not (value != value), f"{key} is NaN"  # NaN != NaN
+
+    def test_clean_speech_scores_higher_than_noise(self, squim_model):
+        """A sine wave (speech-like) should score higher than white noise."""
+        t = torch.linspace(0, 1, 16000)
+        sine = (torch.sin(2 * 3.14159 * 440 * t) * 0.5).unsqueeze(0)
+        noise = (torch.randn(1, 16000) * 0.01)
+
+        sine_result = compute_squim_metrics(squim_model, sine)[0]
+        noise_result = compute_squim_metrics(squim_model, noise)[0]
+
+        # Sine should have higher predicted STOI than very quiet noise
+        assert sine_result["squim_stoi"] > noise_result["squim_stoi"]
+
+
+class TestBuildResultsWithSQUIM:
+    """Verify _build_results handles SQUIM data correctly."""
+
+    def _make_asr_results(self, n=3):
+        """Create mock ASR per-sample results."""
+        results = []
+        for _ in range(n):
+            results.append(compute_metrics("hello world", "hello world"))
+        return results
+
+    def test_without_squim(self):
+        """Backward compatibility: no SQUIM keys when not provided."""
+        r = _build_results(self._make_asr_results(), self._make_asr_results(),
+                           "test_model", 3)
+        assert "squim" not in r
+        assert "model_type" in r
+        assert "avg_wer" in r
+
+    def test_with_separated_squim(self):
+        """SQUIM separated results appear under 'squim' key."""
+        squim_sep = [
+            [{"squim_stoi": 0.8, "squim_pesq": 2.5, "squim_si_sdr": 10.0},
+             {"squim_stoi": 0.7, "squim_pesq": 2.0, "squim_si_sdr": 8.0}],
+        ]
+        r = _build_results(self._make_asr_results(1), self._make_asr_results(1),
+                           "test_model", 1, squim_separated=squim_sep)
+        assert "squim" in r
+        assert r["squim"]["separated_squim_stoi_s1"] == pytest.approx(0.8)
+        assert r["squim"]["separated_squim_stoi_s2"] == pytest.approx(0.7)
+        assert r["squim"]["separated_squim_stoi_avg"] == pytest.approx(0.75)
+
+    def test_with_mixture_squim(self):
+        """SQUIM mixture results appear under 'squim' key."""
+        squim_mix = [
+            {"squim_stoi": 0.5, "squim_pesq": 1.5, "squim_si_sdr": -2.0},
+        ]
+        r = _build_results(self._make_asr_results(1), self._make_asr_results(1),
+                           "test_model", 1, squim_mixture=squim_mix)
+        assert "squim" in r
+        assert r["squim"]["mixture_squim_stoi"] == pytest.approx(0.5)
+        assert r["squim"]["mixture_squim_pesq"] == pytest.approx(1.5)
+
+    def test_with_both_separated_and_mixture(self):
+        """Both separated and mixture SQUIM in same results dict."""
+        squim_sep = [
+            [{"squim_stoi": 0.8, "squim_pesq": 2.5, "squim_si_sdr": 10.0},
+             {"squim_stoi": 0.7, "squim_pesq": 2.0, "squim_si_sdr": 8.0}],
+        ]
+        squim_mix = [
+            {"squim_stoi": 0.5, "squim_pesq": 1.5, "squim_si_sdr": -2.0},
+        ]
+        r = _build_results(self._make_asr_results(1), self._make_asr_results(1),
+                           "test_model", 1,
+                           squim_separated=squim_sep, squim_mixture=squim_mix)
+        squim = r["squim"]
+        assert "separated_squim_stoi_avg" in squim
+        assert "mixture_squim_stoi" in squim

@@ -2,13 +2,15 @@
 
 Evaluates speech separation models as a preprocessing step for ASR. Measures whether separating a 2-speaker mixture improves Whisper transcription accuracy (WER/CER).
 
+For datasets without clean source audio (e.g., REAL-M), also computes non-intrusive speech quality metrics via [torchaudio SQUIM](https://docs.pytorch.org/audio/main/tutorials/squim_tutorial.html) — predicting STOI, PESQ, and SI-SDR without a reference signal.
+
 ## Evaluation Modes
 
 | Mode | Description | Model needed? | Datasets |
 |------|-------------|:---:|---------|
-| `separation` | Separate → transcribe → WER/CER | Yes | LibriSpeech, REAL-M |
-| `mixture` | Transcribe unseparated mix (no-separation baseline) | No | LibriSpeech, REAL-M |
-| `baseline` | Transcribe clean source audio (best achievable WER) | No | LibriSpeech only |
+| `separation` | Separate → transcribe → WER/CER + SQUIM | Yes | LibriSpeech, REAL-M |
+| `mixture` | Transcribe unseparated mix (no-separation baseline) + SQUIM | No | LibriSpeech, REAL-M |
+| `baseline` | Transcribe clean source audio (best achievable WER + SQUIM) | No | LibriSpeech only |
 
 ## Datasets
 
@@ -16,14 +18,14 @@ Evaluates speech separation models as a preprocessing step for ASR. Measures whe
 Clean source audio available. Location: `~/datasets/LibriSpeechMixASR/` (or `LIBRIMIX_ASR_ROOT` env var).
 
 **REAL-M** — 1,436 real-world 2-speaker mixtures at 8kHz with transcriptions.
-No clean sources — ASR-based evaluation only. Location: `~/datasets/REAL-M-v0.1.0/` (or `REALM_DATA_ROOT` env var).
+No clean sources — ASR + SQUIM evaluation only. Location: `~/datasets/REAL-M-v0.1.0/` (or `REALM_DATA_ROOT` env var).
 
 ## Usage
 
 ```bash
 # Run from polsess_separation/ directory
 
-# Evaluate separation model on REAL-M
+# Evaluate separation model on REAL-M (SQUIM metrics computed by default)
 python asr/evaluate_asr.py \
     --checkpoint checkpoints/spmamba/SB/.../best.pt \
     --dataset realm --mode separation --whisper-model large
@@ -31,7 +33,10 @@ python asr/evaluate_asr.py \
 # Mixture baseline on REAL-M (shows problem: high WER without separation)
 python asr/evaluate_asr.py --dataset realm --mode mixture
 
-# Clean source baseline on LibriSpeech
+# Disable SQUIM metrics (WER/CER only)
+python asr/evaluate_asr.py --dataset realm --mode mixture --no-squim
+
+# Clean source baseline on LibriSpeech (shows best achievable WER + SQUIM)
 python asr/evaluate_asr.py --dataset librispeech --split dev --mode baseline
 
 # Separation on LibriSpeech (50 samples, specific Whisper model)
