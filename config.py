@@ -15,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
+            "/home/user/datasets/PolSESS_C_new_64/PolSESS_C_new_64",
         )
     )
 
@@ -656,6 +656,7 @@ def get_config_from_args() -> Config:
                 "Please provide --config explicitly."
             )
         config = load_config_from_dict(ckpt_config)
+        config._loaded_from_checkpoint = True
         del checkpoint  # free memory before training starts
     else:
         config = Config()

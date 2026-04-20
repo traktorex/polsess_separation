@@ -172,12 +172,18 @@ class Trainer:
 
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
-        # Allow overriding LR via config even when resuming
+        # Allow overriding LR via config even when resuming, but only if the
+        # user explicitly provided a config (not when it was loaded from the
+        # checkpoint itself — in that case config.training.lr is the original
+        # starting LR and would clobber any scheduler-reduced LR).
         current_lr = self.optimizer.param_groups[0]['lr']
-        if current_lr != self.config.training.lr:
+        config_from_ckpt = getattr(self.config, '_loaded_from_checkpoint', False)
+        if current_lr != self.config.training.lr and not config_from_ckpt:
              self.logger.info(f"Overriding checkpoint LR {current_lr:.2e} with config LR {self.config.training.lr:.2e}")
              for param_group in self.optimizer.param_groups:
                  param_group['lr'] = self.config.training.lr
+        else:
+             self.logger.info(f"Resuming from checkpoint LR {current_lr:.2e}")
         
         # Load scheduler state if available
         if self.scheduler is not None:
