@@ -49,21 +49,34 @@ class MambaInnerFnNoOutProj(torch.autograd.Function):
         L = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-        if torch.is_autocast_enabled():
-            x_proj_weight = x_proj_weight.to(dtype=torch.get_autocast_gpu_dtype())
-            delta_proj_weight = delta_proj_weight.to(dtype=torch.get_autocast_gpu_dtype())
-        if xz.stride(-1) != 1:
-            xz = xz.contiguous()
-        conv1d_weight = rearrange(conv1d_weight, "d 1 w -> d w")
-        x, z = xz.chunk(2, dim=1)
-        conv1d_bias = conv1d_bias.contiguous() if conv1d_bias is not None else None
-        conv1d_out = causal_conv1d_fwd_function(
-            x, conv1d_weight, conv1d_bias, None, None, None, True
-        )
-        x_dbl = F.linear(rearrange(conv1d_out, "b d l -> (b l) d"), x_proj_weight)
-        delta = rearrange(
-            delta_proj_weight @ x_dbl[:, :delta_rank].t(), "d (b l) -> b d l", l=L
-        )
+        # Key weights/ops off xz.dtype, not the autocast state. Under torch.compile
+        # + bf16 autocast, xz can arrive in fp16 even though get_autocast_gpu_dtype()
+        # still reports bf16; casting weights via the autocast dtype then makes
+        # delta bf16 while conv1d_out stays fp16, tripping selective_scan_cuda's
+        # delta.scalar_type() == input_type check. Disable autocast inside so
+        # F.linear / matmul don't re-promote intermediates to a different dtype.
+        target_dtype = xz.dtype
+        with torch.amp.autocast("cuda", enabled=False):
+            if x_proj_weight.dtype != target_dtype:
+                x_proj_weight = x_proj_weight.to(dtype=target_dtype)
+            if delta_proj_weight.dtype != target_dtype:
+                delta_proj_weight = delta_proj_weight.to(dtype=target_dtype)
+            if conv1d_weight.dtype != target_dtype:
+                conv1d_weight = conv1d_weight.to(dtype=target_dtype)
+            if conv1d_bias is not None and conv1d_bias.dtype != target_dtype:
+                conv1d_bias = conv1d_bias.to(dtype=target_dtype)
+            if xz.stride(-1) != 1:
+                xz = xz.contiguous()
+            conv1d_weight = rearrange(conv1d_weight, "d 1 w -> d w")
+            x, z = xz.chunk(2, dim=1)
+            conv1d_bias = conv1d_bias.contiguous() if conv1d_bias is not None else None
+            conv1d_out = causal_conv1d_fwd_function(
+                x, conv1d_weight, conv1d_bias, None, None, None, True
+            )
+            x_dbl = F.linear(rearrange(conv1d_out, "b d l -> (b l) d"), x_proj_weight)
+            delta = rearrange(
+                delta_proj_weight @ x_dbl[:, :delta_rank].t(), "d (b l) -> b d l", l=L
+            )
         ctx.is_variable_B = B is None
         ctx.is_variable_C = C is None
         ctx.B_proj_bias_is_None = B_proj_bias is None
@@ -118,58 +131,64 @@ class MambaInnerFnNoOutProj(torch.autograd.Function):
         L = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-        x, z = xz.chunk(2, dim=1)
-        if dout.stride(-1) != 1:
-            dout = dout.contiguous()
-        # Recompute conv1d_out and delta (checkpoint_lvl=1)
-        conv1d_out = causal_conv1d_fwd_function(
-            x, conv1d_weight, conv1d_bias, None, None, None, True
-        )
-        delta = rearrange(
-            delta_proj_weight @ x_dbl[:, :delta_rank].t(), "d (b l) -> b d l", l=L
-        )
-        # No out_proj transpose needed — dout is already [B, d_inner, L]
-        dxz = torch.empty_like(xz)
-        dx, dz = dxz.chunk(2, dim=1)
-        dconv1d_out, ddelta, dA, dB, dC, dD, ddelta_bias, dz, out_z = selective_scan_cuda.bwd(
-            conv1d_out, delta, A, B, C, D, z, delta_bias, dout, scan_intermediates, out, dz,
-            ctx.delta_softplus,
-            True,  # recompute out_z
-        )
-        dD = dD if D is not None else None
-        dx_dbl = torch.empty_like(x_dbl)
-        dB_proj_bias = None
-        if ctx.is_variable_B:
-            if not A.is_complex():
-                dB = rearrange(dB, "b 1 dstate l -> (b l) dstate").contiguous()
-            else:
-                dB = rearrange(dB, "b 1 dstate (l two) -> (b l) (dstate two)", two=2).contiguous()
-            dB_proj_bias = dB.sum(0) if not ctx.B_proj_bias_is_None else None
-            dx_dbl[:, delta_rank:delta_rank + d_state] = dB
-            dB = None
-        dC_proj_bias = None
-        if ctx.is_variable_C:
-            if not A.is_complex():
-                dC = rearrange(dC, "b 1 dstate l -> (b l) dstate").contiguous()
-            else:
-                dC = rearrange(dC, "b 1 dstate (l two) -> (b l) (dstate two)", two=2).contiguous()
-            dC_proj_bias = dC.sum(0) if not ctx.C_proj_bias_is_None else None
-            dx_dbl[:, -d_state:] = dC
-            dC = None
-        ddelta = rearrange(ddelta, "b d l -> d (b l)")
-        ddelta_proj_weight = torch.einsum("dB,Br->dr", ddelta, x_dbl[:, :delta_rank])
-        dx_dbl[:, :delta_rank] = torch.einsum("dB,dr->Br", ddelta, delta_proj_weight)
-        dconv1d_out = rearrange(dconv1d_out, "b d l -> d (b l)")
-        dx_proj_weight = torch.einsum(
-            "Br,Bd->rd", dx_dbl, rearrange(conv1d_out, "b d l -> (b l) d")
-        )
-        dconv1d_out = torch.addmm(dconv1d_out, x_proj_weight.t(), dx_dbl.t(), out=dconv1d_out)
-        dconv1d_out = rearrange(dconv1d_out, "d (b l) -> b d l", b=x.shape[0], l=x.shape[-1])
-        dx, dconv1d_weight, dconv1d_bias, *_ = causal_conv1d_bwd_function(
-            x, conv1d_weight, conv1d_bias, dconv1d_out, None, None, None, dx, False, True
-        )
-        dconv1d_bias = dconv1d_bias if conv1d_bias is not None else None
-        dconv1d_weight = rearrange(dconv1d_weight, "d w -> d 1 w")
+        # Match forward: disable autocast so the recomputed conv1d_out and delta
+        # share a dtype with the saved intermediates (selective_scan_cuda.bwd
+        # enforces delta.scalar_type() == input_type).
+        with torch.amp.autocast("cuda", enabled=False):
+            x, z = xz.chunk(2, dim=1)
+            if dout.stride(-1) != 1:
+                dout = dout.contiguous()
+            if dout.dtype != x.dtype:
+                dout = dout.to(dtype=x.dtype)
+            # Recompute conv1d_out and delta (checkpoint_lvl=1)
+            conv1d_out = causal_conv1d_fwd_function(
+                x, conv1d_weight, conv1d_bias, None, None, None, True
+            )
+            delta = rearrange(
+                delta_proj_weight @ x_dbl[:, :delta_rank].t(), "d (b l) -> b d l", l=L
+            )
+            # No out_proj transpose needed — dout is already [B, d_inner, L]
+            dxz = torch.empty_like(xz)
+            dx, dz = dxz.chunk(2, dim=1)
+            dconv1d_out, ddelta, dA, dB, dC, dD, ddelta_bias, dz, out_z = selective_scan_cuda.bwd(
+                conv1d_out, delta, A, B, C, D, z, delta_bias, dout, scan_intermediates, out, dz,
+                ctx.delta_softplus,
+                True,  # recompute out_z
+            )
+            dD = dD if D is not None else None
+            dx_dbl = torch.empty_like(x_dbl)
+            dB_proj_bias = None
+            if ctx.is_variable_B:
+                if not A.is_complex():
+                    dB = rearrange(dB, "b 1 dstate l -> (b l) dstate").contiguous()
+                else:
+                    dB = rearrange(dB, "b 1 dstate (l two) -> (b l) (dstate two)", two=2).contiguous()
+                dB_proj_bias = dB.sum(0) if not ctx.B_proj_bias_is_None else None
+                dx_dbl[:, delta_rank:delta_rank + d_state] = dB
+                dB = None
+            dC_proj_bias = None
+            if ctx.is_variable_C:
+                if not A.is_complex():
+                    dC = rearrange(dC, "b 1 dstate l -> (b l) dstate").contiguous()
+                else:
+                    dC = rearrange(dC, "b 1 dstate (l two) -> (b l) (dstate two)", two=2).contiguous()
+                dC_proj_bias = dC.sum(0) if not ctx.C_proj_bias_is_None else None
+                dx_dbl[:, -d_state:] = dC
+                dC = None
+            ddelta = rearrange(ddelta, "b d l -> d (b l)")
+            ddelta_proj_weight = torch.einsum("dB,Br->dr", ddelta, x_dbl[:, :delta_rank])
+            dx_dbl[:, :delta_rank] = torch.einsum("dB,dr->Br", ddelta, delta_proj_weight)
+            dconv1d_out = rearrange(dconv1d_out, "b d l -> d (b l)")
+            dx_proj_weight = torch.einsum(
+                "Br,Bd->rd", dx_dbl, rearrange(conv1d_out, "b d l -> (b l) d")
+            )
+            dconv1d_out = torch.addmm(dconv1d_out, x_proj_weight.t(), dx_dbl.t(), out=dconv1d_out)
+            dconv1d_out = rearrange(dconv1d_out, "d (b l) -> b d l", b=x.shape[0], l=x.shape[-1])
+            dx, dconv1d_weight, dconv1d_bias, *_ = causal_conv1d_bwd_function(
+                x, conv1d_weight, conv1d_bias, dconv1d_out, None, None, None, dx, False, True
+            )
+            dconv1d_bias = dconv1d_bias if conv1d_bias is not None else None
+            dconv1d_weight = rearrange(dconv1d_weight, "d w -> d 1 w")
         return (
             dxz, dconv1d_weight, dconv1d_bias, dx_proj_weight, ddelta_proj_weight,
             dA, dB, dC, dD,
