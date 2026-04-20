@@ -6,7 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset. Part of a master's thesis on speech separation for downstream Polish ASR preprocessing.
 
-Cross-workspace context (dataset naming, thesis phase, experiment log location): `~/thesis/CONTEXT.md`. Thesis prose and experiment logs live in `~/thesis/` — read, don't modify.
+Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian vault on Windows, tracked by its own git repo (ignored here). Read freely; when editing thesis content, `cd thesis/` so `thesis/CLAUDE.md` stacks in on top of this file.
+
+## Dataset Variants
+
+- `PolSESS_C_both` = `C_both_16k_faulty` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
+- `PolSESS_C_new_64` = `C_new_64` — correct 64k dataset generated 2026-04-15. Use `train_max_samples=16000` / `32000` / full for 16k / 32k / 64k scaling experiments.
+
+## W&B Projects
+
+- `polsess-separation` — standalone runs (baselines, HPO validation), uses `PolSESS_C_both`.
+- `polsess-thesis-experiments` — sweeps.
+- `polsess-separation-real16k` / `-32k` / `-64k` — scaling runs on subsets of `PolSESS_C_new_64`.
 
 ## Thesis Code Principles
 
@@ -14,7 +25,7 @@ This code will be reviewed by academic supervisors. Prioritize: clarity over cle
 
 ## Keeping This File Current
 
-After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md (and to `~/thesis/CONTEXT.md` if it touches cross-workspace facts). Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments.
+After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md. Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments.
 
 ## Key Commands
 

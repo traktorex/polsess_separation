@@ -60,4 +60,7 @@ Thumbs.db
 
 /.claude
 
+# Thesis vault (symlink to Windows filesystem, tracked by its own git repo)
+/thesis
+
 *.nsys-rep
