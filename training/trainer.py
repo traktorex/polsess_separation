@@ -10,6 +10,7 @@ from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
 from typing import Optional, Any
 from config import Config
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
+from models import MAMBA_MODELS
 from utils import (
     unwrap_compiled_model,
     dataclass_to_dict,
@@ -95,8 +96,7 @@ class Trainer:
 
         # Dispatch on model_type rather than class name: torch.compile wraps the
         # model in OptimizedModule, which would silently defeat a class-name check.
-        mamba_models = ("spmamba", "mamba_tasnet", "dpmamba")
-        if self.config.model.model_type in mamba_models:
+        if self.config.model.model_type in MAMBA_MODELS:
             self.scaler = None
             self.amp_dtype = torch.bfloat16
         else:

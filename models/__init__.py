@@ -26,6 +26,13 @@ if MAMBA_AVAILABLE:
         'dpmamba': DPMamba,
     })
 
+# Models that wrap mamba-ssm CUDA kernels. These need special handling in two
+# places: bf16 autocast without GradScaler (the kernels run float32 internally),
+# and skipping torch.compile (Dynamo tracing into mamba_ssm.MambaInnerFn breaks
+# the delta/conv1d_out dtype contract — observed on native Linux; WSL2 happens
+# to graph-break before this fires).
+MAMBA_MODELS = ('spmamba', 'mamba_tasnet', 'dpmamba')
+
 
 def get_model(model_type: str):
     """Get model class by name."""
@@ -43,7 +50,7 @@ def get_model(model_type: str):
 
 __all__ = [
     'ConvTasNet', 'SepFormer', 'DPRNN', 'MAMBA_AVAILABLE',
-    'MODELS', 'get_model',
+    'MODELS', 'MAMBA_MODELS', 'get_model',
 ]
 
 if MAMBA_AVAILABLE:

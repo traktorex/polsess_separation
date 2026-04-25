@@ -3,6 +3,7 @@
 import torch
 from torch.utils.data import DataLoader
 from config import get_config_from_args
+from models import MAMBA_MODELS
 from models.factory import create_model_from_config
 from datasets import get_dataset, polsess_collate_fn
 from training.trainer import Trainer
@@ -91,8 +92,16 @@ def main():
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only)
-    model = apply_torch_compile(model, logger=logger)
+    # Apply torch.compile (PyTorch 2.0+, Linux only). Skip for Mamba models:
+    # Dynamo tracing into mamba_ssm.MambaInnerFn breaks the delta/conv1d_out
+    # dtype contract on native Linux.
+    if config.model.model_type in MAMBA_MODELS:
+        logger.info(
+            f"Skipping torch.compile for {config.model.model_type} "
+            "(incompatible with mamba_ssm CUDA kernels)."
+        )
+    else:
+        model = apply_torch_compile(model, logger=logger)
 
     # Setup WandB logger
     wandb_logger = WandbLogger(
