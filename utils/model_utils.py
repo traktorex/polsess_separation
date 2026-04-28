@@ -146,7 +146,15 @@ def load_model_for_inference(
     # Instantiate model and load weights
     model_class = get_model(model_type)
     model = model_class(**model_params)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Backward compat: SpeechBrain renamed SBTransformerBlock's inner attribute
+    # from `transformer` to `mdl` (somewhere between the old training env and now).
+    # Remap checkpoint keys so old checkpoints load into the current model.
+    state_dict = checkpoint["model_state_dict"]
+    if model_type == "sepformer" and any(".transformer." in k for k in state_dict):
+        state_dict = {k.replace(".transformer.", ".mdl."): v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 
