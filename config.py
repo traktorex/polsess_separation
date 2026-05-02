@@ -575,6 +575,13 @@ def create_config_parser() -> "argparse.ArgumentParser":
         help="Disable W&B logging",
     )
 
+    # Training overrides
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable automatic mixed precision (overrides YAML use_amp)",
+    )
+
     # Reproducibility
     parser.add_argument(
         "--seed",
@@ -615,6 +622,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.resume_from = args.resume
     if args.no_wandb:
         config.training.use_wandb = False
+    if args.no_amp:
+        config.training.use_amp = False
     if args.save_all_checkpoints:
         config.training.save_all_checkpoints = True
     if args.seed is not None:
