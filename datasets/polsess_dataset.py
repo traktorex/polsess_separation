@@ -91,7 +91,10 @@ class PolSESSDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.metadata.iloc[idx]
-        has_reverb = pd.notna(row["reverbForSpeaker1"])
+        # Cast to Python bool — pd.notna returns numpy.bool_, which fails
+        # downstream isinstance(..., bool) checks and pollutes type-stable
+        # batch keys.
+        has_reverb = bool(pd.notna(row["reverbForSpeaker1"]))
 
         paths = self._build_paths(row, has_reverb)
         variant = self._choose_variant(has_reverb, idx)
@@ -99,7 +102,12 @@ class PolSESSDataset(Dataset):
         mix = self._apply_mmipc(audio, has_reverb)
         clean = self._compute_clean(audio)
 
-        return {"mix": mix, "clean": clean, "background_complexity": variant}
+        return {
+            "mix": mix,
+            "clean": clean,
+            "background_complexity": variant,
+            "has_reverb": has_reverb,
+        }
 
     def _build_paths(self, row, has_reverb):
         """Build dictionary of file paths."""
@@ -240,9 +248,16 @@ def polsess_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             - "mix": [B, T] mixed/noisy audio
             - "clean": [B, T] or [B, 2, T] clean target(s)
             - "background_complexity": List of MM-IPC variant strings
+            - "has_reverb": [B] bool tensor — True for indoor samples (with
+              reverb), False for outdoor. Used by the trainer to disambiguate
+              C variant samples into C_in vs C_out for per-variant loss
+              weighting.
     """
     return {
         "mix": torch.stack([sample["mix"] for sample in batch]),
         "clean": torch.stack([sample["clean"] for sample in batch]),
         "background_complexity": [sample["background_complexity"] for sample in batch],
+        "has_reverb": torch.tensor(
+            [sample["has_reverb"] for sample in batch], dtype=torch.bool
+        ),
     }

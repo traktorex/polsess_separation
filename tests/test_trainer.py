@@ -29,7 +29,13 @@ class SyntheticDataset(Dataset):
             clean = torch.stack([mix.clone(), mix.clone()])
         else:
             clean = mix.clone()
-        return {"mix": mix, "clean": clean, "background_complexity": "S"}
+        # Variant "S" is outdoor → has_reverb=False (matches PolSESS convention).
+        return {
+            "mix": mix,
+            "clean": clean,
+            "background_complexity": "S",
+            "has_reverb": False,
+        }
 
 
 class DummyModel(nn.Module):
@@ -132,7 +138,7 @@ def test_trainer_train_epoch_and_validate(tmp_path):
     )
 
     # Override loss function with differentiable proxy (MSE) so loss/backward works
-    def mse_loss_wrapper(estimates, clean):
+    def mse_loss_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         return loss, loss.item()
 
@@ -191,7 +197,7 @@ def test_trainer_sb_task_with_pit_loss(tmp_path):
     assert isinstance(scalar_value, float)
 
     # Override with MSE-based PIT for testing
-    def mse_pit_wrapper(estimates, clean):
+    def mse_pit_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         return loss, loss.item()
 
@@ -325,7 +331,7 @@ def test_gradient_accumulation_basic(tmp_path):
     )
 
     # Override loss function with MSE
-    def mse_loss_wrapper(estimates, clean):
+    def mse_loss_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         return loss, loss.item()
 
@@ -388,7 +394,7 @@ def test_gradient_accumulation_scaling(tmp_path):
     original_losses = []
     scaled_losses = []
 
-    def tracking_loss_wrapper(estimates, clean):
+    def tracking_loss_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         original_losses.append(loss.item())
         return loss, loss.item()
@@ -430,7 +436,7 @@ def test_gradient_accumulation_disabled_by_default(tmp_path):
         wandb_logger=None,
     )
 
-    def mse_loss_wrapper(estimates, clean):
+    def mse_loss_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         return loss, loss.item()
 
@@ -496,7 +502,7 @@ def test_training_summary_epoch_numbers_after_resume(tmp_path, capsys):
     # Simulate resuming from epoch 5 (next epoch to run is 6)
     trainer.current_epoch = 5
 
-    def mse_loss_wrapper(estimates, clean):
+    def mse_loss_wrapper(estimates, clean, weights=None):
         loss = F.mse_loss(estimates, clean)
         return loss, loss.item()
 

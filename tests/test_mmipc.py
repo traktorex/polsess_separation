@@ -553,6 +553,8 @@ class TestEndToEnd:
         assert "mix" in sample, "Sample should contain 'mix'"
         assert "clean" in sample, "Sample should contain 'clean'"
         assert "background_complexity" in sample, "Sample should contain 'background_complexity'"
+        assert "has_reverb" in sample, "Sample should contain 'has_reverb'"
+        assert isinstance(sample["has_reverb"], bool), "has_reverb should be bool"
         assert sample["background_complexity"] == variant, f"Should return correct variant {variant}"
 
         # Check output shapes

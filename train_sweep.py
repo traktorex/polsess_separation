@@ -135,8 +135,14 @@ def main():
     logger.info(f"Training complete! Best validation SI-SDR: {trainer.best_val_sisdr:.2f} dB")
     logger.info("=" * 80)
 
-    # Log best metric to W&B
-    wandb.log({"best_val_sisdr": trainer.best_val_sisdr})
+    # Log best metric to W&B. When the weighted-loss path is active,
+    # trainer.best_val_sisdr holds the weighted-sum SI-SDRi — log it under
+    # both names so old sweep dashboards keep working and new sweeps can
+    # target the explicit metric name.
+    final_metrics = {"best_val_sisdr": trainer.best_val_sisdr}
+    if trainer._weighted_loss_active:
+        final_metrics["best_val_sisdri_weighted"] = trainer.best_val_sisdr
+    wandb.log(final_metrics)
     wandb.finish()
 
 

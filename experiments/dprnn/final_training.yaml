@@ -1,0 +1,84 @@
+# DPRNN — Final Training (Per-Variant Loss Weighting + SI-SDRi Validation)
+#
+# Switches the loss objective from uniform-per-sample SI-SDR to per-variant
+# weighted SI-SDR with C boosted relative to augmented variants. Validation
+# logs SI-SDRi per variant and the LR scheduler watches the weighted-sum
+# SI-SDRi using the same weights as training. Hyperparameters (lr, weight
+# decay, etc.) are placeholders — copy the best values from the existing
+# DPRNN HPO before running.
+#
+# Weights (w_C_in = 0.30, w_C_out = w_C_in + 0.05 = 0.35):
+#   indoor:  SER = SR = ER = R = 0.175,  C_in = 0.30
+#   outdoor: SE = S = E = 0.21667,        C_out = 0.35
+# Use sweeps/X-final-training/dprnn.yaml to HPO over w_C_in.
+
+data:
+  dataset_type: polsess
+  batch_size: 16
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: dprnn
+  dprnn:
+    N: 64
+    kernel_size: 16
+    stride: 8
+    C: 2
+    num_layers: 6
+    chunk_size: 100
+    rnn_type: LSTM
+    hidden_size: 128
+    num_rnn_layers: 1
+    dropout: 0.0
+    bidirectional: true
+    norm_type: ln
+
+training:
+  # TODO: replace placeholders with the best values from your HPO sweep
+  lr: 0.001
+  weight_decay: 0.00001
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 3
+  num_epochs: 80
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  # Validate on every variant so per-variant SI-SDRi panels are populated
+  # and the weighted-sum scheduler signal is computed across the full menu.
+  validation_variants: ["SER", "SR", "ER", "R", "C", "SE", "S", "E"]
+
+  # Per-variant loss weights. C_in / C_out are weight-table keys (the dataset
+  # returns plain "C" + has_reverb; the trainer disambiguates).
+  loss_weights:
+    SER:   0.175
+    SR:    0.175
+    ER:    0.175
+    R:     0.175
+    C_in:  0.30
+    SE:    0.21667
+    S:     0.21667
+    E:     0.21667
+    C_out: 0.35
+
+  # Curriculum learning — kept as the existing default. The weights above
+  # apply to whatever variants the curriculum allows in a given epoch; the
+  # scheduler's weighted-sum normalizes only over present variants.
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 4
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 10
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER", "C"]
+      lr_scheduler: start

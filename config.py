@@ -209,6 +209,11 @@ class TrainingConfig:
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
     grad_accumulation_steps: int = 1  # Accumulate gradients over N steps (effective batch = batch_size * N)
+    # Per-variant loss weights. None = uniform (current behavior, bit-identical).
+    # When set, must contain exactly the 9 keys below. Indoor (5): SER, SR, ER, R, C_in.
+    # Outdoor (4): SE, S, E, C_out. C_in / C_out are disambiguated at training time
+    # using the dataset's has_reverb flag (variant string "C" + has_reverb=True → C_in).
+    loss_weights: Optional[Dict[str, float]] = None
 
 
 @dataclass
@@ -269,6 +274,10 @@ class Config:
                 self.model.mamba_tasnet.C = 2
             elif self.model.model_type == "dpmamba":
                 self.model.dpmamba.C = 2
+
+        # Validate loss_weights if set
+        if self.training.loss_weights is not None:
+            _validate_loss_weights(self.training.loss_weights)
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -392,6 +401,18 @@ class Config:
         if self.training.validation_variants:
             lines.append(f"  Validation variants: {self.training.validation_variants}")
 
+        if self.training.loss_weights:
+            w = self.training.loss_weights
+            lines.append(
+                f"  Loss weights (indoor): "
+                f"SER={w['SER']:.3f} SR={w['SR']:.3f} ER={w['ER']:.3f} "
+                f"R={w['R']:.3f} C_in={w['C_in']:.3f}"
+            )
+            lines.append(
+                f"  Loss weights (outdoor): "
+                f"SE={w['SE']:.3f} S={w['S']:.3f} E={w['E']:.3f} C_out={w['C_out']:.3f}"
+            )
+
         if self.training.use_wandb:
             lines.extend(["", "Logging (W&B):"])
             lines.append(f"  Project: {self.training.wandb_project}")
@@ -402,6 +423,84 @@ class Config:
 
         lines.extend(["", "=" * 80])
         return "\n".join(lines)
+
+
+# Required keys for the per-variant loss-weights dict.
+# Indoor: SER, SR, ER, R, C_in. Outdoor: SE, S, E, C_out.
+LOSS_WEIGHT_KEYS_INDOOR = ("SER", "SR", "ER", "R", "C_in")
+LOSS_WEIGHT_KEYS_OUTDOOR = ("SE", "S", "E", "C_out")
+LOSS_WEIGHT_KEYS_ALL = frozenset(LOSS_WEIGHT_KEYS_INDOOR + LOSS_WEIGHT_KEYS_OUTDOOR)
+
+
+def _validate_loss_weights(weights: Dict[str, float]) -> None:
+    """Validate the per-variant loss_weights dict.
+
+    Raises ValueError on missing/extra keys, negative values, or all-zero.
+    Logs a warning if indoor or outdoor weights don't sum to ~1.0 — sums are
+    not strictly required since the training loop uses weighted-mean
+    normalization, but unit-sum makes weight magnitudes interpretable.
+    """
+    keys = set(weights.keys())
+    missing = LOSS_WEIGHT_KEYS_ALL - keys
+    extra = keys - LOSS_WEIGHT_KEYS_ALL
+    if missing or extra:
+        msg = "Invalid loss_weights keys."
+        if missing:
+            msg += f" Missing: {sorted(missing)}."
+        if extra:
+            msg += f" Extra: {sorted(extra)}."
+        msg += f" Required: {sorted(LOSS_WEIGHT_KEYS_ALL)}."
+        raise ValueError(msg)
+
+    for k, v in weights.items():
+        if v < 0:
+            raise ValueError(f"loss_weights[{k}] must be non-negative, got {v}")
+
+    if sum(weights.values()) <= 0:
+        raise ValueError("loss_weights must have positive sum (cannot all be zero)")
+
+    indoor_sum = sum(weights[k] for k in LOSS_WEIGHT_KEYS_INDOOR)
+    outdoor_sum = sum(weights[k] for k in LOSS_WEIGHT_KEYS_OUTDOOR)
+    if abs(indoor_sum - 1.0) > 1e-3:
+        import logging
+        logging.getLogger("polsess").warning(
+            f"loss_weights indoor branch sums to {indoor_sum:.4f}, expected ~1.0"
+        )
+    if abs(outdoor_sum - 1.0) > 1e-3:
+        import logging
+        logging.getLogger("polsess").warning(
+            f"loss_weights outdoor branch sums to {outdoor_sum:.4f}, expected ~1.0"
+        )
+
+
+def build_loss_weights_from_w_c_in(w_c_in: float) -> Dict[str, float]:
+    """Expand a single scalar `w_C_in` into the full 9-key loss_weights dict.
+
+    Used by the 1D HPO sweep and as a convenience for YAML authoring.
+    Derivation:
+      - w_C_out = w_C_in + 0.05  (outdoor C carries slightly more weight)
+      - indoor non-C = (1 - w_C_in) / 4   applied to SER, SR, ER, R
+      - outdoor non-C = (1 - w_C_out) / 3 applied to SE, S, E
+    """
+    if not (0.0 <= w_c_in <= 0.95):
+        raise ValueError(
+            f"w_c_in must be in [0.0, 0.95], got {w_c_in} "
+            f"(upper bound 0.95 reserved so w_c_out=w_c_in+0.05 stays <= 1.0)"
+        )
+    w_c_out = w_c_in + 0.05
+    w_indoor_other = (1.0 - w_c_in) / 4.0
+    w_outdoor_other = (1.0 - w_c_out) / 3.0
+    return {
+        "SER": w_indoor_other,
+        "SR":  w_indoor_other,
+        "ER":  w_indoor_other,
+        "R":   w_indoor_other,
+        "C_in":  w_c_in,
+        "SE":  w_outdoor_other,
+        "S":   w_outdoor_other,
+        "E":   w_outdoor_other,
+        "C_out": w_c_out,
+    }
 
 
 def load_config_from_dict(config_dict: dict) -> Config:
@@ -691,10 +790,11 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     Supported sweep override keys: model_B, model_H, weight_decay,
     grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
     task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants, dropout, chunk_size, rnn_type.
+    validation_variants, dropout, chunk_size, rnn_type, w_C_in.
     Note: dropout and chunk_size are routed to the active model's params
     (DPRNN or SepFormer). For SepFormer, chunk_size also sets hop_size
-    to chunk_size // 2 automatically.
+    to chunk_size // 2 automatically. w_C_in is the 1D loss-weights HPO
+    axis: a scalar that expands into the full 9-key loss_weights dict.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -754,6 +854,14 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
             # Keep hop_size = chunk_size // 2 (standard dual-path convention)
             if key == "chunk_size":
                 config.model.sepformer.hop_size = getattr(sweep_config, key) // 2
+
+    # Special case: 1D loss-weights HPO axis. A single scalar w_C_in expands
+    # into the full 9-key loss_weights dict (see build_loss_weights_from_w_c_in).
+    # Takes precedence over any loss_weights set in the base YAML.
+    if "w_C_in" in sweep_config:
+        config.training.loss_weights = build_loss_weights_from_w_c_in(
+            sweep_config.w_C_in
+        )
 
     # Validate and return
     config.__post_init__()

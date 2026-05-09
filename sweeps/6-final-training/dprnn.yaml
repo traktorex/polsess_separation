@@ -1,0 +1,42 @@
+# DPRNN — Final Training: 1D HPO over per-variant loss-weight schedule.
+#
+# Sweeps the single scalar w_C_in. The trainer expands it into the full
+# 9-key loss_weights dict (build_loss_weights_from_w_c_in in config.py):
+#   w_C_out  = w_C_in + 0.05
+#   indoor non-C = (1 - w_C_in) / 4    (SER, SR, ER, R)
+#   outdoor non-C = (1 - w_C_out) / 3  (SE, S, E)
+# The starting point used in the agreed design is w_C_in = 0.30; the grid
+# below brackets that with one step lower and two steps higher to probe
+# whether boosting C beyond the starting point helps or hurts.
+#
+# Sweep target: best_val_sisdri_weighted (the weighted-sum SI-SDRi tracked
+# by the LR scheduler — emitted by train_sweep.py at run end).
+
+program: train_sweep.py
+method: grid
+metric:
+  name: best_val_sisdri_weighted
+  goal: maximize
+
+parameters:
+  # Fixed: base config provides the architecture, training schedule, and
+  # the loss_weights dict (which the w_C_in override below replaces).
+  config:
+    value: experiments/dprnn/final_training.yaml
+
+  num_epochs:
+    value: 80
+
+  seed:
+    value: 42
+
+  early_stopping_patience:
+    value: 15
+
+  # The 1D HPO axis. Values bracket the agreed starting point (0.30).
+  w_C_in:
+    values: [0.10, 0.20, 0.30, 0.40]
+
+
+project: polsess-thesis-experiments
+name: dprnn-final-training-w_C_in

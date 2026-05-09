@@ -7,7 +7,8 @@ import yaml
 from pathlib import Path
 from tqdm import tqdm
 from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
-from typing import Optional, Any
+from torchmetrics.functional.audio import scale_invariant_signal_distortion_ratio
+from typing import Optional, Any, List, Dict
 from config import Config
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
 from models import MAMBA_MODELS
@@ -57,21 +58,37 @@ class Trainer:
 
         # Task-specific loss function
         self.task = config.data.task
+        # Per-variant loss weighting + per-variant SI-SDRi validation. When
+        # loss_weights is None we keep the original code paths bit-identical.
+        # getattr default keeps tests with SimpleNamespace configs working.
+        self.loss_weights: Optional[Dict[str, float]] = getattr(
+            config.training, "loss_weights", None
+        )
+        self._weighted_loss_active = self.loss_weights is not None
+
         if self.task == "SB":
             self.pit_loss = PITLossWrapper(
                 pairwise_neg_sisdr, pit_from="pw_mtx"  # Pairwise matrix mode
             ).to(device)
-            self.loss_fn = self._pit_loss_wrapper
-
+            if self._weighted_loss_active:
+                self.loss_fn = self._weighted_pit_loss_wrapper
+            else:
+                self.loss_fn = self._pit_loss_wrapper
         else:
             self.si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
-            self.loss_fn = self._sisdr_loss_wrapper
+            if self._weighted_loss_active:
+                self.loss_fn = self._weighted_sisdr_loss_wrapper
+            else:
+                self.loss_fn = self._sisdr_loss_wrapper
 
         self._setup_amp(model, device)
 
         self.best_val_sisdr = -float("inf")
         self.current_epoch = 0
         self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
+        # Side-channel for the train loop to read after validate(): per-variant
+        # SI-SDR / SI-SDRi breakdowns and the weighted-sum scalars.
+        self._last_val_breakdown: Dict[str, Any] = {}
 
         # Curriculum learning setup
         self.curriculum_schedule = config.training.curriculum_learning
@@ -150,17 +167,81 @@ class Trainer:
             self.lr_scheduler_enabled = True
             self.logger.info("Learning rate scheduler enabled")
 
-    def _sisdr_loss_wrapper(self, estimates, targets):
-        """Compute SI-SDR loss for ES/EB tasks."""
+    def _sisdr_loss_wrapper(self, estimates, targets, weights=None):
+        """Compute SI-SDR loss for ES/EB tasks (unweighted, batch-mean).
+
+        ``weights`` is accepted but ignored — exists so the call site in
+        train_epoch can pass weights uniformly without branching.
+        """
         sisdr = self.si_sdr_metric(estimates, targets)
         return -sisdr, sisdr.item()
 
-    def _pit_loss_wrapper(self, estimates, targets):
-        """Compute PIT-SI-SDR loss for SB task."""
+    def _pit_loss_wrapper(self, estimates, targets, weights=None):
+        """Compute PIT-SI-SDR loss for SB task (unweighted, batch-mean).
+
+        ``weights`` is accepted but ignored.
+        """
         loss = self.pit_loss(estimates, targets)
         # Loss is negative SI-SDR averaged over batch
         sisdr = -loss.item()
         return loss, sisdr
+
+    def _weighted_sisdr_loss_wrapper(self, estimates, targets, weights):
+        """Per-sample weighted SI-SDR loss for ES/EB tasks.
+
+        Reduces as ``(weights * neg_sisdr).sum() / weights.sum()`` so the
+        scale of weights doesn't change loss magnitude — they only shift
+        relative contribution between samples. With uniform weights this
+        equals the unweighted batch-mean loss exactly.
+        """
+        sisdr = scale_invariant_signal_distortion_ratio(estimates, targets)  # [B]
+        neg_sisdr = -sisdr
+        w_sum = weights.sum()
+        loss = (weights * neg_sisdr).sum() / w_sum
+        sisdr_value = ((weights * sisdr).sum() / w_sum).item()
+        return loss, sisdr_value
+
+    def _weighted_pit_loss_wrapper(self, estimates, targets, weights):
+        """Per-sample weighted PIT-SI-SDR loss for SB task.
+
+        Uses ``PITLossWrapper.find_best_perm`` to get the matched per-sample
+        loss (avg over matched sources) before reduction. Weighted-mean
+        normalization: with uniform weights this matches the unweighted
+        ``PITLossWrapper.forward`` mean exactly.
+        """
+        pw_losses = pairwise_neg_sisdr(estimates, targets)  # [B, n_src, n_src]
+        min_loss, _ = PITLossWrapper.find_best_perm(pw_losses)  # [B] (per-sample neg SI-SDR avg)
+        w_sum = weights.sum()
+        loss = (weights * min_loss).sum() / w_sum
+        # Weighted mean SI-SDR for logging (note: -min_loss is per-sample SI-SDR)
+        sisdr_value = (-(weights * min_loss).sum() / w_sum).item()
+        return loss, sisdr_value
+
+    def _resolve_weight_key(self, variant: str, has_reverb: bool) -> str:
+        """Map (variant, has_reverb) to the loss_weights dict key.
+
+        C is the only variant with separate indoor/outdoor weights —
+        all other variant strings map to themselves.
+        """
+        if variant == "C":
+            return "C_in" if has_reverb else "C_out"
+        return variant
+
+    def _build_sample_weights(
+        self, variants: List[str], has_reverb: torch.Tensor
+    ) -> torch.Tensor:
+        """Build per-sample weight tensor [B] from variant tags and has_reverb.
+
+        Raises KeyError if a variant maps to a key absent from
+        ``self.loss_weights`` — config validation ensures all 9 keys are
+        present, so this is defense in depth.
+        """
+        has_reverb_list = has_reverb.tolist()
+        weights = [
+            self.loss_weights[self._resolve_weight_key(v, hr)]
+            for v, hr in zip(variants, has_reverb_list)
+        ]
+        return torch.tensor(weights, device=self.device, dtype=torch.float32)
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint to resume training.
@@ -200,6 +281,22 @@ class Trainer:
         self.best_val_sisdr = checkpoint.get(
             "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
         )
+
+        # Guard against silently comparing incomparable metrics when the
+        # checkpoint was saved under a different val regime (raw SI-SDR vs
+        # weighted SI-SDRi). When the regime changes, reset best so the
+        # first epoch under the new regime is correctly accepted as best.
+        ckpt_loss_weights = checkpoint.get("config", {}).get("training", {}).get("loss_weights")
+        ckpt_was_weighted = ckpt_loss_weights is not None
+        if ckpt_was_weighted != self._weighted_loss_active:
+            self.logger.warning(
+                f"Checkpoint val regime mismatch: checkpoint weighted={ckpt_was_weighted}, "
+                f"current weighted={self._weighted_loss_active}. "
+                f"Resetting best_val_sisdr (-inf) so the first epoch under the new "
+                f"regime is accepted as best."
+            )
+            self.best_val_sisdr = -float("inf")
+
         self.logger.info(
             f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
             f"resuming at epoch {self.current_epoch}"
@@ -317,9 +414,13 @@ class Trainer:
 
         # Log to wandb if enabled
         if self.wandb_logger:
-            self.wandb_logger.log_metrics(
-                {"best_val_sisdr": val_sisdr}, step=self.current_epoch
-            )
+            best_metrics = {"best_val_sisdr": val_sisdr}
+            # When the weighted-loss path is active, val_sisdr is the
+            # weighted-sum SI-SDRi — log under that name too so sweeps can
+            # target a clearly-named metric.
+            if self._weighted_loss_active:
+                best_metrics["best_val_sisdri_weighted"] = val_sisdr
+            self.wandb_logger.log_metrics(best_metrics, step=self.current_epoch)
             self.wandb_logger.log_model(str(checkpoint_path))
 
     def train_epoch(self) -> float:
@@ -343,15 +444,24 @@ class Trainer:
             mix = batch["mix"].to(self.device)
             clean = batch["clean"].to(self.device)
 
+            # Per-sample weights (only when active — preserves SyntheticDataset
+            # compat in tests, which doesn't return has_reverb).
+            if self._weighted_loss_active:
+                weights = self._build_sample_weights(
+                    batch["background_complexity"], batch["has_reverb"]
+                )
+            else:
+                weights = None
+
             if self.use_amp:
                 with torch.amp.autocast("cuda", dtype=self.amp_dtype):
                     mix_input = mix.unsqueeze(1)
                     estimates = self.model(mix_input)
-                    loss, sisdr_value = self.loss_fn(estimates, clean)
+                    loss, sisdr_value = self.loss_fn(estimates, clean, weights)
             else:
                 mix_input = mix.unsqueeze(1)
                 estimates = self.model(mix_input)
-                loss, sisdr_value = self.loss_fn(estimates, clean)
+                loss, sisdr_value = self.loss_fn(estimates, clean, weights)
 
             # Scale loss for gradient accumulation
             if accum_steps > 1:
@@ -412,7 +522,25 @@ class Trainer:
         return avg_sisdr
 
     def validate(self) -> float:
-        """Run validation and return average SI-SDR."""
+        """Run validation and return the scheduler signal (single float).
+
+        Two regimes:
+
+        - Legacy (``loss_weights is None``): unchanged batch-mean SI-SDR.
+        - Weighted (``loss_weights is not None``): computes per-sample
+          SI-SDRi (= SI-SDR(estimate, target) − SI-SDR(mix, target)),
+          groups by variant key (with C disambiguated to C_in/C_out via
+          ``has_reverb``), and returns the weighted-sum SI-SDRi using the
+          training-time per-variant weights. Per-variant breakdowns
+          (raw SI-SDR and SI-SDRi) are stashed on
+          ``self._last_val_breakdown`` for the train loop to log.
+        """
+        if self._weighted_loss_active:
+            return self._validate_weighted()
+        return self._validate_legacy()
+
+    def _validate_legacy(self) -> float:
+        """Original validation path — kept bit-identical for back-compat."""
         self.model.eval()
         total_sisdr = 0
         total_samples = 0
@@ -447,6 +575,104 @@ class Trainer:
 
         avg_sisdr = total_sisdr / total_samples
         return avg_sisdr
+
+    def _per_sample_sisdr(self, estimates: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Per-sample SI-SDR. For SB task, applies PIT then averages over sources.
+
+        Returns shape [B]. Used by validation for both estimate-vs-target and
+        mix-vs-target SI-SDR (for SI-SDRi).
+        """
+        if self.task == "SB":
+            # estimates and targets are [B, n_src, T]. Note: when this is called
+            # for mix-vs-target, ``estimates`` is the broadcast mix expanded to
+            # [B, n_src, T] — PIT is a no-op (every permutation gives the same
+            # value because all source slots hold the same waveform), so it's
+            # safe to run unconditionally.
+            pw = pairwise_neg_sisdr(estimates, targets)  # [B, n_src, n_src]
+            min_loss, batch_indices = PITLossWrapper.find_best_perm(pw)
+            # min_loss is per-sample mean neg-SI-SDR over matched sources.
+            return -min_loss
+        # ES/EB: estimates and targets are [B, T]
+        return scale_invariant_signal_distortion_ratio(estimates, targets)
+
+    def _validate_weighted(self) -> float:
+        """Per-variant SI-SDRi validation. See ``validate`` for semantics."""
+        self.model.eval()
+        # Per-variant accumulators (key → sum, count)
+        sisdri_sum: Dict[str, float] = {}
+        sisdri_cnt: Dict[str, int] = {}
+        sisdr_sum: Dict[str, float] = {}
+
+        pbar = tqdm(
+            self.val_loader,
+            desc="Validation",
+            unit="batch",
+            leave=False,
+            ncols=100,
+        )
+
+        with torch.no_grad():
+            for batch in pbar:
+                mix = batch["mix"].to(self.device)
+                clean = batch["clean"].to(self.device)
+                variants = batch["background_complexity"]
+                has_reverb = batch["has_reverb"].tolist()
+
+                if self.use_amp:
+                    with torch.amp.autocast("cuda", dtype=self.amp_dtype):
+                        mix_input = mix.unsqueeze(1)
+                        estimates = self.model(mix_input)
+                        sisdr_est = self._per_sample_sisdr(estimates, clean)  # [B]
+                        if self.task == "SB":
+                            mix_broadcast = mix.unsqueeze(1).expand_as(clean)
+                            sisdr_mix = self._per_sample_sisdr(mix_broadcast, clean)
+                        else:
+                            sisdr_mix = self._per_sample_sisdr(mix, clean)
+                else:
+                    mix_input = mix.unsqueeze(1)
+                    estimates = self.model(mix_input)
+                    sisdr_est = self._per_sample_sisdr(estimates, clean)
+                    if self.task == "SB":
+                        mix_broadcast = mix.unsqueeze(1).expand_as(clean)
+                        sisdr_mix = self._per_sample_sisdr(mix_broadcast, clean)
+                    else:
+                        sisdr_mix = self._per_sample_sisdr(mix, clean)
+
+                sisdri = sisdr_est - sisdr_mix  # [B]
+                # Promote to fp32 for stable per-variant accumulation under AMP.
+                sisdri_list = sisdri.float().cpu().tolist()
+                sisdr_list = sisdr_est.float().cpu().tolist()
+
+                for v, hr, si, sd in zip(variants, has_reverb, sisdri_list, sisdr_list):
+                    key = self._resolve_weight_key(v, hr)
+                    sisdri_sum[key] = sisdri_sum.get(key, 0.0) + si
+                    sisdri_cnt[key] = sisdri_cnt.get(key, 0) + 1
+                    sisdr_sum[key] = sisdr_sum.get(key, 0.0) + sd
+
+                pbar.set_postfix({"SI-SDRi": f"{sum(sisdri_list)/len(sisdri_list):.2f}dB"})
+
+        # Per-variant means
+        per_variant_sisdri = {k: sisdri_sum[k] / sisdri_cnt[k] for k in sisdri_cnt}
+        per_variant_sisdr = {k: sisdr_sum[k] / sisdri_cnt[k] for k in sisdri_cnt}
+
+        # Weighted-sum scalars (normalized by sum of weights of *present* keys
+        # so that curriculum-gated runs don't compare against absent variants).
+        present_keys = list(per_variant_sisdri.keys())
+        w_total = sum(self.loss_weights[k] for k in present_keys)
+        val_sisdri_weighted = sum(
+            self.loss_weights[k] * per_variant_sisdri[k] for k in present_keys
+        ) / w_total
+        val_sisdr_weighted = sum(
+            self.loss_weights[k] * per_variant_sisdr[k] for k in present_keys
+        ) / w_total
+
+        self._last_val_breakdown = {
+            "per_variant_sisdri": per_variant_sisdri,
+            "per_variant_sisdr": per_variant_sisdr,
+            "val_sisdri_weighted": val_sisdri_weighted,
+            "val_sisdr_weighted": val_sisdr_weighted,
+        }
+        return val_sisdri_weighted
 
     def train(self, num_epochs: int, save_dir: str = "checkpoints", early_stopping_patience: int = None):
         """Main training loop with OOM error handling."""
@@ -497,11 +723,25 @@ class Trainer:
                     "val_si_sdr": val_sisdr,
                     "train_lr": current_lr,
                 }
-                
+
+                # Per-variant breakdown when weighted-loss path is active.
+                # val_sisdri_weighted is the same as val_si_sdr (the scheduler
+                # signal); we log it under both names — val_si_sdr keeps
+                # dashboard-panel continuity, val_sisdri_weighted makes the
+                # semantics explicit and is what sweeps target.
+                if self._weighted_loss_active and self._last_val_breakdown:
+                    bd = self._last_val_breakdown
+                    metrics["val_sisdri_weighted"] = bd["val_sisdri_weighted"]
+                    metrics["val_sisdr_weighted"] = bd["val_sisdr_weighted"]
+                    for k, v in bd["per_variant_sisdri"].items():
+                        metrics[f"val_sisdri_{k}"] = v
+                    for k, v in bd["per_variant_sisdr"].items():
+                        metrics[f"val_sisdr_{k}"] = v
+
                 # Add early stopping metric if enabled
                 if early_stopping_patience:
                     metrics["epochs_no_improvement"] = epochs_without_improvement
-                
+
                 if self.wandb_logger:
                     self.wandb_logger.log_metrics(metrics, step=self.current_epoch)
 
