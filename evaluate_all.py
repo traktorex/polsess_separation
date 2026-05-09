@@ -12,8 +12,10 @@ Usage:
 """
 
 import argparse
+import contextlib
 import csv
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,58 @@ from pathlib import Path
 import torch
 
 from utils import load_model_for_inference, count_parameters
+
+
+class _Tee:
+    """Write to multiple streams (used to mirror stdout to a per-checkpoint log)."""
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+
+@contextlib.contextmanager
+def capture_to_file(log_path: Path):
+    """Mirror print() and root-logger output to ``log_path`` for the duration.
+
+    Terminal output is preserved (Tee). The log is plain text; tqdm bars
+    write to stderr and do not appear in the file (only the per-variant
+    summary lines that go through ``logger.info`` are captured).
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(log_path, "w")
+
+    root = logging.getLogger()
+    file_handler = logging.StreamHandler(f)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    )
+    file_handler.setLevel(logging.INFO)
+    root.addHandler(file_handler)
+
+    old_stdout = sys.stdout
+    sys.stdout = _Tee(old_stdout, f)
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+        file_handler.flush()
+        root.removeHandler(file_handler)
+        f.flush()
+        f.close()
+
+
+def _safe_filename(s: str) -> str:
+    """Strip filesystem-unsafe chars from a checkpoint identifier."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", s)
 
 
 def find_all_checkpoints(checkpoints_dir: str):
@@ -113,9 +167,11 @@ def flatten_results(info: dict, num_params: int, variant_results: dict):
     training_config = info["training_config"]
     data_config = info["data_config"]
 
-    # Compute average SI-SDR across all variants
+    # Compute averages across all variants
     all_sisdrs = [r["si_sdr"] for r in variant_results.values()]
+    all_sisdris = [r.get("si_sdri", 0.0) for r in variant_results.values()]
     avg_sisdr = sum(all_sisdrs) / len(all_sisdrs) if all_sisdrs else 0.0
+    avg_sisdri = sum(all_sisdris) / len(all_sisdris) if all_sisdris else 0.0
 
     row = {
         # Identity
@@ -127,17 +183,18 @@ def flatten_results(info: dict, num_params: int, variant_results: dict):
         "val_sisdr": info["val_sisdr"],
         "num_params": num_params,
         "checkpoint_path": info["checkpoint_path"],
-        # Average across all variants
+        # Averages across all variants
         "avg_sisdr": avg_sisdr,
+        "avg_sisdri": avg_sisdri,
     }
 
-    # Per-variant SI-SDR columns (si_sdr_SER, si_sdr_SE, etc.)
+    # Per-variant SI-SDR + SI-SDRi columns
+    # (si_sdr_SER, si_sdri_SER, si_sdr_SE, si_sdri_SE, ...)
     all_variants = ["SER", "SR", "ER", "R", "SE", "S", "E", "C"]
     for variant in all_variants:
-        if variant in variant_results:
-            row[f"si_sdr_{variant}"] = variant_results[variant].get("si_sdr", "")
-        else:
-            row[f"si_sdr_{variant}"] = ""
+        v = variant_results.get(variant, {})
+        row[f"si_sdr_{variant}"] = v.get("si_sdr", "")
+        row[f"si_sdri_{variant}"] = v.get("si_sdri", "")
 
     # Training config
     row.update({
@@ -186,6 +243,9 @@ def main():
     parser.add_argument("--csv-list", default=None,
                         help="Evaluate only checkpoints listed in this semicolon-separated CSV "
                              "(requires a `path` column); overrides --checkpoints-dir discovery")
+    parser.add_argument("--log-dir", default="evaluate",
+                        help="Directory for per-checkpoint evaluation logs "
+                             "(default: evaluate/). One <model_type>__<run_name>.txt per checkpoint.")
     args = parser.parse_args()
 
     # Find checkpoints (either from CSV list or by globbing)
@@ -240,26 +300,32 @@ def main():
 
         print(f"\n[{i+1}/{len(checkpoint_files)}] {model_type}/{run_name} (val_sisdr={val_sisdr:.2f} dB)")
 
+        log_path = Path(args.log_dir) / f"{_safe_filename(model_type)}__{_safe_filename(run_name)}.txt"
+
         try:
-            info, num_params, results = run_evaluation(
-                checkpoint_path=ckpt_str,
-                device=args.device,
-                max_samples=args.max_samples,
-                no_pesq=args.no_pesq,
-                no_stoi=args.no_stoi,
-            )
+            with capture_to_file(log_path):
+                print(f"Checkpoint: {ckpt_str}")
+                print(f"Model: {model_type} | Run: {run_name} | Val SI-SDR: {val_sisdr:.2f} dB")
+                info, num_params, results = run_evaluation(
+                    checkpoint_path=ckpt_str,
+                    device=args.device,
+                    max_samples=args.max_samples,
+                    no_pesq=args.no_pesq,
+                    no_stoi=args.no_stoi,
+                )
 
-            row = flatten_results(info, num_params, results)
+                row = flatten_results(info, num_params, results)
 
-            # Append to CSV
-            with open(output_path, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=row.keys())
-                if write_header:
-                    writer.writeheader()
-                    write_header = False
-                writer.writerow(row)
+                # Append to CSV
+                with open(output_path, "a", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=row.keys())
+                    if write_header:
+                        writer.writeheader()
+                        write_header = False
+                    writer.writerow(row)
 
-            print(f"  -> avg SI-SDR: {row['avg_sisdr']:.2f} dB")
+                print(f"  -> avg SI-SDR: {row['avg_sisdr']:.2f} dB | avg SI-SDRi: {row['avg_sisdri']:.2f} dB")
+                print(f"  -> log saved: {log_path}")
             evaluated += 1
 
         except Exception as e:
