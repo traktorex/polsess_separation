@@ -1,6 +1,8 @@
 """Batch evaluate all checkpoints and save results to CSV.
 
-Uses data_root from each checkpoint's embedded config (config.data.polsess.data_root).
+Uses local Config defaults for data_root (POLSESS_DATA_ROOT env var, else the
+PolSESS_C_new_64 default in config.py); only `task` is inherited from the
+checkpoint's embedded config.
 
 Usage:
     python evaluate_all.py
@@ -11,6 +13,7 @@ Usage:
 
 import argparse
 import csv
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +28,20 @@ def find_all_checkpoints(checkpoints_dir: str):
     checkpoints_dir = Path(checkpoints_dir)
     checkpoint_files = sorted(checkpoints_dir.glob("**/SB/*/*.pt"))
     return checkpoint_files
+
+
+def load_checkpoints_from_csv(csv_path: str):
+    """Read checkpoint paths from a semicolon-separated CSV with a `path` column."""
+    csv_path = Path(csv_path)
+    paths = []
+    with open(csv_path, "r") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        for row in reader:
+            path_str = (row.get("path") or "").strip()
+            if not path_str:
+                continue
+            paths.append(Path(path_str))
+    return paths
 
 
 def extract_checkpoint_info(checkpoint_path: Path, checkpoint: dict):
@@ -57,28 +74,22 @@ def run_evaluation(checkpoint_path: str, device: str,
                    max_samples: int = None, no_pesq: bool = False,
                    no_stoi: bool = False):
     """Run evaluate.py logic for a single checkpoint."""
-    from config import Config, load_config_from_yaml
+    from config import Config
     from evaluate import evaluate_by_variant
 
     model, checkpoint = load_model_for_inference(checkpoint_path, device)
     info = extract_checkpoint_info(Path(checkpoint_path), checkpoint)
     num_params = count_parameters(model)
 
-    # Build Config from checkpoint's embedded config
-    # Try loading config.yaml next to checkpoint first (has full structure),
-    # fall back to default Config with overrides from checkpoint
-    config_yaml = Path(checkpoint_path).parent / "config.yaml"
-    if config_yaml.exists():
-        config = load_config_from_yaml(str(config_yaml))
-    else:
-        config = Config()
-        ckpt_config = checkpoint.get("config", {})
-        data_root = ckpt_config.get("data", {}).get("polsess", {}).get("data_root")
-        if data_root:
-            config.data.polsess.data_root = data_root
-        task = ckpt_config.get("data", {}).get("task")
-        if task:
-            config.data.task = task
+    # Use local Config defaults (data_root from POLSESS_DATA_ROOT env, else
+    # PolSESS_C_new_64 from config.py); only inherit `task` from the
+    # checkpoint's embedded config. The sidecar config.yaml is ignored —
+    # it's byte-identical to the embedded config and on imported checkpoints
+    # carries the source PC's data_root (e.g. C:\datasety\...).
+    config = Config()
+    task = checkpoint.get("config", {}).get("data", {}).get("task")
+    if task:
+        config.data.task = task
 
     # Run evaluation by variant
     results = evaluate_by_variant(
@@ -149,6 +160,15 @@ def flatten_results(info: dict, num_params: int, variant_results: dict):
 
 
 def main():
+    # Match evaluate.py's logging so per-variant headers and result lines are
+    # visible (without this, the `polsess` logger stays at WARNING and only
+    # tqdm bars appear).
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     parser = argparse.ArgumentParser(description="Batch evaluate all checkpoints")
     parser.add_argument("--checkpoints-dir", default="checkpoints",
                         help="Root checkpoints directory (default: checkpoints)")
@@ -163,11 +183,18 @@ def main():
                         help="Skip checkpoints already present in the output CSV")
     parser.add_argument("--min-val-sisdr", type=float, default=3.0,
                         help="Skip checkpoints with val SI-SDR below this threshold (default: 3.0 dB)")
+    parser.add_argument("--csv-list", default=None,
+                        help="Evaluate only checkpoints listed in this semicolon-separated CSV "
+                             "(requires a `path` column); overrides --checkpoints-dir discovery")
     args = parser.parse_args()
 
-    # Find all checkpoints
-    checkpoint_files = find_all_checkpoints(args.checkpoints_dir)
-    print(f"Found {len(checkpoint_files)} checkpoints")
+    # Find checkpoints (either from CSV list or by globbing)
+    if args.csv_list:
+        checkpoint_files = load_checkpoints_from_csv(args.csv_list)
+        print(f"Loaded {len(checkpoint_files)} checkpoints from {args.csv_list}")
+    else:
+        checkpoint_files = find_all_checkpoints(args.checkpoints_dir)
+        print(f"Found {len(checkpoint_files)} checkpoints")
 
     if not checkpoint_files:
         print("No checkpoints found. Check --checkpoints-dir path.")
