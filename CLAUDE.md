@@ -8,6 +8,13 @@ PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, 
 
 Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian vault on Windows, tracked by its own git repo (ignored here). Read freely; when editing thesis content, `cd thesis/` so `thesis/CLAUDE.md` stacks in on top of this file.
 
+## Style
+
+Do not skip your reasoning when Extended Thinking is enabled. 
+Always produce a CoT. 
+Don't be afraid of thinking too long - be afraid of thinking too briefly. The amount of thinking should be proportional to the complexity of the task you're given.
+Avoid undue verbosity by using CoT to structure your response.
+
 ## Dataset Variants
 
 - `PolSESS_C_both` = `C_both_16k_faulty` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
