@@ -238,6 +238,8 @@ def main():
     parser.add_argument("--no-stoi", action="store_true", help="Skip STOI computation")
     parser.add_argument("--resume", action="store_true",
                         help="Skip checkpoints already present in the output CSV")
+    parser.add_argument("--no-repeat", action="store_true",
+                        help="Skip checkpoints whose per-checkpoint log already exists in --log-dir")
     parser.add_argument("--min-val-sisdr", type=float, default=3.0,
                         help="Skip checkpoints with val SI-SDR below this threshold (default: 3.0 dB)")
     parser.add_argument("--csv-list", default=None,
@@ -276,6 +278,7 @@ def main():
     # Evaluate each checkpoint, appending results incrementally
     evaluated = 0
     skipped = 0
+    log_skipped = 0
     filtered = 0
     failed = 0
 
@@ -289,6 +292,12 @@ def main():
         run_name = ckpt_path.parent.name
         model_type = ckpt_path.parts[-4]
 
+        log_path = Path(args.log_dir) / f"{_safe_filename(model_type)}__{_safe_filename(run_name)}.txt"
+
+        if args.no_repeat and log_path.exists():
+            log_skipped += 1
+            continue
+
         # Quick filter: check val_sisdr from checkpoint metadata without loading model
         ckpt_meta = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         val_sisdr = ckpt_meta.get("val_sisdr", 0.0)
@@ -299,8 +308,6 @@ def main():
             continue
 
         print(f"\n[{i+1}/{len(checkpoint_files)}] {model_type}/{run_name} (val_sisdr={val_sisdr:.2f} dB)")
-
-        log_path = Path(args.log_dir) / f"{_safe_filename(model_type)}__{_safe_filename(run_name)}.txt"
 
         try:
             with capture_to_file(log_path):
@@ -337,6 +344,7 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"Done. Evaluated: {evaluated}, Skipped (resume): {skipped}, "
+          f"Skipped (log exists): {log_skipped}, "
           f"Filtered (val_sisdr < {args.min_val_sisdr} dB): {filtered}, Failed: {failed}")
     print(f"Results saved to: {output_path}")
 
