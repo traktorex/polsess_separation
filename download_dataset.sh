@@ -18,8 +18,10 @@ set -euo pipefail
 DATASETS_DIR="${DATASETS_DIR:-$HOME/datasets}"
 DATASET_NAME="PolSESS_C_final_128_v2"
 
-# Default Google Drive URL. Override at runtime via POLSESS_URL env var if needed.
-DEFAULT_URL="https://drive.google.com/uc?id=1lFdBDW6pWO_oK_PIwbxquWfg6V9VQ9wW"
+# Default Google Drive file ID. Override at runtime via POLSESS_URL env var if you need
+# a different source (full HTTP URL, rclone remote path, or local file path).
+DEFAULT_GDRIVE_ID="1lFdBDW6pWO_oK_PIwbxquWfg6V9VQ9wW"
+DEFAULT_URL="https://drive.google.com/uc?id=${DEFAULT_GDRIVE_ID}"
 
 POLSESS_URL="${POLSESS_URL:-$DEFAULT_URL}"
 
@@ -74,10 +76,11 @@ archive="/tmp/${DATASET_NAME}.tar.gz"
 info "Downloading $DATASET_NAME from: $POLSESS_URL"
 
 if [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
-    # Use gdown's Python API with fuzzy=True to handle Drive's virus-scan confirmation page for large files.
-    # Going through Python avoids the older gdown CLI lacking --fuzzy on some preinstalled images.
-    pip install --upgrade --force-reinstall --no-cache-dir 'gdown>=5.2.0'
-    python3 -c "import gdown; gdown.download('$POLSESS_URL', '$archive', fuzzy=True, quiet=False)"
+    # gdown 6.x handles Drive's virus-scan confirmation by default; passing id= avoids URL-parsing quirks.
+    pip install --upgrade --no-cache-dir 'gdown>=6.0.0'
+    gdrive_id="$(echo "$POLSESS_URL" | sed -nE 's#.*[?&]id=([^&]+).*#\1#p; s#.*/file/d/([^/]+)/.*#\1#p' | head -1)"
+    [ -z "$gdrive_id" ] && error "Could not extract Drive file ID from $POLSESS_URL"
+    python3 -c "import gdown; gdown.download(id='$gdrive_id', output='$archive', quiet=False)"
 elif [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != http* ]]; then
     rclone copy "$POLSESS_URL" /tmp/ --progress
     src_name="$(basename "$POLSESS_URL")"
