@@ -74,8 +74,9 @@ archive="/tmp/${DATASET_NAME}.tar.gz"
 info "Downloading $DATASET_NAME from: $POLSESS_URL"
 
 if [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
-    pip install -q gdown
-    gdown "$POLSESS_URL" -O "$archive"
+    # gdown >=5 with --fuzzy handles Drive's virus-scan confirmation page for large files
+    pip install -q --upgrade 'gdown>=5.2.0'
+    gdown --fuzzy "$POLSESS_URL" -O "$archive"
 elif [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != http* ]]; then
     rclone copy "$POLSESS_URL" /tmp/ --progress
     src_name="$(basename "$POLSESS_URL")"
