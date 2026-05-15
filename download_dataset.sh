@@ -74,9 +74,10 @@ archive="/tmp/${DATASET_NAME}.tar.gz"
 info "Downloading $DATASET_NAME from: $POLSESS_URL"
 
 if [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
-    # gdown >=5 with --fuzzy handles Drive's virus-scan confirmation page for large files
-    pip install -q --upgrade 'gdown>=5.2.0'
-    gdown --fuzzy "$POLSESS_URL" -O "$archive"
+    # Use gdown's Python API with fuzzy=True to handle Drive's virus-scan confirmation page for large files.
+    # Going through Python avoids the older gdown CLI lacking --fuzzy on some preinstalled images.
+    pip install --upgrade --force-reinstall --no-cache-dir 'gdown>=5.2.0'
+    python3 -c "import gdown; gdown.download('$POLSESS_URL', '$archive', fuzzy=True, quiet=False)"
 elif [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != http* ]]; then
     rclone copy "$POLSESS_URL" /tmp/ --progress
     src_name="$(basename "$POLSESS_URL")"
