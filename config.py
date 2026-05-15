@@ -205,6 +205,7 @@ class TrainingConfig:
     seed: int = 42
     resume_from: Optional[str] = None
     validation_variants: Optional[List[str]] = None
+    per_variant_validation: bool = False  # If True, run validation once per MM-IPC variant and use avg SI-SDRi as the monitored metric
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
@@ -391,6 +392,9 @@ class Config:
 
         if self.training.validation_variants:
             lines.append(f"  Validation variants: {self.training.validation_variants}")
+
+        if self.training.per_variant_validation:
+            lines.append("  Per-variant validation: enabled (monitored metric = avg SI-SDRi)")
 
         if self.training.use_wandb:
             lines.extend(["", "Logging (W&B):"])

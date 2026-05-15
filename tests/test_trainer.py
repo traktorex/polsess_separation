@@ -139,12 +139,14 @@ def test_trainer_train_epoch_and_validate(tmp_path):
     trainer.loss_fn = mse_loss_wrapper
 
     # Single epoch train_epoch
-    train_sisdr = trainer.train_epoch()
+    train_sisdr, train_sisdri = trainer.train_epoch()
     assert isinstance(train_sisdr, float)
+    assert isinstance(train_sisdri, float)
 
     # Validation
-    val_sisdr = trainer.validate()
+    val_sisdr, val_sisdri = trainer.validate()
     assert isinstance(val_sisdr, float)
+    assert isinstance(val_sisdri, float)
 
     # Full training run for 1 epoch (should not error)
     trainer.train(num_epochs=1, save_dir=cfg.training.save_dir)
@@ -198,12 +200,14 @@ def test_trainer_sb_task_with_pit_loss(tmp_path):
     trainer.loss_fn = mse_pit_wrapper
 
     # Single epoch training
-    train_sisdr = trainer.train_epoch()
+    train_sisdr, train_sisdri = trainer.train_epoch()
     assert isinstance(train_sisdr, float)
+    assert isinstance(train_sisdri, float)
 
     # Validation
-    val_sisdr = trainer.validate()
+    val_sisdr, val_sisdri = trainer.validate()
     assert isinstance(val_sisdr, float)
+    assert isinstance(val_sisdri, float)
 
 
 def test_loss_wrapper_format_es_task(tmp_path):

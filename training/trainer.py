@@ -33,10 +33,16 @@ class Trainer:
         device: str = "cuda",
         logger: Optional[logging.Logger] = None,
         wandb_logger: Optional[Any] = None,
+        per_variant_val_loaders: Optional[dict] = None,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.per_variant_val_loaders = per_variant_val_loaders
+        self.per_variant_mode = per_variant_val_loaders is not None
+        assert (val_loader is None) != (per_variant_val_loaders is None), (
+            "Trainer requires exactly one of val_loader or per_variant_val_loaders"
+        )
         self.device = device
         self.config = config
         self.use_amp = config.training.use_amp
@@ -55,6 +61,10 @@ class Trainer:
             patience=config.training.lr_patience,
         )
 
+        # SI-SDR metric is needed by every task: for ES/EB it's the loss; for SB
+        # it's used as the mixture baseline in per-variant SI-SDRi.
+        self.si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
+
         # Task-specific loss function
         self.task = config.data.task
         if self.task == "SB":
@@ -64,12 +74,14 @@ class Trainer:
             self.loss_fn = self._pit_loss_wrapper
 
         else:
-            self.si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
             self.loss_fn = self._sisdr_loss_wrapper
 
         self._setup_amp(model, device)
 
+        # In per_variant_mode this tracks the best avg SI-SDRi; otherwise best SI-SDR.
         self.best_val_sisdr = -float("inf")
+        # Per-variant SI-SDRi from the previous epoch (for the delta row in the table).
+        self.prev_variant_sisdri = None
         self.current_epoch = 0
         self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
 
@@ -149,6 +161,26 @@ class Trainer:
         if not self.lr_scheduler_enabled and self._should_enable_lr_scheduler(epoch):
             self.lr_scheduler_enabled = True
             self.logger.info("Learning rate scheduler enabled")
+
+    def _compute_sisdri(self, sisdr_value: float, mix, clean) -> float:
+        """SI-SDRi = sisdr_value − mixture_baseline (per evaluate.py).
+
+        For SB, the baseline is the per-speaker average SI-SDR(mix, clean[spk]);
+        for ES/EB it's SI-SDR(mix, clean).
+        """
+        min_len = min(mix.shape[-1], clean.shape[-1])
+        mix_t = mix[..., :min_len]
+        clean_t = clean[..., :min_len]
+        if self.task == "SB":
+            mix_baseline = 0.0
+            for spk in range(clean_t.shape[1]):
+                mix_baseline += self.si_sdr_metric(mix_t, clean_t[:, spk]).item()
+            mix_baseline /= clean_t.shape[1]
+        else:
+            if clean_t.dim() == 3 and clean_t.shape[1] == 1:
+                clean_t = clean_t.squeeze(1)
+            mix_baseline = self.si_sdr_metric(mix_t, clean_t).item()
+        return sisdr_value - mix_baseline
 
     def _sisdr_loss_wrapper(self, estimates, targets):
         """Compute SI-SDR loss for ES/EB tasks."""
@@ -310,8 +342,9 @@ class Trainer:
             yaml.dump(checkpoint_data["config"], f, default_flow_style=False, sort_keys=False)
 
         # Log checkpoint save
+        metric_name = "avg SI-SDRi" if self.per_variant_mode else "SI-SDR"
         self.logger.info(
-            f"Saved best model (SI-SDR: {val_sisdr:.2f} dB) to: {checkpoint_path}"
+            f"Saved best model ({metric_name}: {val_sisdr:.2f} dB) to: {checkpoint_path}"
         )
         self.logger.info(f"  Run name: {run_name}")
 
@@ -322,10 +355,11 @@ class Trainer:
             )
             self.wandb_logger.log_model(str(checkpoint_path))
 
-    def train_epoch(self) -> float:
-        """Train for one epoch and return average SI-SDR."""
+    def train_epoch(self) -> tuple:
+        """Train for one epoch; return (avg SI-SDR, avg SI-SDRi)."""
         self.model.train()
         total_sisdr = 0
+        total_sisdri = 0
         total_samples = 0
         
         # Gradient accumulation setup
@@ -398,23 +432,28 @@ class Trainer:
 
             # Weight by actual batch size for correct averaging
             batch_size = len(mix)
+            sisdri_value = self._compute_sisdri(sisdr_value, mix, clean)
             total_sisdr += sisdr_value * batch_size
+            total_sisdri += sisdri_value * batch_size
             total_samples += batch_size
 
             pbar.set_postfix(
                 {
-                    "SI-SDR": f"{sisdr_value:.2f}dB",
+                    "SI-SDR": f"{sisdr_value:.2f}",
+                    "SI-SDRi": f"{sisdri_value:.2f}",
                     "LR": f'{self.optimizer.param_groups[0]["lr"]:.2e}',
                 }
             )
 
         avg_sisdr = total_sisdr / total_samples
-        return avg_sisdr
+        avg_sisdri = total_sisdri / total_samples
+        return avg_sisdr, avg_sisdri
 
-    def validate(self) -> float:
-        """Run validation and return average SI-SDR."""
+    def validate(self) -> tuple:
+        """Run validation; return (avg SI-SDR, avg SI-SDRi)."""
         self.model.eval()
         total_sisdr = 0
+        total_sisdri = 0
         total_samples = 0
 
         pbar = tqdm(
@@ -441,12 +480,128 @@ class Trainer:
                     _, sisdr_value = self.loss_fn(estimates, clean)
                 # Weight by actual batch size for correct averaging
                 batch_size = len(mix)
+                sisdri_value = self._compute_sisdri(sisdr_value, mix, clean)
                 total_sisdr += sisdr_value * batch_size
+                total_sisdri += sisdri_value * batch_size
                 total_samples += batch_size
-                pbar.set_postfix({"SI-SDR": f"{sisdr_value:.2f}dB"})
+                pbar.set_postfix({
+                    "SI-SDR": f"{sisdr_value:.2f}",
+                    "SI-SDRi": f"{sisdri_value:.2f}",
+                })
 
         avg_sisdr = total_sisdr / total_samples
-        return avg_sisdr
+        avg_sisdri = total_sisdri / total_samples
+        return avg_sisdr, avg_sisdri
+
+    def validate_per_variant(self) -> dict:
+        """Run validation once per MM-IPC variant.
+
+        Returns {variant: {"si_sdr": float, "si_sdri": float}}. The per-variant
+        loaders each force a specific MM-IPC variant via allowed_variants=[v],
+        so every val sample is re-rendered once per variant.
+        """
+        self.model.eval()
+        results = {}
+
+        with torch.no_grad():
+            for variant, loader in self.per_variant_val_loaders.items():
+                total_sisdr = 0.0
+                total_sisdri = 0.0
+                total_samples = 0
+
+                pbar = tqdm(
+                    loader,
+                    desc=f"Val [{variant}]",
+                    unit="batch",
+                    leave=False,
+                    ncols=100,
+                )
+
+                for batch in pbar:
+                    mix = batch["mix"].to(self.device)
+                    clean = batch["clean"].to(self.device)
+                    batch_size = len(mix)
+
+                    if self.use_amp:
+                        with torch.amp.autocast("cuda", dtype=self.amp_dtype):
+                            estimates = self.model(mix.unsqueeze(1))
+                    else:
+                        estimates = self.model(mix.unsqueeze(1))
+
+                    # Trim everyone to common length (matches evaluate.py).
+                    min_len = min(estimates.shape[-1], clean.shape[-1])
+                    estimates = estimates[..., :min_len]
+                    clean_t = clean[..., :min_len]
+                    mix_trimmed = mix[..., :min_len]
+
+                    if self.task == "SB":
+                        loss = self.pit_loss(estimates, clean_t)
+                        si_sdr = -loss.item()
+                        mix_baseline = 0.0
+                        for spk in range(clean_t.shape[1]):
+                            mix_baseline += self.si_sdr_metric(
+                                mix_trimmed, clean_t[:, spk]
+                            ).item()
+                        mix_baseline /= clean_t.shape[1]
+                        si_sdri = si_sdr - mix_baseline
+                    else:
+                        if clean_t.dim() == 3 and clean_t.shape[1] == 1:
+                            clean_t = clean_t.squeeze(1)
+                        if estimates.dim() == 3 and estimates.shape[1] == 1:
+                            estimates = estimates.squeeze(1)
+                        si_sdr = self.si_sdr_metric(estimates, clean_t).item()
+                        si_sdr_mix = self.si_sdr_metric(mix_trimmed, clean_t).item()
+                        si_sdri = si_sdr - si_sdr_mix
+
+                    total_sisdr += si_sdr * batch_size
+                    total_sisdri += si_sdri * batch_size
+                    total_samples += batch_size
+                    pbar.set_postfix({
+                        "SI-SDR": f"{si_sdr:.2f}",
+                        "SI-SDRi": f"{si_sdri:.2f}",
+                    })
+
+                results[variant] = {
+                    "si_sdr": total_sisdr / total_samples,
+                    "si_sdri": total_sisdri / total_samples,
+                }
+
+        return results
+
+    def _log_variant_table(self, variant_results: dict, avg_sisdri: float):
+        """Pretty-print the per-variant validation table to the logger.
+
+        Third row shows the SI-SDRi delta vs. the previous epoch (— on epoch 1
+        or after resume).
+        """
+        variants = list(variant_results.keys())
+        col_w = 7
+        header = "           " + "".join(f"{v:>{col_w}}" for v in variants)
+        sisdr_row = "SI-SDR    " + "".join(
+            f"{variant_results[v]['si_sdr']:>{col_w}.2f}" for v in variants
+        )
+        sisdri_row = "SI-SDRi   " + "".join(
+            f"{variant_results[v]['si_sdri']:>{col_w}.2f}" for v in variants
+        )
+        if self.prev_variant_sisdri is None:
+            delta_cells = [f"{'—':>{col_w}}" for _ in variants]
+        else:
+            delta_cells = []
+            for v in variants:
+                prev = self.prev_variant_sisdri.get(v)
+                if prev is None:
+                    delta_cells.append(f"{'—':>{col_w}}")
+                else:
+                    d = variant_results[v]["si_sdri"] - prev
+                    # Explicit sign so + and - line up visually.
+                    delta_cells.append(f"{d:>+{col_w}.2f}")
+        delta_row = "Δ SI-SDRi " + "".join(delta_cells)
+        self.logger.info("Validation:")
+        self.logger.info(header)
+        self.logger.info(sisdr_row)
+        self.logger.info(sisdri_row)
+        self.logger.info(delta_row)
+        self.logger.info(f"Avg Val SI-SDRi: {avg_sisdri:.2f} dB")
 
     def train(self, num_epochs: int, save_dir: str = "checkpoints", early_stopping_patience: int = None):
         """Main training loop with OOM error handling."""
@@ -466,13 +621,25 @@ class Trainer:
                 # Update training variants based on curriculum schedule
                 self._update_training_variants(self.current_epoch)
 
-                train_sisdr = self.train_epoch()
-                self.logger.info(f"Train - SI-SDR: {train_sisdr:.2f} dB")
+                train_sisdr, train_sisdri = self.train_epoch()
+                self.logger.info(f"Train - SI-SDR:  {train_sisdr:.2f} dB")
+                self.logger.info(f"Train - SI-SDRi: {train_sisdri:.2f} dB")
 
-                val_sisdr = self.validate()
-                self.logger.info(f"Val - SI-SDR: {val_sisdr:.2f} dB")
+                if self.per_variant_mode:
+                    variant_results = self.validate_per_variant()
+                    avg_si_sdr = sum(v["si_sdr"] for v in variant_results.values()) / len(variant_results)
+                    avg_si_sdri = sum(v["si_sdri"] for v in variant_results.values()) / len(variant_results)
+                    self._log_variant_table(variant_results, avg_si_sdri)
+                    self.prev_variant_sisdri = {v: vr["si_sdri"] for v, vr in variant_results.items()}
+                    monitor_value = avg_si_sdri
+                else:
+                    val_sisdr, val_sisdri = self.validate()
+                    self.logger.info(f"Val - SI-SDR:  {val_sisdr:.2f} dB")
+                    self.logger.info(f"Val - SI-SDRi: {val_sisdri:.2f} dB")
+                    monitor_value = val_sisdr
+                    variant_results = None
 
-                val_sisdr_history.append(val_sisdr)
+                val_sisdr_history.append(monitor_value)
 
                 # Get current learning rate
                 current_lr = self.optimizer.param_groups[0]["lr"]
@@ -480,7 +647,7 @@ class Trainer:
                 # Update learning rate based on validation performance (only if enabled)
                 old_lr = current_lr
                 if self.lr_scheduler_enabled:
-                    self.scheduler.step(val_sisdr)
+                    self.scheduler.step(monitor_value)
                     current_lr = self.optimizer.param_groups[0]["lr"]
 
                 if current_lr != old_lr:
@@ -494,23 +661,32 @@ class Trainer:
                 metrics = {
                     "epoch": self.current_epoch,
                     "train_si_sdr": train_sisdr,
-                    "val_si_sdr": val_sisdr,
+                    "train_si_sdri": train_sisdri,
                     "train_lr": current_lr,
                 }
-                
+                if self.per_variant_mode:
+                    metrics["val_si_sdr"] = avg_si_sdr
+                    metrics["val_si_sdri"] = avg_si_sdri
+                    for v, vr in variant_results.items():
+                        metrics[f"val_si_sdr_{v}"] = vr["si_sdr"]
+                        metrics[f"val_si_sdri_{v}"] = vr["si_sdri"]
+                else:
+                    metrics["val_si_sdr"] = val_sisdr
+                    metrics["val_si_sdri"] = val_sisdri
+
                 # Add early stopping metric if enabled
                 if early_stopping_patience:
                     metrics["epochs_no_improvement"] = epochs_without_improvement
-                
+
                 if self.wandb_logger:
                     self.wandb_logger.log_metrics(metrics, step=self.current_epoch)
 
                 # Check for improvement
-                if val_sisdr > self.best_val_sisdr:
-                    self.best_val_sisdr = val_sisdr
+                if monitor_value > self.best_val_sisdr:
+                    self.best_val_sisdr = monitor_value
                     if early_stopping_patience:
                         epochs_without_improvement = 0  # Reset counter
-                    self._save_checkpoint(epoch, val_sisdr, save_dir)
+                    self._save_checkpoint(epoch, monitor_value, save_dir)
                 else:
                     if early_stopping_patience:
                         epochs_without_improvement += 1
@@ -522,7 +698,8 @@ class Trainer:
                     self.logger.warning("EARLY STOPPING")
                     self.logger.warning("=" * 80)
                     self.logger.warning(f"No improvement for {early_stopping_patience} epochs")
-                    self.logger.warning(f"Best Val SI-SDR: {self.best_val_sisdr:.2f} dB")
+                    metric_name = "avg SI-SDRi" if self.per_variant_mode else "SI-SDR"
+                    self.logger.warning(f"Best Val {metric_name}: {self.best_val_sisdr:.2f} dB")
                     self.logger.warning(f"Stopping at epoch {self.current_epoch}/{final_epoch}")
                     
                     if self.wandb_logger:
@@ -536,10 +713,11 @@ class Trainer:
             self.logger.info("\nTraining Summary:")
             self.logger.info(f"Batch size: {self.train_loader.batch_size}")
             self.logger.info(f"Number of epochs: {num_epochs}")
-            self.logger.info("\nValidation SI-SDR history:")
+            metric_name = "avg SI-SDRi" if self.per_variant_mode else "SI-SDR"
+            self.logger.info(f"\nValidation {metric_name} history:")
             start_epoch = final_epoch - num_epochs + 1
             for idx, val_sisdr in enumerate(val_sisdr_history, start_epoch):
-                self.logger.info(f"  Epoch {idx}: Val SI-SDR = {val_sisdr:.2f} dB")
+                self.logger.info(f"  Epoch {idx}: Val {metric_name} = {val_sisdr:.2f} dB")
 
         except torch.cuda.OutOfMemoryError as e:
             self.logger.error("=" * 80)
