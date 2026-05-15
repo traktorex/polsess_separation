@@ -70,26 +70,54 @@ def main():
         collate_fn=polsess_collate_fn,
     )
     
-    # Create val dataset
-    val_dataset = dataset_class(
-        data_root,
-        subset="val",
-        task=config.data.task,
-        max_samples=config.data.val_max_samples,
-        allowed_variants=config.training.validation_variants,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.data.batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
-        collate_fn=polsess_collate_fn,
-    )
-    
+    # Create val dataset(s) — mirrors train.py logic for the per_variant mode.
+    ALL_VARIANTS = ["SER", "SR", "ER", "R", "SE", "S", "E", "C"]
+    val_loader = None
+    per_variant_val_loaders = None
+
+    if config.training.per_variant_validation:
+        filter_set = config.training.validation_variants
+        variants_to_use = [v for v in ALL_VARIANTS if filter_set is None or v in filter_set]
+        per_variant_val_loaders = {}
+        for variant in variants_to_use:
+            v_dataset = dataset_class(
+                data_root,
+                subset="val",
+                task=config.data.task,
+                max_samples=config.data.val_max_samples,
+                allowed_variants=[variant],
+            )
+            per_variant_val_loaders[variant] = DataLoader(
+                v_dataset,
+                batch_size=config.data.batch_size,
+                shuffle=False,
+                num_workers=config.data.num_workers,
+                prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+                collate_fn=polsess_collate_fn,
+            )
+        first_loader = next(iter(per_variant_val_loaders.values()))
+        summary_info["val_samples"] = len(first_loader.dataset)
+        summary_info["val_variants"] = list(per_variant_val_loaders.keys())
+    else:
+        val_dataset = dataset_class(
+            data_root,
+            subset="val",
+            task=config.data.task,
+            max_samples=config.data.val_max_samples,
+            allowed_variants=config.training.validation_variants,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=config.data.batch_size,
+            shuffle=False,
+            num_workers=config.data.num_workers,
+            prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+            collate_fn=polsess_collate_fn,
+        )
+        summary_info["val_samples"] = len(val_loader.dataset)
+
     # Update summary info
     summary_info["train_samples"] = len(train_loader.dataset)
-    summary_info["val_samples"] = len(val_loader.dataset)
 
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
@@ -121,6 +149,7 @@ def main():
         device=device,
         logger=logger,
         wandb_logger=wandb_logger,
+        per_variant_val_loaders=per_variant_val_loaders,
     )
 
     # Run training

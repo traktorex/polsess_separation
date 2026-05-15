@@ -1,0 +1,58 @@
+# SepFormer 128k sweep base config — final training HPO.
+# Used as the `config` entry in sweeps/6-final-training/sepformer_128k_bayes.yaml.
+# Sweep tunes: lr, dropout, grad_clip_norm, weight_decay. Everything else here
+# is pinned, including the per-variant validation that drives the LR scheduler.
+
+data:
+  dataset_type: polsess
+  batch_size: 2          # Matches the 64k baseline; SepFormer at 25.7M params is memory-bound.
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  val_max_samples: 1024  # ~5 min/epoch per-variant validation (8 variants × 1024 / batch 2).
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.0          # Overridden by the sweep.
+    chunk_size: 250
+    hop_size: 125
+    use_positional_encoding: true
+
+training:
+  # ---- Overridden by the sweep ----
+  lr: 0.00015
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  # ---- Pinned for this sweep ----
+  lr_factor: 0.5
+  lr_patience: 1          # Aggressive: drop LR after one stagnant epoch. Per-variant val stabilises the signal.
+  num_epochs: 20          # Hyperband max_iter = 20.
+  early_stopping_patience: 5
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-thesis-experiments
+  log_level: INFO
+
+  # No curriculum: Group A at 64k showed full-set-from-epoch-1 is already best.
+  # curriculum_learning omitted on purpose.
+
+  # Per-variant validation drives the LR scheduler and best-checkpoint logic
+  # via avg SI-SDRi; all 8 variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

@@ -723,6 +723,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         "save_all_checkpoints":     (config.training, "save_all_checkpoints"),
         "curriculum_learning":      (config.training, "curriculum_learning"),
         "validation_variants":      (config.training, "validation_variants"),
+        "per_variant_validation":   (config.training, "per_variant_validation"),
         # Data
         "task":                     (config.data, "task"),
         "batch_size":               (config.data, "batch_size"),
