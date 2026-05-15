@@ -1,14 +1,15 @@
 #!/bin/bash
-# setup.sh — Set up polsess_separation on a fresh cloud GPU instance (Vast.ai / RunPod)
+# setup.sh — Install polsess_separation on a fresh cloud GPU instance (Vast.ai / RunPod)
+#
+# Provisions the project (repo + Python deps + env vars). The dataset is handled
+# separately by download_dataset.sh — run that after this script.
 #
 # Prerequisites:
 #   - Start from a PyTorch template image (e.g. pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel)
-#   - Upload PolSESS.tar.gz to cloud storage (Google Drive, S3, etc.)
 #
 # Usage:
 #   chmod +x setup.sh
-#   ./setup.sh              # full setup (repo + deps + dataset)
-#   ./setup.sh --no-data    # skip dataset download (if already mounted)
+#   ./setup.sh              # repo + deps + env vars
 #   ./setup.sh --rclone     # also install rclone and configure Google Drive remote
 
 set -euo pipefail
@@ -25,20 +26,13 @@ REPO_BRANCH="main"
 PROJECT_DIR="$HOME/polsess_separation"
 DATASETS_DIR="$HOME/datasets"
 
-# PolSESS dataset archive URL
-# Supports: Google Drive (via gdown), direct HTTP/HTTPS, rclone remote paths
-# Leave empty to skip download (e.g. if dataset is on a mounted volume).
-POLSESS_URL="https://drive.google.com/uc?id=149d8LFyX9jr_AJNwb2BtTcffuuKqUg1B"
-
 # ============================================================================
 # Parse arguments
 # ============================================================================
 
-SKIP_DATA=false
 SETUP_RCLONE=false
 for arg in "$@"; do
     case $arg in
-        --no-data)  SKIP_DATA=true ;;
         --rclone)   SETUP_RCLONE=true ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
     esac
@@ -170,38 +164,6 @@ if [ "$SETUP_RCLONE" = true ]; then
 fi
 
 # ============================================================================
-# Download dataset
-# ============================================================================
-
-if [ "$SKIP_DATA" = false ]; then
-    if [ -z "$POLSESS_URL" ]; then
-        warn "POLSESS_URL is empty — set it at the top of this script or download manually"
-        warn "Expected location: $POLSESS_DATA_ROOT"
-    else
-        mkdir -p "$DATASETS_DIR"
-        info "Downloading PolSESS dataset..."
-
-        archive="/tmp/PolSESS.tar.gz"
-
-        if [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
-            pip install -q gdown 2>/dev/null
-            gdown "$POLSESS_URL" -O "$archive"
-        elif [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != "http"* ]]; then
-            rclone copy "$POLSESS_URL" /tmp/ --progress
-        else
-            wget -q --show-progress -O "$archive" "$POLSESS_URL"
-        fi
-
-        info "Extracting to $DATASETS_DIR..."
-        tar xzf "$archive" -C "$DATASETS_DIR"
-        rm -f "$archive"
-        ok "PolSESS dataset ready"
-    fi
-else
-    warn "Skipping dataset download (--no-data)"
-fi
-
-# ============================================================================
 # Verify installation
 # ============================================================================
 
@@ -221,8 +183,7 @@ if torch.cuda.is_available():
 if [ -d "$POLSESS_DATA_ROOT" ]; then
     ok "PolSESS dataset found at $POLSESS_DATA_ROOT"
 else
-    warn "PolSESS dataset not found at $POLSESS_DATA_ROOT"
-    warn "Download it manually or set POLSESS_DATA_ROOT to the correct path"
+    warn "PolSESS dataset not found at $POLSESS_DATA_ROOT — run ./download_dataset.sh"
 fi
 
 # ============================================================================
@@ -233,6 +194,10 @@ echo ""
 echo "============================================"
 ok "Setup complete!"
 echo "============================================"
+echo ""
+echo "Next:"
+echo "  ./download_dataset.sh           # fetch PolSESS into $DATASETS_DIR"
+echo "  source ~/.bashrc                # pick up POLSESS_DATA_ROOT"
 echo ""
 echo "Quick start:"
 echo "  cd $PROJECT_DIR"
