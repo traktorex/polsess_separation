@@ -1,0 +1,55 @@
+# Phase 5 length-mode variant: full_length assembly.
+# Per-speaker streams are the same duration as the input recording;
+# unused regions are silence.
+
+sample_rate: 16000
+device: cuda
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  hf_token: "hf_YOUR_TOKEN_HERE"
+  num_speakers: 2
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  max_merge_gap: 0.10
+  segment_pad: 0.10
+
+enhancement:
+  enabled: true
+  checkpoint_path: /home/user/MP-SENet/best_ckpt/g_best_vb
+  config_path: /home/user/MP-SENet/config.json
+  max_segment_length_s: 8.0
+
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/sepformer_SB_best.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: snap_to_vad
+  context_pad_seconds: 1.0
+  seam_mode: zero_crossing
+  seam_search_radius_s: 0.05
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.50
+  vad_mode: silero
+
+assembly:
+  enabled: true
+  min_solo_for_anchor_s: 3.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  model_name: large-v3
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
