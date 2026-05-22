@@ -1,143 +1,64 @@
-"""Stage 2 — partition the timeline into {silence, solo-X, overlap}.
+"""Stage 2 — select overlap regions for SepFormer.
 
-Ported from `asr/asr_pipeline.ipynb` cell 12. Pure timeline arithmetic on
-the diarization output: filter short overlaps, merge same-speaker turns
-across small gaps, pad, subtract overlap from per-speaker regions to get
-solos, fill the rest with silence.
+This stage no longer partitions the timeline into per-speaker solos. The
+assembler in Stage 4 derives per-speaker solo intervals on the fly by
+subtracting `ctx.overlap_regions` from `ctx.diarization.segments_df` per
+speaker, so the only routing decision left is "which intervals get sent
+to SepFormer".
+
+The overlap source is `pyannote.core.Annotation.get_overlap()` (already
+captured into `ctx.diarization.overlaps_df` in Stage 1). On a given
+Annotation that is by construction the pairwise intersection of the
+per-speaker tracks, so we trust it directly. We only:
+
+1. Drop overlaps shorter than `min_overlap_dur` (too short to be worth
+   separating — SepFormer needs at least a few hundred samples of
+   meaningful overlap).
+2. Merge overlap regions that sit within `merge_gap` of each other so
+   SepFormer sees them as one contiguous region rather than back-to-back
+   calls. Context padding (for SepFormer's training-window context) is a
+   Stage 3b concern, not a Stage 2 one.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 import pandas as pd
 
 from asr_pipeline.config import RoutingConfig
-from asr_pipeline.context import PipelineContext
+from asr_pipeline.context import Interval, PipelineContext
 from asr_pipeline.stages.base import Stage
 
 
-Interval = Tuple[float, float]
-
-
-def _merge_consecutive(segs: List[Interval], max_gap: float) -> List[Interval]:
-    """Merge consecutive `(s, e)` intervals whose gap is below `max_gap`."""
+def _merge_close(segs: List[Interval], merge_gap: float) -> List[Interval]:
+    """Merge `(s, e)` intervals whose gap is below `merge_gap`."""
     if not segs:
         return []
     segs = sorted(segs)
     out = [list(segs[0])]
     for s, e in segs[1:]:
-        if s - out[-1][1] < max_gap:
+        if s - out[-1][1] < merge_gap:
             out[-1][1] = max(out[-1][1], e)
         else:
             out.append([s, e])
-    return [tuple(x) for x in out]
+    return [(float(s), float(e)) for s, e in out]
 
 
-def _subtract(
-    regions_a: List[Interval], regions_b: List[Interval]
-) -> List[Interval]:
-    """Set difference `regions_a − regions_b` on intervals."""
-    result: List[Interval] = []
-    regions_b = sorted(regions_b)
-    for s, e in sorted(regions_a):
-        current: List[Interval] = [(s, e)]
-        for bs, be in regions_b:
-            next_cur: List[Interval] = []
-            for cs, ce in current:
-                if be <= cs or bs >= ce:
-                    next_cur.append((cs, ce))
-                    continue
-                if bs > cs:
-                    next_cur.append((cs, bs))
-                if be < ce:
-                    next_cur.append((be, ce))
-            current = next_cur
-        result.extend(current)
-    return [(s, e) for s, e in result if e - s > 1e-3]
-
-
-def _build_partition(
-    seg_df: pd.DataFrame,
+def _select_overlap_regions(
     ovl_df: pd.DataFrame,
-    total_dur: float,
-    min_overlap: float,
-    max_gap: float,
-    pad: float,
-) -> Tuple[pd.DataFrame, List[str]]:
-    """Partition the timeline into {silence, solo-A, solo-B, overlap}."""
-    if len(seg_df) == 0:
-        return (
-            pd.DataFrame(columns=["start", "end", "duration", "kind", "speaker"]),
-            [],
-        )
-
-    ovl_raw = [
-        (r.start, r.end)
+    min_overlap_dur: float,
+    merge_gap: float,
+) -> List[Interval]:
+    """Filter + merge pyannote's overlap timeline into SepFormer-ready intervals."""
+    raw = [
+        (float(r.start), float(r.end))
         for r in ovl_df.itertuples()
-        if r.duration >= min_overlap
+        if r.duration >= min_overlap_dur
     ]
-    ovl_padded = _merge_consecutive(
-        [(max(0.0, s - pad), min(total_dur, e + pad)) for s, e in ovl_raw],
-        1e-6,
-    )
-
-    speakers = sorted(seg_df["speaker"].unique())
-    spk_regions = {}
-    for spk in speakers:
-        segs = [
-            (r.start, r.end)
-            for r in seg_df[seg_df["speaker"] == spk].itertuples()
-        ]
-        segs = _merge_consecutive(segs, max_gap)
-        segs = [(max(0.0, s - pad), min(total_dur, e + pad)) for s, e in segs]
-        segs = _merge_consecutive(segs, 1e-6)
-        spk_regions[spk] = segs
-
-    partition = []
-    for i, spk in enumerate(speakers):
-        tag = f"solo-{chr(ord('A') + i)}"
-        solos = _subtract(spk_regions[spk], ovl_padded)
-        for s, e in solos:
-            partition.append(
-                {
-                    "start": s,
-                    "end": e,
-                    "duration": e - s,
-                    "kind": tag,
-                    "speaker": spk,
-                }
-            )
-    for s, e in ovl_padded:
-        partition.append(
-            {
-                "start": s,
-                "end": e,
-                "duration": e - s,
-                "kind": "overlap",
-                "speaker": None,
-            }
-        )
-
-    active = _merge_consecutive(
-        [(r["start"], r["end"]) for r in partition], 1e-6
-    )
-    for s, e in _subtract([(0.0, total_dur)], active):
-        partition.append(
-            {
-                "start": s,
-                "end": e,
-                "duration": e - s,
-                "kind": "silence",
-                "speaker": None,
-            }
-        )
-
-    part_df = (
-        pd.DataFrame(partition).sort_values("start").reset_index(drop=True)
-    )
-    return part_df, speakers
+    return _merge_close(raw, merge_gap)
 
 
 class RoutingStage(Stage):
@@ -153,18 +74,22 @@ class RoutingStage(Stage):
                 "RoutingStage.run requires ctx.diarization to be populated "
                 "(DiarizationStage must run first)."
             )
-        part_df, speakers = _build_partition(
-            seg_df=ctx.diarization.segments_df,
+        ctx.overlap_regions = _select_overlap_regions(
             ovl_df=ctx.diarization.overlaps_df,
-            total_dur=ctx.diarization.total_duration_s,
-            min_overlap=self.config.min_overlap_dur,
-            max_gap=self.config.max_merge_gap,
-            pad=self.config.segment_pad,
+            min_overlap_dur=self.config.min_overlap_dur,
+            merge_gap=self.config.merge_gap,
         )
-        ctx.partition_df = part_df
-        ctx.speakers = speakers
+        ctx.speakers = sorted(ctx.diarization.segments_df["speaker"].unique())
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
-        if ctx.partition_df is None:
+        if ctx.overlap_regions is None:
             return
-        ctx.partition_df.to_csv(artifact_dir / "partition.csv", index=False)
+        payload = {
+            "speakers": ctx.speakers,
+            "overlap_regions": [
+                {"start": s, "end": e, "duration": e - s}
+                for s, e in ctx.overlap_regions
+            ],
+        }
+        with open(artifact_dir / "overlap_regions.json", "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)

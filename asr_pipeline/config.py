@@ -35,15 +35,23 @@ class DiarizationConfig:
 
 @dataclass
 class RoutingConfig:
-    """Stage 2: partition the timeline into {silence, solo-X, overlap}.
+    """Stage 2: decide what gets sent to SepFormer.
+
+    The job is just to select overlap regions from pyannote's diarization
+    output: drop ones that are too short to be worth separating, and merge
+    ones that sit close enough together that SepFormer should see them as
+    a single contiguous region rather than two back-to-back calls.
+
+    Per-speaker solo regions are NOT computed here — the assembler in
+    Stage 4 derives them on the fly by subtracting `ctx.overlap_regions`
+    from `ctx.diarization.segments_df` per speaker.
 
     All thresholds in seconds.
     """
 
     enabled: bool = True
     min_overlap_dur: float = 0.20    # drop overlaps shorter than this
-    max_merge_gap: float = 0.10      # merge same-speaker segments closer than this
-    segment_pad: float = 0.10        # symmetric padding around each segment
+    merge_gap: float = 0.50          # merge overlap regions closer than this
 
 
 @dataclass
@@ -67,13 +75,13 @@ class EnhancementConfig:
             "/home/user/MP-SENet/config.json",
         )
     )
-    # MP-SENet's time-axis attention is O(T^2), so long solo regions (which
-    # arise when `routing.segment_pad` is generous and same-speaker turns
-    # merge across small gaps) blow up GPU memory. Solo regions longer than
-    # this duration are processed via Hann overlap-add — chunks of this size
-    # with a 50% hop (canonical COLA: window sum is 1.0 in the interior,
-    # head/tail divided by actual weights). MP-SENet was trained on 2 s
-    # crops; 8 s chunks were verified by ear on long Polish recordings.
+    # MP-SENet's time-axis attention is O(T^2), so feeding a long
+    # recording to it in one shot blows up GPU memory. Recordings longer
+    # than this duration are processed via Hann overlap-add — chunks of
+    # this size with a 50% hop (canonical COLA: window sum is 1.0 in the
+    # interior, head/tail divided by actual weights). MP-SENet was
+    # trained on 2 s crops; 8 s chunks were verified by ear on long
+    # Polish recordings.
     max_segment_length_s: float = 8.0
 
 
@@ -106,10 +114,23 @@ class SeparationConfig:
     # Seam strategy: where the boundary between separated 8k output and the
     # surrounding 16k solo audio is placed when the padded window exceeds the
     # original overlap region.
-    seam_mode: str = "zero_crossing"            # "zero_crossing" | "overlap_boundary"
+    #   - "overlap_boundary":  cut exactly at pyannote's overlap boundary
+    #   - "zero_crossing":     boundary + small nudge to a nearby zero crossing
+    #                          (avoids clicks at the splice point)
+    #   - "snap_to_silence":   first compute the zero_crossing boundary, then
+    #                          extend *outward* via VAD silence on the
+    #                          separator output (captures vowel tails that
+    #                          pyannote cut). Always emits a region at least
+    #                          as wide as zero_crossing.
+    seam_mode: str = "zero_crossing"  # "zero_crossing" | "overlap_boundary" | "snap_to_silence"
     # Maximum distance (seconds) from the original overlap boundary to scan
-    # for a zero crossing when `seam_mode == "zero_crossing"`.
+    # for a zero crossing.
     seam_search_radius_s: float = 0.05
+    # When `seam_mode == "snap_to_silence"`: maximum distance (seconds) to
+    # extend each boundary outward looking for VAD silence in the separator
+    # output. If no silence found in this window, falls back to the
+    # zero_crossing boundary (never contracts).
+    snap_silence_max_extend_s: float = 0.3
 
     # Long-overlap chunking: overlaps longer than this trigger overlap-add.
     overlap_add_threshold_s: float = 12.0
@@ -133,8 +154,20 @@ class AssemblyConfig:
     #   "full_length"  -> total stream length = input length; gaps filled with silence
     output_mode: str = "shortened"              # "shortened" | "full_length"
     silence_separator_s: float = 0.3
-    # Optional per-piece RMS normalisation before concat. When enabled and
-    # `target_rms` is None, the median RMS across pieces is used.
+    # Short half-Hann fade at the start/end of every piece. Eliminates step
+    # discontinuities at solo↔overlap seams (shortened mode: smooths the
+    # silence-to-piece edge; full_length mode: turns the touching-pieces seam
+    # into a butt-joint with fades). Set to 0 to disable.
+    crossfade_ms: float = 5.0
+    # Per-speaker RMS match: scale each overlap event so its RMS matches the
+    # median RMS of that speaker's solo events. Fixes the common case where
+    # SepFormer outputs (with sum_equals_mix normalisation) end up noticeably
+    # louder than MP-SENet's solo audio. Solo events are not touched, so the
+    # speaker's natural dynamics are preserved.
+    overlap_rms_match_solo: bool = True
+    # Optional aggressive per-piece RMS normalisation before concat. When
+    # enabled and `target_rms` is None, the median RMS across pieces is used.
+    # Applied after `overlap_rms_match_solo`; if both are on, this dominates.
     per_piece_rms_norm: bool = False
     target_rms: Optional[float] = None
 
@@ -186,7 +219,9 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid context_window_mode: {self.separation.context_window_mode!r}"
             )
-        if self.separation.seam_mode not in ("zero_crossing", "overlap_boundary"):
+        if self.separation.seam_mode not in (
+            "zero_crossing", "overlap_boundary", "snap_to_silence",
+        ):
             raise ValueError(f"Invalid seam_mode: {self.separation.seam_mode!r}")
         if self.separation.volume_normalization not in (
             "sum_equals_mix", "match_solo", "none",

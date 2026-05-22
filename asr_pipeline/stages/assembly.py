@@ -1,23 +1,32 @@
 """Stage 4 — per-speaker stream assembly via ECAPA anchors + TimestampMap.
 
-For each speaker (from pyannote's labels):
+Inputs from upstream stages:
+- `ctx.enhanced_full`     full-recording MP-SENet output (Stage 3a)
+- `ctx.diarization`       per-speaker pyannote segments + overlap timeline
+- `ctx.overlap_regions`   the intervals SepFormer was run on (Stage 2)
+- `ctx.overlap_separated` per-region SepFormer outputs + emit boundaries
 
-1. Build an ECAPA-TDNN *anchor* embedding from the speaker's concatenated
-   enhanced solo audio. If the speaker has < `min_solo_for_anchor_s` of
-   solo audio, mark the recording as weak-anchor and fall back to a fixed
-   straight-through assignment for overlaps.
-2. For each overlap, ECAPA-embed each of the two separator outputs (the
+For each speaker:
+
+1. Derive that speaker's solo intervals on the fly: pyannote's segments
+   for the speaker, minus `ctx.overlap_regions`. No padding — pyannote's
+   boundaries are used as-is.
+2. Build an ECAPA-TDNN *anchor* embedding from a concatenation of
+   `enhanced_full` sliced at those solo intervals. If the speaker has
+   less than `min_solo_for_anchor_s` of solo audio, mark the recording
+   as weak-anchor and fall back to a fixed straight-through assignment
+   for overlaps.
+3. For each overlap, ECAPA-embed each of the two SepFormer outputs (the
    full padded gated stream) and pick the speaker pairing
    (s1->A,s2->B vs s1->B,s2->A) with the higher summed cosine similarity
    against the anchors.
-3. Slice each overlap's gated stream to its `emit_start`/`emit_end` region
-   (from Phase 4), so we only emit the assembler-relevant slice — not the
-   entire padded separator output.
-4. Concatenate per speaker in `output_mode`:
+4. Slice each overlap's gated stream to its `emit_start`/`emit_end`
+   region (from Stage 3b), so we only emit the assembler-relevant slice.
+5. Concatenate per speaker in `output_mode`:
      - "shortened"   -> speech-only concat with `silence_separator_s` gaps
      - "full_length" -> stream length = input length; pieces placed at
                         their original timestamps; gaps filled with silence
-5. Build a `TimestampMap` that records the (concat_*) -> (orig_*) mapping
+6. Build a `TimestampMap` that records the (concat_*) -> (orig_*) mapping
    for every piece in every speaker's stream.
 
 Speaker-assignment behaviour is hard-coded to the POC's ECAPA-per-overlap
@@ -38,11 +47,51 @@ import torch
 
 from asr_pipeline.config import AssemblyConfig
 from asr_pipeline.context import (
+    Interval,
     PipelineContext,
     TimestampMap,
     TimestampMapEntry,
 )
 from asr_pipeline.stages.base import Stage
+
+
+# ---------------------------------------------------------------------------
+# Solo-interval derivation
+# ---------------------------------------------------------------------------
+
+
+def _subtract(
+    regions_a: list[Interval], regions_b: list[Interval]
+) -> list[Interval]:
+    """Set difference `regions_a − regions_b` on intervals."""
+    result: list[Interval] = []
+    regions_b = sorted(regions_b)
+    for s, e in sorted(regions_a):
+        current: list[Interval] = [(s, e)]
+        for bs, be in regions_b:
+            next_cur: list[Interval] = []
+            for cs, ce in current:
+                if be <= cs or bs >= ce:
+                    next_cur.append((cs, ce))
+                    continue
+                if bs > cs:
+                    next_cur.append((cs, bs))
+                if be < ce:
+                    next_cur.append((be, ce))
+            current = next_cur
+        result.extend(current)
+    return [(s, e) for s, e in result if e - s > 1e-3]
+
+
+def _speaker_solo_intervals(
+    seg_df, speaker: str, overlap_regions: list[Interval]
+) -> list[Interval]:
+    """Per-speaker pyannote segments minus the overlap regions."""
+    raw = [
+        (float(r.start), float(r.end))
+        for r in seg_df[seg_df["speaker"] == speaker].itertuples()
+    ]
+    return _subtract(raw, overlap_regions)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +175,42 @@ def _rms_normalise(
     return out
 
 
+def _match_overlap_rms_to_solo(events_for_spk: list[dict]) -> None:
+    """Scale each `overlap` event's audio so its RMS matches the median RMS
+    of the speaker's `solo` events. Mutates in place.
+    """
+    solo_rms = [
+        _rms(e["audio"])
+        for e in events_for_spk
+        if e["kind"] == "solo" and _rms(e["audio"]) > 1e-9
+    ]
+    if not solo_rms:
+        return
+    target = float(np.median(solo_rms))
+    for e in events_for_spk:
+        if e["kind"] != "overlap":
+            continue
+        r = _rms(e["audio"])
+        if r > 1e-9:
+            e["audio"] = (e["audio"] * (target / r)).astype(np.float32)
+
+
+def _apply_crossfade(audio: np.ndarray, n_samples: int) -> np.ndarray:
+    """Apply a half-Hann fade-in and fade-out to the first/last `n_samples`.
+
+    Used to smooth piece boundaries (silence→piece in shortened mode,
+    piece→piece in full_length mode). Returns a new array; input untouched.
+    No-op if `n_samples <= 0` or the piece is shorter than `2 * n_samples`.
+    """
+    if n_samples <= 0 or len(audio) < 2 * n_samples:
+        return audio
+    out = audio.copy()
+    ramp = np.hanning(2 * n_samples).astype(np.float32)
+    out[:n_samples] *= ramp[:n_samples]
+    out[-n_samples:] *= ramp[n_samples:]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -170,6 +255,18 @@ class AssemblyStage(Stage):
     def run(self, ctx: PipelineContext) -> None:
         if self._ecapa is None or self._device is None:
             raise RuntimeError("AssemblyStage.run called before load().")
+        if ctx.enhanced_full is None:
+            raise RuntimeError(
+                "AssemblyStage.run requires ctx.enhanced_full (EnhancementStage must run first)."
+            )
+        if ctx.diarization is None:
+            raise RuntimeError(
+                "AssemblyStage.run requires ctx.diarization (DiarizationStage must run first)."
+            )
+        if ctx.overlap_regions is None:
+            raise RuntimeError(
+                "AssemblyStage.run requires ctx.overlap_regions (RoutingStage must run first)."
+            )
         if not ctx.speakers:
             # Nothing to assemble — keep ctx fields at their defaults.
             ctx.timestamp_map = TimestampMap(weak_anchor=False, per_speaker={})
@@ -177,20 +274,46 @@ class AssemblyStage(Stage):
 
         cfg = self.config
         sr = ctx.sample_rate
+        enhanced = ctx.enhanced_full
         speakers = ctx.speakers
         spk_to_label = {spk: chr(ord("A") + i) for i, spk in enumerate(speakers)}
 
-        # -- Anchors per speaker ---------------------------------------
-        solo_by_spk: dict[str, list[dict]] = {spk: [] for spk in speakers}
-        for seg in sorted(ctx.solo_enhanced.values(), key=lambda x: x["start"]):
-            if seg["speaker"] in solo_by_spk:
-                solo_by_spk[seg["speaker"]].append(seg)
+        # -- Per-speaker solo intervals ----------------------------------------
+        # Subtract the *emit* regions (from Stage 3b), not the raw overlap
+        # regions from Stage 2. When seam_mode="snap_to_silence" extends emit
+        # boundaries past pyannote's overlap, that extension would otherwise
+        # appear in both the overlap event and the adjacent solo event; using
+        # emit regions for subtraction prevents that duplication.
+        if ctx.overlap_separated:
+            blocked_regions: list[Interval] = [
+                (float(o["emit_start"]), float(o["emit_end"]))
+                for o in ctx.overlap_separated
+            ]
+        else:
+            blocked_regions = ctx.overlap_regions or []
+        solo_intervals_by_spk: dict[str, list[Interval]] = {
+            spk: _speaker_solo_intervals(
+                ctx.diarization.segments_df, spk, blocked_regions
+            )
+            for spk in speakers
+        }
 
+        def _slice_enhanced(intervals: list[Interval]) -> list[np.ndarray]:
+            out: list[np.ndarray] = []
+            for s, e in intervals:
+                lo = int(s * sr)
+                hi = int(e * sr)
+                if hi > lo:
+                    out.append(enhanced[lo:hi].astype(np.float32))
+            return out
+
+        # -- Anchors per speaker -----------------------------------------------
         anchors: dict[str, Optional[torch.Tensor]] = {}
         solo_durations: dict[str, float] = {}
         for spk in speakers:
-            if solo_by_spk[spk]:
-                concat = np.concatenate([s["enhanced"] for s in solo_by_spk[spk]])
+            slices = _slice_enhanced(solo_intervals_by_spk[spk])
+            if slices:
+                concat = np.concatenate(slices)
             else:
                 concat = np.zeros(16, dtype=np.float32)
             solo_durations[spk] = len(concat) / sr
@@ -250,11 +373,15 @@ class AssemblyStage(Stage):
         # -- Build per-speaker events list (sorted by original time) ----
         events: dict[str, list[dict]] = {spk: [] for spk in speakers}
         for spk in speakers:
-            for seg in solo_by_spk[spk]:
+            for s, e in solo_intervals_by_spk[spk]:
+                lo = int(s * sr)
+                hi = int(e * sr)
+                if hi <= lo:
+                    continue
                 events[spk].append({
-                    "orig_start": float(seg["start"]),
-                    "orig_end": float(seg["end"]),
-                    "audio": seg["enhanced"].astype(np.float32),
+                    "orig_start": float(s),
+                    "orig_end": float(e),
+                    "audio": enhanced[lo:hi].astype(np.float32),
                     "kind": "solo",
                 })
         for a in assignments:
@@ -270,7 +397,12 @@ class AssemblyStage(Stage):
         for spk in speakers:
             events[spk].sort(key=lambda e: e["orig_start"])
 
-        # -- Optional per-piece RMS normalisation -----------------------
+        # -- Per-speaker overlap→solo RMS match (narrow normalisation) -------
+        if cfg.overlap_rms_match_solo:
+            for spk in speakers:
+                _match_overlap_rms_to_solo(events[spk])
+
+        # -- Optional aggressive per-piece RMS normalisation -----------------
         if cfg.per_piece_rms_norm:
             for spk in speakers:
                 rescaled = _rms_normalise(
@@ -278,6 +410,13 @@ class AssemblyStage(Stage):
                 )
                 for e, r in zip(events[spk], rescaled):
                     e["audio"] = r.astype(np.float32)
+
+        # -- Short edge fade on every piece (eliminates seam clicks) ---------
+        if cfg.crossfade_ms > 0:
+            crossfade_n = int(cfg.crossfade_ms * sr / 1000)
+            for spk in speakers:
+                for e in events[spk]:
+                    e["audio"] = _apply_crossfade(e["audio"], crossfade_n)
 
         # -- Concatenate (mode-dependent) -------------------------------
         assembled: dict[str, np.ndarray] = {}

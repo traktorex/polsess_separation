@@ -1,6 +1,6 @@
 """Stage 3b — overlap separation + VAD gating.
 
-For each overlap region from `ctx.partition_df`:
+For each overlap region in `ctx.overlap_regions`:
 
 1. Pick a *context window* around the overlap (``context_window_mode``).
    The window is fed to the separator; ``snap_to_vad`` and ``fixed_pad``
@@ -336,6 +336,49 @@ def _pick_seam_zero_crossing(
     return int(nearest)
 
 
+def _extend_start_to_silence(
+    vad_mask: np.ndarray, zc_start_idx: int, max_extend_n: int
+) -> int:
+    """Walk backward from `zc_start_idx` looking for VAD silence in the
+    separator output. Returns the latest silence position within the search
+    range — i.e. the silence side of the most recent silence→speech transition
+    before the boundary. Falls back to `zc_start_idx` if no silence found.
+
+    By construction the returned index is ≤ `zc_start_idx`, so the resulting
+    emit region is never narrower than zero_crossing's.
+    """
+    lo = max(0, zc_start_idx - max_extend_n)
+    if zc_start_idx <= lo:
+        return zc_start_idx
+    region = vad_mask[lo:zc_start_idx]
+    silent = np.where(region < 0.5)[0]
+    if len(silent) == 0:
+        return zc_start_idx
+    return lo + int(silent[-1])
+
+
+def _extend_end_to_silence(
+    vad_mask: np.ndarray, zc_end_idx: int, max_extend_n: int
+) -> int:
+    """Walk forward from `zc_end_idx` looking for VAD silence in the separator
+    output. Returns the first silence position within the search range — i.e.
+    the silence side of the first speech→silence transition after the boundary.
+    Falls back to `zc_end_idx` if no silence found.
+
+    By construction the returned index is ≥ `zc_end_idx`, so the resulting
+    emit region is never narrower than zero_crossing's.
+    """
+    n = len(vad_mask)
+    hi = min(n, zc_end_idx + max_extend_n)
+    if hi <= zc_end_idx:
+        return zc_end_idx
+    region = vad_mask[zc_end_idx:hi]
+    silent = np.where(region < 0.5)[0]
+    if len(silent) == 0:
+        return zc_end_idx
+    return zc_end_idx + int(silent[0])
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -394,9 +437,9 @@ class SeparationStage(Stage):
     def run(self, ctx: PipelineContext) -> None:
         if self._separator is None or self._vad is None:
             raise RuntimeError("SeparationStage.run called before load().")
-        if ctx.partition_df is None or ctx.audio is None or ctx.diarization is None:
+        if ctx.overlap_regions is None or ctx.audio is None or ctx.diarization is None:
             raise RuntimeError(
-                "SeparationStage.run requires audio + partition_df + diarization."
+                "SeparationStage.run requires audio + overlap_regions + diarization."
             )
 
         cfg = self.config
@@ -405,14 +448,9 @@ class SeparationStage(Stage):
         device = self._device
         assert device is not None
 
-        overlap_rows = list(
-            ctx.partition_df[ctx.partition_df["kind"] == "overlap"].iterrows()
-        )
         results: list[dict] = []
 
-        for idx, row in overlap_rows:
-            start_s = float(row["start"])
-            end_s = float(row["end"])
+        for idx, (start_s, end_s) in enumerate(ctx.overlap_regions):
             # Length sanity (mirrors the POC's < 256 sample skip).
             if int((end_s - start_s) * sr) < _MIN_OVERLAP_SAMPLES:
                 continue
@@ -463,6 +501,7 @@ class SeparationStage(Stage):
                 overlap_start_s=start_s,
                 overlap_end_s=end_s,
                 combined_audio=(s1_raw + s2_raw),
+                combined_vad_mask=np.maximum(mask1, mask2),
                 sample_rate=sr,
             )
 
@@ -526,32 +565,49 @@ class SeparationStage(Stage):
         overlap_start_s: float,
         overlap_end_s: float,
         combined_audio: np.ndarray,
+        combined_vad_mask: np.ndarray,
         sample_rate: int,
     ) -> tuple[float, float]:
         """Return (emit_start_s, emit_end_s) in absolute recording time.
 
         The assembler will slice the *padded* separator output to this range.
         """
-        if self.config.seam_mode == "overlap_boundary":
+        cfg = self.config
+        if cfg.seam_mode == "overlap_boundary":
             return overlap_start_s, overlap_end_s
 
-        if self.config.seam_mode == "zero_crossing":
-            radius = int(self.config.seam_search_radius_s * sample_rate)
-            pad_lo = int(window.pad_start_s * sample_rate)
-            tgt_left = int(overlap_start_s * sample_rate) - pad_lo
-            tgt_right = int(overlap_end_s * sample_rate) - pad_lo
-            tgt_left = max(0, min(len(combined_audio) - 1, tgt_left))
-            tgt_right = max(0, min(len(combined_audio) - 1, tgt_right))
-            new_left = _pick_seam_zero_crossing(combined_audio, tgt_left, radius)
-            new_right = _pick_seam_zero_crossing(combined_audio, tgt_right, radius)
-            emit_start_s = (pad_lo + new_left) / sample_rate
-            emit_end_s = (pad_lo + new_right) / sample_rate
-            # Guard: never invert.
-            if emit_end_s < emit_start_s:
-                return overlap_start_s, overlap_end_s
-            return emit_start_s, emit_end_s
+        # Both "zero_crossing" and "snap_to_silence" start from a zero-crossing
+        # nudge of the original overlap boundary. `snap_to_silence` then extends
+        # outward via VAD silence (never contracts past the zc boundary).
+        radius = int(cfg.seam_search_radius_s * sample_rate)
+        pad_lo = int(window.pad_start_s * sample_rate)
+        tgt_left = int(overlap_start_s * sample_rate) - pad_lo
+        tgt_right = int(overlap_end_s * sample_rate) - pad_lo
+        tgt_left = max(0, min(len(combined_audio) - 1, tgt_left))
+        tgt_right = max(0, min(len(combined_audio) - 1, tgt_right))
+        zc_left = _pick_seam_zero_crossing(combined_audio, tgt_left, radius)
+        zc_right = _pick_seam_zero_crossing(combined_audio, tgt_right, radius)
 
-        raise ValueError(f"Unknown seam_mode: {self.config.seam_mode!r}")
+        if cfg.seam_mode == "snap_to_silence":
+            max_extend_n = int(cfg.snap_silence_max_extend_s * sample_rate)
+            new_left = _extend_start_to_silence(
+                combined_vad_mask, zc_left, max_extend_n
+            )
+            new_right = _extend_end_to_silence(
+                combined_vad_mask, zc_right, max_extend_n
+            )
+        elif cfg.seam_mode == "zero_crossing":
+            new_left = zc_left
+            new_right = zc_right
+        else:
+            raise ValueError(f"Unknown seam_mode: {cfg.seam_mode!r}")
+
+        emit_start_s = (pad_lo + new_left) / sample_rate
+        emit_end_s = (pad_lo + new_right) / sample_rate
+        # Guard: never invert.
+        if emit_end_s < emit_start_s:
+            return overlap_start_s, overlap_end_s
+        return emit_start_s, emit_end_s
 
     # ------------------------------------------------------------------
     # Spill

@@ -1,4 +1,15 @@
-"""Stage 3a — solo enhancement with MP-SENet.
+"""Stage 3a — full-recording enhancement with MP-SENet.
+
+Runs MP-SENet over the entire input recording in one pass (with Hann
+overlap-add chunking for recordings longer than `max_segment_length_s`).
+The result lives in `ctx.enhanced_full` and is sliced per speaker by
+the assembler in Stage 4.
+
+Note: SepFormer in Stage 3b runs on the *original* `ctx.audio`, not on
+this enhanced version. MP-SENet is a denoiser, not a source separator —
+it tends to suppress the quieter speaker in overlapping speech, which
+would degrade SepFormer's input. Keeping the two paths independent is
+intentional.
 
 Uses the vendored MP-SENet code at `asr_pipeline.vendor.mpsenet`. STFT
 preprocessing (compressed-magnitude + unwrapped-phase) is ported inline
@@ -200,46 +211,21 @@ class EnhancementStage(Stage):
     def run(self, ctx: PipelineContext) -> None:
         if self._model is None:
             raise RuntimeError("EnhancementStage.run called before load().")
-        if ctx.partition_df is None:
-            raise RuntimeError(
-                "EnhancementStage.run requires ctx.partition_df "
-                "(RoutingStage must run first)."
-            )
         if ctx.audio is None:
             raise RuntimeError("PipelineContext.audio is None.")
 
-        solo_rows = ctx.partition_df[
-            ctx.partition_df["kind"].str.startswith("solo")
-        ]
-        results: dict[str, dict] = {}
-        for idx, row in solo_rows.iterrows():
-            s_idx = int(row["start"] * ctx.sample_rate)
-            e_idx = int(row["end"] * ctx.sample_rate)
-            raw = ctx.audio[s_idx:e_idx].astype(np.float32)
-            enhanced = self._enhance_region(raw, ctx.sample_rate)
-            key = f"{row['kind']}_#{idx}"
-            results[key] = {
-                "key": key,
-                "start": float(row["start"]),
-                "end": float(row["end"]),
-                "speaker": row["speaker"],
-                "raw": raw,
-                "enhanced": enhanced,
-            }
-        ctx.solo_enhanced = results
+        ctx.enhanced_full = self._enhance_region(
+            ctx.audio.astype(np.float32), ctx.sample_rate
+        )
 
     # ------------------------------------------------------------------
     # Spill
     # ------------------------------------------------------------------
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
-        if not ctx.solo_enhanced:
+        if ctx.enhanced_full is None:
             return
-        for key, seg in ctx.solo_enhanced.items():
-            # `solo-A_#3` -> `solo_solo-A_3.wav` is noisy; flatten the key.
-            safe_key = key.replace("#", "").replace("/", "-")
-            fname = f"{safe_key}.wav"
-            sf.write(
-                artifact_dir / fname,
-                seg["enhanced"].astype(np.float32),
-                ctx.sample_rate,
-            )
+        sf.write(
+            artifact_dir / "enhanced_full.wav",
+            ctx.enhanced_full.astype(np.float32),
+            ctx.sample_rate,
+        )

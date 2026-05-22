@@ -8,10 +8,13 @@ stage fails or is disabled.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+
+
+Interval = Tuple[float, float]
 
 
 @dataclass
@@ -61,12 +64,14 @@ class PipelineContext:
     diarization: Optional[DiarizationResult] = None
 
     # Stage 2 — routing
-    partition_df: Optional[pd.DataFrame] = None    # columns: start, end, duration, kind, speaker
+    # List of (start_s, end_s) overlap intervals (unpadded). SepFormer's
+    # context window is applied independently in Stage 3b.
+    overlap_regions: Optional[List[Interval]] = None
     speakers: List[str] = field(default_factory=list)
 
-    # Stage 3a — solo enhancement
-    # key: region_id (e.g. "solo-A_#3"); value: dict with {start, end, speaker, enhanced (np.ndarray)}
-    solo_enhanced: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Stage 3a — full-recording enhancement (single MP-SENet pass).
+    # Same length as `ctx.audio`; sliced per-speaker at assembly time.
+    enhanced_full: Optional[np.ndarray] = None
 
     # Stage 3b — overlap separation
     # one entry per overlap region: {start, end, s1, s2, s1_gated, s2_gated, ...}
