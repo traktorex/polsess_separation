@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import gc
 import json
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +54,17 @@ from asr_pipeline.context import (
     TimestampMapEntry,
 )
 from asr_pipeline.stages.base import Stage
+
+
+def _log(msg: str) -> None:
+    """Progress print for the assembly stage.
+
+    Uses print(flush=True) rather than logging so messages appear in Jupyter
+    cells immediately without basicConfig. Assembly is the stage most likely
+    to stall on long recordings (giant ECAPA forward on the anchor concat),
+    so visible progress is valuable.
+    """
+    print(f"[assembly] {msg}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -195,19 +207,26 @@ def _match_overlap_rms_to_solo(events_for_spk: list[dict]) -> None:
             e["audio"] = (e["audio"] * (target / r)).astype(np.float32)
 
 
-def _apply_crossfade(audio: np.ndarray, n_samples: int) -> np.ndarray:
-    """Apply a half-Hann fade-in and fade-out to the first/last `n_samples`.
+def _apply_fade(audio: np.ndarray, in_n: int, out_n: int) -> np.ndarray:
+    """Apply a half-Hann fade-in (`in_n` samples) and fade-out (`out_n`
+    samples) to the audio's edges. `in_n` and `out_n` may differ — the
+    assembler uses a longer fade for piece-to-piece seams (crossfade_ms)
+    and a shorter one at the stream's outermost edges (edge_fade_ms).
 
-    Used to smooth piece boundaries (silence→piece in shortened mode,
-    piece→piece in full_length mode). Returns a new array; input untouched.
-    No-op if `n_samples <= 0` or the piece is shorter than `2 * n_samples`.
+    Returns a new array; input untouched. If a piece is too short to fit
+    both fades, each one is capped at half the piece length.
     """
-    if n_samples <= 0 or len(audio) < 2 * n_samples:
+    if (in_n <= 0 and out_n <= 0) or len(audio) == 0:
         return audio
     out = audio.copy()
-    ramp = np.hanning(2 * n_samples).astype(np.float32)
-    out[:n_samples] *= ramp[:n_samples]
-    out[-n_samples:] *= ramp[n_samples:]
+    in_n = min(in_n, len(out) // 2)
+    out_n = min(out_n, len(out) // 2)
+    if in_n > 0:
+        ramp_in = np.hanning(2 * in_n)[:in_n].astype(np.float32)
+        out[:in_n] *= ramp_in
+    if out_n > 0:
+        ramp_out = np.hanning(2 * out_n)[out_n:].astype(np.float32)
+        out[-out_n:] *= ramp_out
     return out
 
 
@@ -278,6 +297,12 @@ class AssemblyStage(Stage):
         speakers = ctx.speakers
         spk_to_label = {spk: chr(ord("A") + i) for i, spk in enumerate(speakers)}
 
+        n_overlaps = len(ctx.overlap_separated) if ctx.overlap_separated else 0
+        _log(
+            f"start: {len(speakers)} speakers, {n_overlaps} overlap regions, "
+            f"recording {len(enhanced)/sr:.1f}s"
+        )
+
         # -- Per-speaker solo intervals ----------------------------------------
         # Subtract the *emit* regions (from Stage 3b), not the raw overlap
         # regions from Stage 2. When seam_mode="snap_to_silence" extends emit
@@ -308,27 +333,46 @@ class AssemblyStage(Stage):
             return out
 
         # -- Anchors per speaker -----------------------------------------------
+        # Note: a giant solo concat (e.g. 400s on a 949s recording) fed to ECAPA
+        # in a single forward will either OOM or stall the GPU. If we observe
+        # that pattern in the logs below, the next change is to cap the anchor
+        # input length (e.g. sample 30s of solo audio per speaker for embedding).
         anchors: dict[str, Optional[torch.Tensor]] = {}
         solo_durations: dict[str, float] = {}
+        _log("computing speaker anchors via ECAPA...")
         for spk in speakers:
+            t0 = time.perf_counter()
             slices = _slice_enhanced(solo_intervals_by_spk[spk])
             if slices:
                 concat = np.concatenate(slices)
             else:
                 concat = np.zeros(16, dtype=np.float32)
             solo_durations[spk] = len(concat) / sr
+            _log(
+                f"  speaker {spk!r}: {len(solo_intervals_by_spk[spk])} solo intervals, "
+                f"concat {len(concat)/sr:.1f}s — embedding..."
+            )
             if len(concat) >= sr // 4:
                 anchors[spk] = _ecapa_embed(
                     concat, self._ecapa, self._device, sr
                 ).cpu()
             else:
                 anchors[spk] = None
+            _log(
+                f"  speaker {spk!r}: anchor done in {time.perf_counter()-t0:.2f}s "
+                f"(anchor={'set' if anchors[spk] is not None else 'None (too short)'})"
+            )
 
         weak_anchor = any(d < cfg.min_solo_for_anchor_s for d in solo_durations.values())
+        if weak_anchor:
+            _log(f"weak_anchor=True (min solo duration {min(solo_durations.values()):.2f}s "
+                 f"< min_solo_for_anchor_s={cfg.min_solo_for_anchor_s})")
 
         # -- Per-overlap speaker assignment ----------------------------
+        _log(f"assigning {n_overlaps} overlaps to speakers via ECAPA cosine...")
+        t_overlap_start = time.perf_counter()
         assignments: list[dict] = []
-        for ovl in ctx.overlap_separated:
+        for i_ovl, ovl in enumerate(ctx.overlap_separated):
             if len(ovl["s1_gated"]) < sr // 10:
                 continue
             emb1 = _ecapa_embed(ovl["s1_gated"], self._ecapa, self._device, sr).cpu()
@@ -369,8 +413,15 @@ class AssemblyStage(Stage):
                 "pairing": pairing,
                 "emit_pieces": emit_pieces,
             })
+            # Periodic progress every 10 overlaps so long recordings show signs of life.
+            if (i_ovl + 1) % 10 == 0 or i_ovl + 1 == n_overlaps:
+                _log(
+                    f"  assigned {i_ovl+1}/{n_overlaps} overlaps "
+                    f"({time.perf_counter()-t_overlap_start:.1f}s elapsed)"
+                )
 
         # -- Build per-speaker events list (sorted by original time) ----
+        _log("building per-speaker event lists + post-processing...")
         events: dict[str, list[dict]] = {spk: [] for spk in speakers}
         for spk in speakers:
             for s, e in solo_intervals_by_spk[spk]:
@@ -411,14 +462,24 @@ class AssemblyStage(Stage):
                 for e, r in zip(events[spk], rescaled):
                     e["audio"] = r.astype(np.float32)
 
-        # -- Short edge fade on every piece (eliminates seam clicks) ---------
-        if cfg.crossfade_ms > 0:
+        # -- Edge fades (eliminates seam clicks) -----------------------------
+        # crossfade_ms is used at internal piece-to-piece seams; edge_fade_ms
+        # at the very first piece's start and the very last piece's end (the
+        # only neighbour there is silence outside the stream, so the fade
+        # doesn't need to be as long).
+        if cfg.crossfade_ms > 0 or cfg.edge_fade_ms > 0:
             crossfade_n = int(cfg.crossfade_ms * sr / 1000)
+            edge_fade_n = int(cfg.edge_fade_ms * sr / 1000)
             for spk in speakers:
-                for e in events[spk]:
-                    e["audio"] = _apply_crossfade(e["audio"], crossfade_n)
+                spk_events = events[spk]
+                n_events = len(spk_events)
+                for i, e in enumerate(spk_events):
+                    in_n = edge_fade_n if i == 0 else crossfade_n
+                    out_n = edge_fade_n if i == n_events - 1 else crossfade_n
+                    e["audio"] = _apply_fade(e["audio"], in_n, out_n)
 
         # -- Concatenate (mode-dependent) -------------------------------
+        _log(f"concatenating per-speaker streams (mode={cfg.output_mode})...")
         assembled: dict[str, np.ndarray] = {}
         timestamp_map = TimestampMap(weak_anchor=weak_anchor, per_speaker={})
         if cfg.output_mode == "shortened":
@@ -479,6 +540,13 @@ class AssemblyStage(Stage):
         ctx.spk_to_label = spk_to_label
         ctx.timestamp_map = timestamp_map
         ctx.weak_anchor = weak_anchor
+        for spk, audio in assembled.items():
+            _log(
+                f"  speaker {spk!r} ({spk_to_label.get(spk, spk)}): "
+                f"{len(audio)/sr:.2f}s assembled, "
+                f"{len(timestamp_map.per_speaker.get(spk, []))} pieces"
+            )
+        _log("done.")
 
     # ------------------------------------------------------------------
     # Spill

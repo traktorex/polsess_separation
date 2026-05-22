@@ -47,21 +47,96 @@ _MIN_OVERLAP_SAMPLES = 256  # POC's lower bound for "long enough to be worth sep
 # ---------------------------------------------------------------------------
 
 
+def _soft_threshold_mask(
+    probs: np.ndarray, upper: float, lower: float
+) -> np.ndarray:
+    """Schmitt-trigger style frame mask.
+
+    Frames with prob > `upper` are always speech ("strong"). Frames with prob
+    > `lower` are speech *only* if they're connected to a strong frame
+    through an unbroken chain of also-near-threshold frames (propagated both
+    forward and backward in time). Frames at or below `lower` are silence.
+
+    Captures speech tails/onsets where the model dipped below the strict
+    threshold but is still seeing some evidence of speech.
+    """
+    strong = probs > upper
+    if not lower or lower >= upper:
+        return strong.astype(np.float32)
+    weak = probs > lower
+    mask = strong.copy()
+    # Forward propagation: extend speech rightward through weak frames.
+    for i in range(1, len(probs)):
+        if mask[i - 1] and weak[i]:
+            mask[i] = True
+    # Backward propagation: extend speech leftward through weak frames.
+    for i in range(len(probs) - 2, -1, -1):
+        if mask[i + 1] and weak[i]:
+            mask[i] = True
+    return mask.astype(np.float32)
+
+
+def _dilate_mask(
+    mask_frames: np.ndarray, attack_frames: int, release_frames: int
+) -> np.ndarray:
+    """Extend each speech run by fixed frame counts at onset/offset.
+
+    Adds `attack_frames` of speech before each onset (0→1) and
+    `release_frames` of speech after each offset (1→0). No-op when both
+    counts are 0.
+    """
+    if attack_frames <= 0 and release_frames <= 0:
+        return mask_frames
+    out = mask_frames.astype(bool).copy()
+    n = len(out)
+    padded = np.concatenate(([False], out, [False]))
+    diff = np.diff(padded.astype(np.int8))
+    onsets = np.where(diff == 1)[0]
+    offsets = np.where(diff == -1)[0]
+    for onset in onsets:
+        lo = max(0, onset - attack_frames)
+        out[lo:onset] = True
+    for offset in offsets:
+        hi = min(n, offset + release_frames)
+        out[offset:hi] = True
+    return out.astype(np.float32)
+
+
 def _vad_mask_silero(
     audio_16k: np.ndarray,
     vad_model,
     device: torch.device,
     threshold: float,
-) -> np.ndarray:
-    """Per-sample VAD mask (1 = speech, 0 = silence) at 16 kHz.
+    soft_threshold: float = 0.0,
+    attack_frames: int = 0,
+    release_frames: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-sample VAD mask + raw per-frame probabilities at 16 kHz.
 
-    Frames are 512 samples (silero's required window size). The mask is
-    expanded back to sample resolution by repeating each frame's decision.
+    Returns ``(full_mask, probs)``:
+      - ``full_mask``: shape (n_samples,), 1.0 = speech, 0.0 = silence
+      - ``probs``: shape (n_frames,), raw silero output per 512-sample frame
+
+    Frames are 512 samples (silero's required window size at 16 kHz). The
+    final mask is built in three steps:
+
+    1. Run silero per non-overlapping 512-sample frame → probability per frame.
+    2. Threshold to a frame mask. When `soft_threshold > 0` and < `threshold`,
+       use a Schmitt-trigger style soft threshold (see `_soft_threshold_mask`);
+       otherwise a strict threshold.
+    3. Optionally dilate the frame mask by `attack_frames` / `release_frames`.
+
+    Then expand frame-resolution mask to sample resolution by repeating each
+    frame's decision over its 512 samples.
+
+    Returning the raw `probs` alongside the mask lets the notebook plot the
+    actual VAD curve next to the binary mask, so the user can see *why* a
+    given region was gated.
     """
     audio = torch.from_numpy(audio_16k).to(device)
     n = int(audio.numel())
     if n < _SILERO_WINDOW:
-        return np.ones(n, dtype=np.float32)
+        return np.ones(n, dtype=np.float32), np.ones(0, dtype=np.float32)
     n_windows = n // _SILERO_WINDOW
     probs = np.zeros(n_windows, dtype=np.float32)
     vad_model.reset_states()
@@ -70,12 +145,15 @@ def _vad_mask_silero(
             chunk = audio[i * _SILERO_WINDOW : (i + 1) * _SILERO_WINDOW]
             p = vad_model(chunk.unsqueeze(0), 16_000)
             probs[i] = p.item() if hasattr(p, "item") else float(p)
-    mask_frames = (probs > threshold).astype(np.float32)
+
+    mask_frames = _soft_threshold_mask(probs, upper=threshold, lower=soft_threshold)
+    mask_frames = _dilate_mask(mask_frames, attack_frames, release_frames)
+
     full_mask = np.zeros(n, dtype=np.float32)
     for i, m in enumerate(mask_frames):
         full_mask[i * _SILERO_WINDOW : (i + 1) * _SILERO_WINDOW] = m
     full_mask[n_windows * _SILERO_WINDOW :] = 1.0  # leftover tail: keep as speech
-    return full_mask
+    return full_mask, probs
 
 
 # ---------------------------------------------------------------------------
@@ -94,16 +172,66 @@ def _window_none(start_s: float, end_s: float) -> _Window:
     return _Window(pad_start_s=start_s, pad_end_s=end_s)
 
 
+def _signal_aware_pad(
+    start_s: float,
+    end_s: float,
+    total_duration_s: float,
+    target_total_s: float,
+) -> tuple[float, float]:
+    """Distribute pad to reach `target_total_s` total window length, biased
+    toward the side with available room.
+
+    Tries a symmetric split first. When one side hits a recording boundary
+    (0 or `total_duration_s`), the leftover budget is redistributed to the
+    other side. This gives the separator more useful context when the
+    overlap sits near the start or end of the recording — where one side
+    has effectively no signal to draw from anyway.
+
+    Returns (pad_start_s, pad_end_s). May be narrower than `target_total_s`
+    if the recording itself is shorter.
+    """
+    overlap_dur = end_s - start_s
+    if target_total_s <= overlap_dur:
+        return start_s, end_s
+    extra = target_total_s - overlap_dur
+    room_left = start_s
+    room_right = max(0.0, total_duration_s - end_s)
+    left_take = extra / 2.0
+    right_take = extra / 2.0
+    # Spill from saturated side to the other.
+    if left_take > room_left:
+        right_take += left_take - room_left
+        left_take = room_left
+    if right_take > room_right:
+        left_take += right_take - room_right
+        right_take = room_right
+    # Final clamp (both sides may be saturated; rest of `extra` is lost).
+    left_take = min(left_take, room_left)
+    right_take = min(right_take, room_right)
+    return start_s - left_take, end_s + right_take
+
+
 def _window_fixed_pad(
     start_s: float,
     end_s: float,
     total_duration_s: float,
     context_pad_s: float,
+    min_fragment_length_s: float = 0.0,
 ) -> _Window:
-    return _Window(
-        pad_start_s=max(0.0, start_s - context_pad_s),
-        pad_end_s=min(total_duration_s, end_s + context_pad_s),
+    """Symmetric `±context_pad_s` window, with two extensions:
+
+    - If the resulting total window would be shorter than
+      `min_fragment_length_s`, the window is widened (via `_signal_aware_pad`)
+      until it reaches that floor.
+    - When one side hits a recording boundary, the unused budget is
+      redistributed to the other side.
+    """
+    overlap_dur = end_s - start_s
+    target_total = max(overlap_dur + 2 * context_pad_s, min_fragment_length_s)
+    pad_start, pad_end = _signal_aware_pad(
+        start_s, end_s, total_duration_s, target_total
     )
+    return _Window(pad_start_s=pad_start, pad_end_s=pad_end)
 
 
 def _window_snap_to_vad(
@@ -116,18 +244,21 @@ def _window_snap_to_vad(
     device: torch.device,
     vad_threshold: float,
     sample_rate: int,
+    min_fragment_length_s: float = 0.0,
 ) -> _Window:
-    """Pad symmetrically toward `target_total_s`, snap each boundary to a
-    nearby VAD-silent position so the separator doesn't see a cut mid-utterance.
+    """Pad asymmetrically toward `max(target_total_s, min_fragment_length_s)`,
+    then snap each boundary to a nearby VAD-silent position so the separator
+    doesn't see a cut mid-utterance.
 
-    If no silence exists in the candidate pad range, falls back to the
-    fixed-pad target boundary on that side.
+    The padding distribution uses `_signal_aware_pad`, so when one side hits
+    the recording boundary the leftover budget moves to the other side
+    instead of being lost. If no silence exists in the candidate pad range,
+    falls back to the asymmetric pad target on that side.
     """
-    overlap_dur = end_s - start_s
-    available_pad = max(0.0, target_total_s - overlap_dur)
-    max_pad_each_side = available_pad / 2.0
-    target_pad_start_s = max(0.0, start_s - max_pad_each_side)
-    target_pad_end_s = min(total_duration_s, end_s + max_pad_each_side)
+    effective_target = max(target_total_s, min_fragment_length_s)
+    target_pad_start_s, target_pad_end_s = _signal_aware_pad(
+        start_s, end_s, total_duration_s, effective_target
+    )
 
     if target_pad_start_s >= start_s and target_pad_end_s <= end_s:
         return _Window(pad_start_s=start_s, pad_end_s=end_s)
@@ -136,7 +267,7 @@ def _window_snap_to_vad(
     lo = int(target_pad_start_s * sample_rate)
     hi = int(target_pad_end_s * sample_rate)
     region = audio_16k[lo:hi]
-    mask = _vad_mask_silero(region, vad_model, device, vad_threshold)
+    mask, _probs = _vad_mask_silero(region, vad_model, device, vad_threshold)
 
     # Left side: candidate range = [target_pad_start, start]. Among silent
     # samples there, prefer the earliest (max pad with silent boundary).
@@ -489,9 +620,22 @@ class SeparationStage(Stage):
                 s1_raw, s2_raw, mix, cfg.volume_normalization
             )
 
-            # VAD gate on each output stream.
-            mask1 = _vad_mask_silero(s1_raw, self._vad, device, cfg.vad_threshold)
-            mask2 = _vad_mask_silero(s2_raw, self._vad, device, cfg.vad_threshold)
+            # VAD gate on each output stream. Soft-threshold + attack/release
+            # dilation only applied here (where speech preservation matters);
+            # the snap_to_vad context-window logic uses strict thresholding via
+            # its own _vad_mask_silero call so it sees clean silence boundaries.
+            mask1, probs1 = _vad_mask_silero(
+                s1_raw, self._vad, device, cfg.vad_threshold,
+                soft_threshold=cfg.vad_soft_threshold,
+                attack_frames=cfg.vad_attack_frames,
+                release_frames=cfg.vad_release_frames,
+            )
+            mask2, probs2 = _vad_mask_silero(
+                s2_raw, self._vad, device, cfg.vad_threshold,
+                soft_threshold=cfg.vad_soft_threshold,
+                attack_frames=cfg.vad_attack_frames,
+                release_frames=cfg.vad_release_frames,
+            )
             s1_gated = s1_raw * mask1
             s2_gated = s2_raw * mask2
 
@@ -522,6 +666,11 @@ class SeparationStage(Stage):
                 "s2_gated": s2_gated,
                 "mask1": mask1,
                 "mask2": mask2,
+                # Raw per-frame VAD probabilities (16 kHz audio -> 512-sample
+                # frames -> 32 ms per frame). Lets the notebook plot the actual
+                # silero curve next to the binary mask.
+                "probs1": probs1,
+                "probs2": probs2,
             })
 
         ctx.overlap_separated = results
@@ -542,7 +691,9 @@ class SeparationStage(Stage):
             return _window_none(start_s, end_s)
         if mode == "fixed_pad":
             return _window_fixed_pad(
-                start_s, end_s, total_dur, self.config.context_pad_seconds
+                start_s, end_s, total_dur,
+                context_pad_s=self.config.context_pad_seconds,
+                min_fragment_length_s=self.config.min_fragment_length_s,
             )
         if mode == "snap_to_vad":
             assert self._vad is not None and self._device is not None
@@ -556,6 +707,7 @@ class SeparationStage(Stage):
                 device=self._device,
                 vad_threshold=self.config.vad_threshold,
                 sample_rate=sr,
+                min_fragment_length_s=self.config.min_fragment_length_s,
             )
         raise ValueError(f"Unknown context_window_mode: {mode!r}")
 
@@ -619,6 +771,7 @@ class SeparationStage(Stage):
             "knobs": {
                 "context_window_mode": self.config.context_window_mode,
                 "context_pad_seconds": self.config.context_pad_seconds,
+                "min_fragment_length_s": self.config.min_fragment_length_s,
                 "training_chunk_length_s": self.config.training_chunk_length_s,
                 "seam_mode": self.config.seam_mode,
                 "seam_search_radius_s": self.config.seam_search_radius_s,

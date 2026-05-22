@@ -110,6 +110,15 @@ class SeparationConfig:
     # picks the more-considered `snap_to_vad` choice from the design discussion.
     context_window_mode: str = "snap_to_vad"   # "snap_to_vad" | "fixed_pad" | "none"
     context_pad_seconds: float = 1.0            # used by `fixed_pad`
+    # Minimum total padded-window length sent to the separator (seconds).
+    # Short overlaps (e.g. 0.4 s) padded by `context_pad_seconds` may still be
+    # well under the separator's training chunk length, leaving it with little
+    # context. When the natural pad fails to reach this floor, the helpers
+    # extend the window further until it does. Asymmetric: if one side hits
+    # the recording boundary, the leftover budget is redistributed to the
+    # other side so the available context is maximised. Ignored when
+    # `context_window_mode == "none"` (the user explicitly opted out of pad).
+    min_fragment_length_s: float = 4.0
 
     # Seam strategy: where the boundary between separated 8k output and the
     # surrounding 16k solo audio is placed when the padded window exceeds the
@@ -139,7 +148,22 @@ class SeparationConfig:
     volume_normalization: str = "sum_equals_mix"  # "sum_equals_mix" | "match_solo" | "none"
 
     # VAD applied to each separator output to suppress residuals.
+    # `vad_threshold` is the "definitely speech" upper bound. Frames above it
+    # always become part of the speech mask.
     vad_threshold: float = 0.50
+    # Schmitt-trigger style lower threshold. Frames between
+    # `vad_soft_threshold` and `vad_threshold` count as speech *only* if they
+    # extend a chain that touches a frame above `vad_threshold` (propagated
+    # both forward and backward). This captures tails/onsets where silero is
+    # less confident — common on neural-separator outputs. Set to a value
+    # >= `vad_threshold` to disable (mask becomes a strict threshold).
+    vad_soft_threshold: float = 0.20
+    # Fixed positional dilation in 32 ms frames applied on top of the
+    # threshold mask. Extends each speech run by `vad_attack_frames` before
+    # its onset and `vad_release_frames` after its offset, regardless of
+    # frame probability. Set both to 0 to disable.
+    vad_attack_frames: int = 1
+    vad_release_frames: int = 1
     vad_mode: str = "silero"                    # "silero" | "energy" (energy = NotImplemented)
 
 
@@ -154,11 +178,14 @@ class AssemblyConfig:
     #   "full_length"  -> total stream length = input length; gaps filled with silence
     output_mode: str = "shortened"              # "shortened" | "full_length"
     silence_separator_s: float = 0.3
-    # Short half-Hann fade at the start/end of every piece. Eliminates step
-    # discontinuities at solo↔overlap seams (shortened mode: smooths the
-    # silence-to-piece edge; full_length mode: turns the touching-pieces seam
-    # into a butt-joint with fades). Set to 0 to disable.
+    # Half-Hann fade applied at internal piece-to-piece seams (one piece's
+    # fade-out meets the next piece's fade-in). Set to 0 to disable.
     crossfade_ms: float = 5.0
+    # Half-Hann fade applied at the very start of a speaker's first piece
+    # and the very end of their last piece — where the only neighbour is
+    # silence outside the stream. Can be shorter than `crossfade_ms` because
+    # only one side of the seam needs to ramp.
+    edge_fade_ms: float = 2.0
     # Per-speaker RMS match: scale each overlap event so its RMS matches the
     # median RMS of that speaker's solo events. Fixes the common case where
     # SepFormer outputs (with sum_equals_mix normalisation) end up noticeably

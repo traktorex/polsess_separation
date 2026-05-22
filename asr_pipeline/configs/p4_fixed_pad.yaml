@@ -30,12 +30,16 @@ separation:
   training_chunk_length_s: 4.0
   context_window_mode: fixed_pad
   context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
   seam_mode: zero_crossing
   seam_search_radius_s: 0.05
   snap_silence_max_extend_s: 0.3
   overlap_add_threshold_s: 12.0
   volume_normalization: sum_equals_mix
   vad_threshold: 0.50
+  vad_soft_threshold: 0.20
+  vad_attack_frames: 1
+  vad_release_frames: 1
   vad_mode: silero
 
 assembly:
@@ -44,6 +48,7 @@ assembly:
   output_mode: shortened
   silence_separator_s: 0.3
   crossfade_ms: 5.0
+  edge_fade_ms: 2.0
   overlap_rms_match_solo: true
   per_piece_rms_norm: false
   target_rms: null
