@@ -10,7 +10,7 @@ data:
   prefetch_factor: 2
   task: SB
   train_max_samples: 128000
-  val_max_samples: 1024  # ~5 min/epoch per-variant validation (8 variants × 1024 / batch 2).
+  val_max_samples: null
 
 model:
   model_type: sepformer

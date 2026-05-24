@@ -15,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_new_64/PolSESS_C_new_64",
+            "/home/user/datasets/PolSESS_C_final_128_v2",
         )
     )
 
