@@ -40,6 +40,11 @@ class DiarizationStage(Stage):
             self.config.model_id, token=token
         ).to(device)
 
+    def load_signature(self) -> tuple:
+        # `num_speakers` is a runtime knob passed at call time, not a model
+        # identity — so only model_id triggers a reload.
+        return (self.config.model_id,)
+
     def run(self, ctx: PipelineContext) -> None:
         if self._pipeline is None:
             raise RuntimeError("DiarizationStage.run called before load().")

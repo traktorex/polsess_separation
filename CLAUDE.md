@@ -107,7 +107,13 @@ jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipelin
 
 **ASR subsystem (`asr/`):** Two distinct pipelines for different recording regimes.
 - `evaluate_asr.py` / `evaluate_asr_intrusive.py` (+ `dataset.py`, `transcribe.py`, `metrics.py`): one-shot pipeline — separate the whole recording, then run ASR on each source. Targets REAL-M and the synthetic LibriMix-based dataset, which assume both speakers talking concurrently most of the time. Predates access to CLARIN.
-- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap. Builds a per-speaker stream using diarization and separates only the overlap regions. This is the pipeline planned for the final CLARIN-based thesis evaluation.
+- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap. Builds a per-speaker stream using diarization and separates only the overlap regions.
+- `explore_pipeline.ipynb`: interactive frontend for the productionised pipeline in `asr_pipeline/` — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
+- `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels — DER (diarization), SI-SDR/SI-SDRi (separation), cpWER (ASR). Backed by `asr_pipeline/eval/`.
+
+**`asr_pipeline/` package** — productionised pipeline (`Pipeline` orchestrator + six stages: diarization → routing → enhancement → separation → assembly → transcription). Phase-major execution (one model loaded at a time). Config via nested dataclasses + YAML; configs in `asr_pipeline/configs/`. Debug logs go to `/tmp/asr_pipeline_debug.log` (override with `ASR_PIPELINE_DEBUG_LOG`) — useful when VSCode WSL bridge drops and stdout becomes unreachable.
+
+**`asr_pipeline/eval/`** — evaluation helpers reused by `evaluate_pipeline.ipynb`: `parse_transcript_file`, `si_sdr`, `find_speaker_permutation`, `cpwer`, `compute_der`. CLARIN debleed dataset lives under `~/datasets/clarin_gotowy/gotowy/` (root = `<id>.wav` stereo inputs; `debleed/<id>_{L,R}.wav` = oracle per-speaker channels; `after_pipeline/<id>_{s1,s2}.wav` = pipeline outputs; `transcripts/<id>.txt` = pipeline transcripts; `eval_cache/` = cached enhanced oracles + reference Whisper transcripts).
 
 **Training Flow:** `train.py` → config → dataloaders → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning).
 

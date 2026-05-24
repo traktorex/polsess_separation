@@ -71,6 +71,11 @@ class TranscriptionStage(Stage):
         self._model = whisper.load_model(self.config.model_name, device=str(device))
         self._device = device
 
+    def load_signature(self) -> tuple:
+        # language / initial_prompt / word_timestamps are per-call args, not
+        # model identity — only model_name triggers a reload.
+        return (self.config.model_name,)
+
     def unload(self) -> None:
         self._model = None
         self._device = None

@@ -53,18 +53,15 @@ from asr_pipeline.context import (
     TimestampMap,
     TimestampMapEntry,
 )
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
 
 
 def _log(msg: str) -> None:
-    """Progress print for the assembly stage.
-
-    Uses print(flush=True) rather than logging so messages appear in Jupyter
-    cells immediately without basicConfig. Assembly is the stage most likely
-    to stall on long recordings (giant ECAPA forward on the anchor concat),
-    so visible progress is valuable.
+    """Progress message for the assembly stage. Writes to both stdout and
+    the debug log file (so messages survive VSCode WSL kernel disconnects).
     """
-    print(f"[assembly] {msg}", flush=True)
+    dlog("assembly", msg)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +120,36 @@ def _ecapa_embed(
     emb = ecapa.encode_batch(audio).squeeze(0).squeeze(0)
     emb = emb / (emb.norm() + 1e-8)
     return emb
+
+
+def _cap_anchor_audio(
+    audio_16k: np.ndarray, sample_rate: int, max_duration_s: Optional[float]
+) -> np.ndarray:
+    """Cap anchor audio length by uniformly subsampling 1-second chunks.
+
+    ECAPA is fed in a single forward pass; on a long recording the per-speaker
+    solo concat (e.g. 400 s) blows up GPU memory or stalls the kernel. This
+    keeps the concat under `max_duration_s` by selecting evenly-spaced
+    1-second chunks across the original concat, so the sample still covers
+    the speaker's full timeline rather than just the start.
+
+    `max_duration_s=None` (or audio already short enough) returns the input
+    unchanged.
+    """
+    if max_duration_s is None:
+        return audio_16k
+    cap_samples = int(max_duration_s * sample_rate)
+    if len(audio_16k) <= cap_samples:
+        return audio_16k
+    chunk_samples = sample_rate            # 1 s chunks
+    n_chunks = max(1, cap_samples // chunk_samples)
+    total_chunks = max(1, len(audio_16k) // chunk_samples)
+    if n_chunks >= total_chunks:
+        return audio_16k[:cap_samples]
+    # Evenly-spaced start indices for the chunks.
+    starts = np.linspace(0, len(audio_16k) - chunk_samples, n_chunks).astype(int)
+    pieces = [audio_16k[s : s + chunk_samples] for s in starts]
+    return np.concatenate(pieces).astype(np.float32)
 
 
 def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
@@ -250,6 +277,8 @@ class AssemblyStage(Stage):
     def load(self, device: torch.device) -> None:
         from speechbrain.inference.speaker import EncoderClassifier
 
+        _log(f"load: instantiating ECAPA encoder on {device}...")
+        t0 = time.perf_counter()
         cache_dir = Path.cwd() / ".cache" / "ecapa"
         cache_dir.mkdir(parents=True, exist_ok=True)
         ecapa = EncoderClassifier.from_hparams(
@@ -260,6 +289,7 @@ class AssemblyStage(Stage):
         ecapa.eval()
         self._ecapa = ecapa
         self._device = device
+        _log(f"load: ECAPA ready ({time.perf_counter()-t0:.2f}s)")
 
     def unload(self) -> None:
         self._ecapa = None
@@ -272,6 +302,10 @@ class AssemblyStage(Stage):
     # Run
     # ------------------------------------------------------------------
     def run(self, ctx: PipelineContext) -> None:
+        # Logged unconditionally so we can confirm we entered run() at all
+        # even when something later hangs. (Used to diagnose long-recording
+        # stalls where the kernel froze before any other logging printed.)
+        _log("run: entered")
         if self._ecapa is None or self._device is None:
             raise RuntimeError("AssemblyStage.run called before load().")
         if ctx.enhanced_full is None:
@@ -333,13 +367,14 @@ class AssemblyStage(Stage):
             return out
 
         # -- Anchors per speaker -----------------------------------------------
-        # Note: a giant solo concat (e.g. 400s on a 949s recording) fed to ECAPA
-        # in a single forward will either OOM or stall the GPU. If we observe
-        # that pattern in the logs below, the next change is to cap the anchor
-        # input length (e.g. sample 30s of solo audio per speaker for embedding).
+        # Solo concat is capped at `anchor_max_duration_s` (default 30s) via
+        # `_cap_anchor_audio` before being fed to ECAPA. Without this cap, long
+        # recordings (e.g. 949s with 400+s of solo per speaker) cause ECAPA's
+        # single-forward `encode_batch` call to OOM the GPU or stall the kernel.
         anchors: dict[str, Optional[torch.Tensor]] = {}
         solo_durations: dict[str, float] = {}
-        _log("computing speaker anchors via ECAPA...")
+        anchor_cap = cfg.anchor_max_duration_s
+        _log(f"computing speaker anchors via ECAPA (anchor_max={anchor_cap}s)...")
         for spk in speakers:
             t0 = time.perf_counter()
             slices = _slice_enhanced(solo_intervals_by_spk[spk])
@@ -348,13 +383,17 @@ class AssemblyStage(Stage):
             else:
                 concat = np.zeros(16, dtype=np.float32)
             solo_durations[spk] = len(concat) / sr
+            anchor_input = _cap_anchor_audio(concat, sr, anchor_cap)
+            capped = len(anchor_input) < len(concat)
             _log(
                 f"  speaker {spk!r}: {len(solo_intervals_by_spk[spk])} solo intervals, "
-                f"concat {len(concat)/sr:.1f}s — embedding..."
+                f"concat {len(concat)/sr:.1f}s"
+                + (f", capped to {len(anchor_input)/sr:.1f}s" if capped else "")
+                + " — calling ECAPA..."
             )
-            if len(concat) >= sr // 4:
+            if len(anchor_input) >= sr // 4:
                 anchors[spk] = _ecapa_embed(
-                    concat, self._ecapa, self._device, sr
+                    anchor_input, self._ecapa, self._device, sr
                 ).cpu()
             else:
                 anchors[spk] = None

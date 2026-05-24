@@ -3,8 +3,9 @@
 For each overlap region in `ctx.overlap_regions`:
 
 1. Pick a *context window* around the overlap (``context_window_mode``).
-   The window is fed to the separator; ``snap_to_vad`` and ``fixed_pad``
-   widen it past the original overlap so the separator gets more context.
+   The window is fed to the separator; ``expand_to_chunk`` and
+   ``fixed_pad`` widen it past the original overlap so the separator
+   gets more context.
 2. Run the separator (resample 16 k -> 8 k -> separator -> 8 k -> 16 k).
    For overlaps wider than ``overlap_add_threshold_s`` we chunk + overlap-add.
 3. Volume-normalise the two outputs (``volume_normalization``).
@@ -35,7 +36,18 @@ import torchaudio.functional as AF
 
 from asr_pipeline.config import SeparationConfig
 from asr_pipeline.context import PipelineContext
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
+
+
+def _log(msg: str) -> None:
+    """Separation-stage debug log — file only.
+
+    Used in `unload()` for low-level GPU teardown logging (sync, empty_cache);
+    keeping these out of stdout avoids cluttering the notebook on every
+    stage transition. They remain available via the debug log file.
+    """
+    dlog("separation", msg, to_stdout=False)
 
 
 _SILERO_WINDOW = 512  # silero-vad expects exactly 512 samples per call @ 16 kHz
@@ -234,64 +246,33 @@ def _window_fixed_pad(
     return _Window(pad_start_s=pad_start, pad_end_s=pad_end)
 
 
-def _window_snap_to_vad(
+def _window_expand_to_chunk(
     start_s: float,
     end_s: float,
     total_duration_s: float,
     target_total_s: float,
-    audio_16k: np.ndarray,
-    vad_model,
-    device: torch.device,
-    vad_threshold: float,
-    sample_rate: int,
     min_fragment_length_s: float = 0.0,
 ) -> _Window:
-    """Pad asymmetrically toward `max(target_total_s, min_fragment_length_s)`,
-    then snap each boundary to a nearby VAD-silent position so the separator
-    doesn't see a cut mid-utterance.
+    """Pad asymmetrically so the resulting window is
+    `max(target_total_s, min_fragment_length_s)` seconds wide.
 
-    The padding distribution uses `_signal_aware_pad`, so when one side hits
-    the recording boundary the leftover budget moves to the other side
-    instead of being lost. If no silence exists in the candidate pad range,
-    falls back to the asymmetric pad target on that side.
+    `target_total_s` is typically the separator's training chunk length
+    — feeding it a window of the size it was trained on gives the
+    cleanest separation. Padding distribution uses `_signal_aware_pad`,
+    so when one side hits the recording boundary the leftover budget
+    moves to the other side instead of being lost.
+
+    No utterance-aware boundary adjustment: the separator was trained
+    on mid-utterance crops, so cutting an utterance at the pad boundary
+    doesn't hurt separation quality. Utterance-aware boundary handling
+    belongs in `seam_mode` (which controls the *emit* region — the
+    part actually spliced into the per-speaker stream).
     """
     effective_target = max(target_total_s, min_fragment_length_s)
-    target_pad_start_s, target_pad_end_s = _signal_aware_pad(
+    pad_start, pad_end = _signal_aware_pad(
         start_s, end_s, total_duration_s, effective_target
     )
-
-    if target_pad_start_s >= start_s and target_pad_end_s <= end_s:
-        return _Window(pad_start_s=start_s, pad_end_s=end_s)
-
-    # Compute VAD on the candidate pad regions only (cheaper than the whole mix).
-    lo = int(target_pad_start_s * sample_rate)
-    hi = int(target_pad_end_s * sample_rate)
-    region = audio_16k[lo:hi]
-    mask, _probs = _vad_mask_silero(region, vad_model, device, vad_threshold)
-
-    # Left side: candidate range = [target_pad_start, start]. Among silent
-    # samples there, prefer the earliest (max pad with silent boundary).
-    left_lo_in_region = 0
-    left_hi_in_region = int(start_s * sample_rate) - lo
-    pad_start_s = target_pad_start_s
-    if left_hi_in_region > left_lo_in_region:
-        left_mask = mask[left_lo_in_region:left_hi_in_region]
-        silent_idx = np.where(left_mask < 0.5)[0]
-        if len(silent_idx) > 0:
-            pad_start_s = (lo + silent_idx[0]) / sample_rate
-
-    # Right side: candidate range = [end, target_pad_end]. Among silent
-    # samples, prefer the latest (max pad with silent boundary).
-    right_lo_in_region = int(end_s * sample_rate) - lo
-    right_hi_in_region = hi - lo
-    pad_end_s = target_pad_end_s
-    if right_hi_in_region > right_lo_in_region:
-        right_mask = mask[right_lo_in_region:right_hi_in_region]
-        silent_idx = np.where(right_mask < 0.5)[0]
-        if len(silent_idx) > 0:
-            pad_end_s = (lo + right_lo_in_region + silent_idx[-1]) / sample_rate
-
-    return _Window(pad_start_s=pad_start_s, pad_end_s=pad_end_s)
+    return _Window(pad_start_s=pad_start, pad_end_s=pad_end)
 
 
 # ---------------------------------------------------------------------------
@@ -554,13 +535,32 @@ class SeparationStage(Stage):
         self._vad = vad_model
         self._device = device
 
+    def load_signature(self) -> tuple:
+        # Separator checkpoint + VAD mode both control which weights end up
+        # on the GPU. All other separation knobs (context window mode, seam
+        # mode, VAD thresholds, volume normalisation, etc.) are runtime
+        # behaviour — re-read on every call, no reload needed.
+        return (self.config.checkpoint_path, self.config.vad_mode)
+
     def unload(self) -> None:
+        # Detailed logging here because this method is the prime suspect for
+        # long-recording CUDA deadlocks: a stuck stream from stage 3b will
+        # block `torch.cuda.empty_cache()` indefinitely. The explicit
+        # synchronize() turns a silent hang into a (still long, but visible)
+        # block — we log immediately before and after so the user can see
+        # whether sync or empty_cache is the one that doesn't return.
+        _log("unload: dropping separator + VAD references...")
         self._separator = None
         self._vad = None
         self._device = None
+        _log("unload: gc.collect()...")
         gc.collect()
         if torch.cuda.is_available():
+            _log("unload: torch.cuda.synchronize() ...")
+            torch.cuda.synchronize()
+            _log("unload: torch.cuda.empty_cache() ...")
             torch.cuda.empty_cache()
+        _log("unload: done")
 
     # ------------------------------------------------------------------
     # Run
@@ -621,9 +621,8 @@ class SeparationStage(Stage):
             )
 
             # VAD gate on each output stream. Soft-threshold + attack/release
-            # dilation only applied here (where speech preservation matters);
-            # the snap_to_vad context-window logic uses strict thresholding via
-            # its own _vad_mask_silero call so it sees clean silence boundaries.
+            # dilation applied to keep onset/tail frames in the mask without
+            # admitting between-utterance noise.
             mask1, probs1 = _vad_mask_silero(
                 s1_raw, self._vad, device, cfg.vad_threshold,
                 soft_threshold=cfg.vad_soft_threshold,
@@ -695,18 +694,12 @@ class SeparationStage(Stage):
                 context_pad_s=self.config.context_pad_seconds,
                 min_fragment_length_s=self.config.min_fragment_length_s,
             )
-        if mode == "snap_to_vad":
-            assert self._vad is not None and self._device is not None
-            return _window_snap_to_vad(
+        if mode == "expand_to_chunk":
+            return _window_expand_to_chunk(
                 start_s,
                 end_s,
                 total_dur,
                 target_total_s=self.config.training_chunk_length_s,
-                audio_16k=audio_16k,
-                vad_model=self._vad,
-                device=self._device,
-                vad_threshold=self.config.vad_threshold,
-                sample_rate=sr,
                 min_fragment_length_s=self.config.min_fragment_length_s,
             )
         raise ValueError(f"Unknown context_window_mode: {mode!r}")

@@ -30,7 +30,7 @@ separation:
   checkpoint_path: checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/sepformer_SB_best.pt
   separator_sample_rate: 8000
   training_chunk_length_s: 4.0
-  context_window_mode: snap_to_vad
+  context_window_mode: expand_to_chunk
   context_pad_seconds: 1.0
   min_fragment_length_s: 4.0              # floor for total padded-window length
   seam_mode: snap_to_silence              # zero_crossing | overlap_boundary | snap_to_silence
@@ -44,9 +44,18 @@ separation:
   vad_release_frames: 1                # frames of dilation at speech offset
   vad_mode: silero
 
+super_resolution:
+  enabled: true                       # off by default; separated chunks stay band-limited
+  backend: ap_bwe                       # naive | ap_bwe
+  # PyTorch .pt files are zip archives — point at the file itself, NOT at
+  # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
+  # (extension is ignored by torch.load).
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+
 assembly:
   enabled: true
   min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 30.0             # cap solo audio fed to ECAPA for the anchor
   output_mode: shortened
   silence_separator_s: 0.3
   crossfade_ms: 5.0                       # internal piece-to-piece seam fade

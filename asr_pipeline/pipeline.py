@@ -25,6 +25,7 @@ import torch
 
 from asr_pipeline.config import PipelineConfig
 from asr_pipeline.context import PipelineContext
+from asr_pipeline.debug_log import LOG_PATH, dlog, reset_log
 from asr_pipeline.io import ensure_artifact_dir, load_audio_as_mono_16k
 from asr_pipeline.stages import (
     AssemblyStage,
@@ -33,8 +34,20 @@ from asr_pipeline.stages import (
     RoutingStage,
     SeparationStage,
     Stage,
+    SuperResolutionStage,
     TranscriptionStage,
 )
+
+
+def _log(msg: str) -> None:
+    """Pipeline-orchestrator debug log — file only.
+
+    Orchestrator events (stage transitions, load/unload, empty_cache) are
+    valuable when diagnosing a hang via `tail -f /tmp/asr_pipeline_debug.log`,
+    but they clutter the notebook cell output during normal use. Assembly's
+    own `_log` keeps `to_stdout=True` so user-facing progress stays visible.
+    """
+    dlog("pipeline", msg, to_stdout=False)
 
 
 class Pipeline:
@@ -48,6 +61,7 @@ class Pipeline:
             RoutingStage(config.routing),
             EnhancementStage(config.enhancement),
             SeparationStage(config.separation),
+            SuperResolutionStage(config.super_resolution),
             AssemblyStage(config.assembly),
             TranscriptionStage(config.transcription),
         ]
@@ -57,6 +71,12 @@ class Pipeline:
             else None
         )
         self._current_stage_name: Optional[str] = None
+        # Signature recorded the last time the current stage was loaded.
+        # If the stage's `load_signature()` differs from this on the next
+        # call, the stage is reloaded — this is what lets the user edit a
+        # checkpoint-determining knob (e.g. `cfg.enhancement.backend`) and
+        # re-run the same stage's cell without manually unloading first.
+        self._loaded_signature: tuple = ()
 
     def __repr__(self) -> str:
         active = [s.name for s in self.stages if s.enabled]
@@ -85,7 +105,13 @@ class Pipeline:
     # Interactive API
     # ------------------------------------------------------------------
     def load_audio(self, audio_path: str) -> PipelineContext:
-        """Load audio into a fresh `PipelineContext`. No model touched."""
+        """Load audio into a fresh `PipelineContext`. No model touched.
+
+        Resets the debug log file so a `tail -f` from another terminal sees
+        only the current run's events (instead of accumulating forever).
+        """
+        reset_log()
+        _log(f"load_audio: {audio_path} (debug log at {LOG_PATH})")
         ctx = PipelineContext(
             input_path=Path(audio_path),
             sample_rate=self.config.sample_rate,
@@ -93,21 +119,26 @@ class Pipeline:
         ctx.audio = load_audio_as_mono_16k(
             audio_path, target_sr=self.config.sample_rate
         )
+        _log(f"load_audio: loaded {len(ctx.audio)/ctx.sample_rate:.2f}s audio")
         return ctx
 
     def run_stage(self, stage_name: str, ctx: PipelineContext) -> None:
         """Run one stage by name on `ctx`. Loads the stage's model only if it
         isn't the currently-loaded one; unloads the previously-loaded stage
         first when switching."""
+        _log(f"run_stage({stage_name!r}) called")
         stage = self.get_stage(stage_name)
         if not stage.enabled:
             raise RuntimeError(
                 f"Stage {stage_name!r} is disabled (config.{stage_name}.enabled = False)."
             )
         self._ensure_loaded(stage_name)
+        _log(f"run_stage({stage_name!r}): calling stage.run()")
         stage.run(ctx)
+        _log(f"run_stage({stage_name!r}): stage.run() returned")
         if self.artifact_dir is not None:
             stage.spill(ctx, self.artifact_dir)
+        _log(f"run_stage({stage_name!r}): complete")
 
     def unload(self) -> None:
         """Free the currently-loaded stage's model, if any."""
@@ -115,6 +146,7 @@ class Pipeline:
             return
         self.get_stage(self._current_stage_name).unload()
         self._current_stage_name = None
+        self._loaded_signature = ()
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
         gc.collect()
@@ -132,18 +164,46 @@ class Pipeline:
     def _ensure_loaded(self, stage_name: str) -> None:
         """Make `stage_name` the currently-loaded stage.
 
-        - If it's already loaded: no-op (this is what makes within-stage
-          iteration fast — the user can re-run the same stage without
-          paying the load cost again).
-        - Otherwise: unload whatever is currently loaded, then load this
-          stage's model.
+        - Same stage, same load signature → no-op (this is what makes
+          within-stage iteration fast — the user can re-run the same
+          stage with unchanged model-defining config without paying the
+          load cost again).
+        - Same stage, different signature → unload + reload (the user
+          changed a checkpoint-determining knob between runs).
+        - Different stage → unload current + load new.
         """
+        stage = self.get_stage(stage_name)
+        new_sig = stage.load_signature()
+
         if self._current_stage_name == stage_name:
-            return
-        if self._current_stage_name is not None:
-            self.get_stage(self._current_stage_name).unload()
+            if new_sig == self._loaded_signature:
+                _log(f"_ensure_loaded({stage_name!r}): already loaded, no-op")
+                return
+            _log(
+                f"_ensure_loaded({stage_name!r}): signature changed "
+                f"{self._loaded_signature!r} -> {new_sig!r}, reloading"
+            )
+            stage.unload()
+            self._current_stage_name = None
+            self._loaded_signature = ()
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
             gc.collect()
-        self.get_stage(stage_name).load(self.device)
+        elif self._current_stage_name is not None:
+            prev = self._current_stage_name
+            _log(f"_ensure_loaded({stage_name!r}): unloading previous stage {prev!r}")
+            self.get_stage(prev).unload()
+            self._current_stage_name = None
+            self._loaded_signature = ()
+            if self.device.type == "cuda":
+                _log(f"_ensure_loaded({stage_name!r}): post-unload empty_cache()...")
+                torch.cuda.empty_cache()
+            _log(f"_ensure_loaded({stage_name!r}): post-unload gc.collect()...")
+            gc.collect()
+            _log(f"_ensure_loaded({stage_name!r}): previous stage {prev!r} fully released")
+
+        _log(f"_ensure_loaded({stage_name!r}): calling stage.load()...")
+        stage.load(self.device)
         self._current_stage_name = stage_name
+        self._loaded_signature = new_sig
+        _log(f"_ensure_loaded({stage_name!r}): stage.load() returned (sig={new_sig!r})")

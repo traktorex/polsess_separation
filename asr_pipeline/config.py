@@ -56,9 +56,28 @@ class RoutingConfig:
 
 @dataclass
 class EnhancementConfig:
-    """Stage 3a: speech enhancement on solo regions (MP-SENet, vendored)."""
+    """Stage 3a: speech enhancement on solo regions.
+
+    Multiple backends are supported. The default is the vendored MP-SENet
+    (VoiceBank+DEMAND training distribution, narrow). ClearerVoice-Studio
+    alternatives are trained on broader DNS-Challenge data and handle
+    reverberant / out-of-distribution input more robustly.
+    """
 
     enabled: bool = True
+    # Backend selector:
+    #   - "mpsenet": vendored MP-SENet checkpoint (16k, narrow training dist)
+    #   - "frcrn_se_16k": ClearerVoice FRCRN, DNS-2020 winner, native 16k
+    #   - "mossformer_gan_se_16k": ClearerVoice MossFormer + GAN losses, 16k
+    #   - "mossformer2_se_48k": ClearerVoice MossFormer2, native 48k
+    #     (pipeline at 16k → upsample/downsample handled internally by the
+    #     backend; expect modest extra compute)
+    #   - "deepfilternet": DeepFilterNet3, native 48k, trained on DNS
+    #     Challenge data incl. reverb. Tiny (~2M).
+    # The non-MPSENet backends ignore the `checkpoint_path` / `config_path`
+    # fields below — they self-download to their respective caches on
+    # first use.
+    backend: str = "mpsenet"
     # Path to the MP-SENet generator checkpoint (PyTorch state dict containing
     # the 'generator' key). The vendored model code reads its hyperparameters
     # from a `config.json` placed next to the checkpoint.
@@ -106,9 +125,16 @@ class SeparationConfig:
     training_chunk_length_s: float = 4.0
 
     # Context-window strategy: how much audio around the overlap to feed the
-    # separator. POC behaviour is `none` (no extra context). The default below
-    # picks the more-considered `snap_to_vad` choice from the design discussion.
-    context_window_mode: str = "snap_to_vad"   # "snap_to_vad" | "fixed_pad" | "none"
+    # separator. POC behaviour is `none` (no extra context).
+    #   - "expand_to_chunk": expand the window asymmetrically until it matches
+    #     the separator's training chunk length (`training_chunk_length_s`).
+    #     The separator was trained on mid-utterance crops, so cutting an
+    #     utterance at the pad boundary is fine here — utterance-aware
+    #     boundary handling belongs in `seam_mode` (emit region).
+    #   - "fixed_pad": symmetric ±`context_pad_seconds` window with the same
+    #     `min_fragment_length_s` floor.
+    #   - "none": no extra context (POC behaviour).
+    context_window_mode: str = "expand_to_chunk"   # "expand_to_chunk" | "fixed_pad" | "none"
     context_pad_seconds: float = 1.0            # used by `fixed_pad`
     # Minimum total padded-window length sent to the separator (seconds).
     # Short overlaps (e.g. 0.4 s) padded by `context_pad_seconds` may still be
@@ -168,11 +194,58 @@ class SeparationConfig:
 
 
 @dataclass
+class SuperResolutionConfig:
+    """Stage 3c: bandwidth extension on separated chunks.
+
+    The separator runs at 8 kHz. Stage 3b upsamples its output to 16 kHz
+    numerically via polyphase resampling, but the content stays band-limited
+    to 0–4 kHz. When Stage 4 splices these chunks alongside 16 kHz wideband
+    solo audio from Stage 3a, the assembled stream has a spectral
+    discontinuity at every seam — which can confuse ASR even when Whisper
+    handles low-band-only audio fine in isolation.
+
+    This optional stage applies a neural bandwidth-extension model to each
+    separated chunk so the assembled stream is spectrally consistent.
+
+    Default: disabled. When enabled, only the ``s1_gated`` / ``s2_gated``
+    arrays in ``ctx.overlap_separated`` are touched — solo audio is already
+    wideband from Stage 3a.
+    """
+
+    enabled: bool = False
+    # Backend selector:
+    #   - "naive": no neural model. Input is already 16 kHz numerically
+    #     (separator output upsampled by polyphase resampling); this
+    #     backend is identity. Use it as the A/B baseline against ap_bwe.
+    #   - "ap_bwe": vendored AP-BWE (Lu et al. 2024). Discriminative
+    #     ConvNeXt + STFT dual-stream model, ~22 M params, fully
+    #     convolutional, ~18× real-time on CPU, native 8→16 kHz.
+    #     Requires the user to download the pretrained checkpoint from
+    #     Google Drive (see asr_pipeline/vendor/ap_bwe/README.md).
+    backend: str = "naive"
+    # Path to the AP-BWE generator checkpoint (PyTorch state dict
+    # containing the 'generator' key). Ignored by the "naive" backend.
+    checkpoint_path: str = field(
+        default_factory=lambda: os.getenv(
+            "AP_BWE_CHECKPOINT",
+            "/home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k",
+        )
+    )
+
+
+@dataclass
 class AssemblyConfig:
     """Stage 4: per-speaker stream assembly + timestamp map."""
 
     enabled: bool = True
     min_solo_for_anchor_s: float = 3.0
+    # ECAPA only needs a few seconds of audio for a stable speaker embedding.
+    # On a long recording (e.g. 15 min), the per-speaker solo concat can grow
+    # to hundreds of seconds; feeding that to ECAPA in a single forward either
+    # OOMs the GPU or stalls the kernel. We cap the concat at this length
+    # (taking a uniformly-strided sample so we don't bias toward the start).
+    # Set to None to disable the cap.
+    anchor_max_duration_s: Optional[float] = 30.0
     # Output mode for the assembled per-speaker streams:
     #   "shortened"    -> speech-only concat with `silence_separator_s` between pieces
     #   "full_length"  -> total stream length = input length; gaps filled with silence
@@ -235,13 +308,14 @@ class PipelineConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     enhancement: EnhancementConfig = field(default_factory=EnhancementConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
+    super_resolution: SuperResolutionConfig = field(default_factory=SuperResolutionConfig)
     assembly: AssemblyConfig = field(default_factory=AssemblyConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
 
     def __post_init__(self):
         # Validate enum-string knobs early so misconfiguration is loud.
         if self.separation.context_window_mode not in (
-            "snap_to_vad", "fixed_pad", "none",
+            "expand_to_chunk", "fixed_pad", "none",
         ):
             raise ValueError(
                 f"Invalid context_window_mode: {self.separation.context_window_mode!r}"
@@ -260,6 +334,20 @@ class PipelineConfig:
             raise ValueError(f"Invalid vad_mode: {self.separation.vad_mode!r}")
         if self.assembly.output_mode not in ("shortened", "full_length"):
             raise ValueError(f"Invalid output_mode: {self.assembly.output_mode!r}")
+        if self.enhancement.backend not in (
+            "mpsenet",
+            "frcrn_se_16k",
+            "mossformer_gan_se_16k",
+            "mossformer2_se_48k",
+            "deepfilternet",
+        ):
+            raise ValueError(
+                f"Invalid enhancement.backend: {self.enhancement.backend!r}"
+            )
+        if self.super_resolution.backend not in ("naive", "ap_bwe"):
+            raise ValueError(
+                f"Invalid super_resolution.backend: {self.super_resolution.backend!r}"
+            )
 
         if self.spill_intermediate and self.artifact_dir is None:
             raise ValueError(
@@ -287,6 +375,7 @@ def load_pipeline_config_from_dict(config_dict: dict) -> PipelineConfig:
         ("routing", RoutingConfig),
         ("enhancement", EnhancementConfig),
         ("separation", SeparationConfig),
+        ("super_resolution", SuperResolutionConfig),
         ("assembly", AssemblyConfig),
         ("transcription", TranscriptionConfig),
     ):

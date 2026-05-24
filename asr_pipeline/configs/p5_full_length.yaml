@@ -29,7 +29,7 @@ separation:
   checkpoint_path: checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/sepformer_SB_best.pt
   separator_sample_rate: 8000
   training_chunk_length_s: 4.0
-  context_window_mode: snap_to_vad
+  context_window_mode: expand_to_chunk
   context_pad_seconds: 1.0
   min_fragment_length_s: 4.0
   seam_mode: zero_crossing
@@ -46,6 +46,7 @@ separation:
 assembly:
   enabled: true
   min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 30.0
   output_mode: full_length
   silence_separator_s: 0.3
   crossfade_ms: 5.0
