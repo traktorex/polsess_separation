@@ -216,21 +216,43 @@ class SuperResolutionConfig:
     # Backend selector:
     #   - "naive": no neural model. Input is already 16 kHz numerically
     #     (separator output upsampled by polyphase resampling); this
-    #     backend is identity. Use it as the A/B baseline against ap_bwe.
+    #     backend is identity. Use it as the A/B baseline against the
+    #     neural backends.
     #   - "ap_bwe": vendored AP-BWE (Lu et al. 2024). Discriminative
     #     ConvNeXt + STFT dual-stream model, ~22 M params, fully
     #     convolutional, ~18× real-time on CPU, native 8→16 kHz.
     #     Requires the user to download the pretrained checkpoint from
     #     Google Drive (see asr_pipeline/vendor/ap_bwe/README.md).
+    #   - "flowhigh": FlowHigh (Yun et al., ICASSP 2025, 2501.04926).
+    #     Single-step flow-matching SR model from Resemble AI's pip
+    #     fork. Native output 48 kHz → downsampled internally to the
+    #     pipeline rate. Reports beating AP-BWE on VCTK LSD/ViSQOL.
+    #     Install: pip install git+https://github.com/resemble-ai/flowhigh.git@dev
+    #     Checkpoint auto-downloads on first FlowHighSR.from_pretrained().
+    #   - "nvsr": Stub. Pretrained NVSR (Liu et al., INTERSPEECH 2022,
+    #     2203.14941) ships only as scripts under examples/NVSR/ in the
+    #     haoheliu/ssr_eval repo — the pypi wheel is eval-framework
+    #     only. Using NVSR requires vendoring the model code (same
+    #     pattern as asr_pipeline/vendor/mpsenet/). This backend raises
+    #     at load() until that's done; the schema entry exists so configs
+    #     can still parse.
     backend: str = "naive"
     # Path to the AP-BWE generator checkpoint (PyTorch state dict
-    # containing the 'generator' key). Ignored by the "naive" backend.
+    # containing the 'generator' key). Ignored by non-AP-BWE backends.
     checkpoint_path: str = field(
         default_factory=lambda: os.getenv(
             "AP_BWE_CHECKPOINT",
             "/home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k",
         )
     )
+    # FlowHigh's input sample rate. The README explicitly lists 12 kHz
+    # and 16 kHz examples and states "any rate < 48 kHz". 8 kHz isn't
+    # confirmed in the docs but isn't excluded either — set this knob to
+    # 8000 to A/B-test the narrower input (which matches the separator's
+    # 0-4 kHz spectral content more honestly). Default 16000 matches the
+    # pipeline rate so the in-path has no resample (only the 48→16
+    # downsample on the way out). Ignored by non-FlowHigh backends.
+    flowhigh_input_sr: int = 16_000
 
 
 @dataclass
@@ -344,9 +366,16 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid enhancement.backend: {self.enhancement.backend!r}"
             )
-        if self.super_resolution.backend not in ("naive", "ap_bwe"):
+        if self.super_resolution.backend not in (
+            "naive", "ap_bwe", "flowhigh", "nvsr",
+        ):
             raise ValueError(
                 f"Invalid super_resolution.backend: {self.super_resolution.backend!r}"
+            )
+        if self.super_resolution.flowhigh_input_sr <= 0:
+            raise ValueError(
+                f"flowhigh_input_sr must be positive, got "
+                f"{self.super_resolution.flowhigh_input_sr}"
             )
 
         if self.spill_intermediate and self.artifact_dir is None:

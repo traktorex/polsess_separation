@@ -46,11 +46,18 @@ separation:
 
 super_resolution:
   enabled: true                       # off by default; separated chunks stay band-limited
-  backend: ap_bwe                       # naive | ap_bwe
+  backend: ap_bwe                       # naive | ap_bwe | flowhigh | nvsr(stub)
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
   # (extension is ignored by torch.load).
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  # FlowHigh-only knob: input SR fed to FlowHighSR.generate(). README
+  # examples use 12k/16k; 8k isn't explicitly listed but the docs say
+  # "any rate < 48 kHz". Try 8000 to test the narrower-input regime
+  # (matches the separator's actual 0-4 kHz spectral content). Default
+  # 16000 = pipeline rate, no resample on the way in. Ignored unless
+  # `backend: flowhigh`.
+  flowhigh_input_sr: 8000
 
 assembly:
   enabled: true

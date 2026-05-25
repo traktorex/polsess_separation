@@ -14,18 +14,29 @@ notebook can show before/after diagnostics.
 
 Backends are selected via ``SuperResolutionConfig.backend``:
 
-  - ``naive``  : identity pass-through. Input is already 16 kHz
-                 numerically; this backend is a no-op and serves as the
-                 A/B baseline against the neural backend.
-  - ``ap_bwe`` : vendored AP-BWE (``asr_pipeline.vendor.ap_bwe``) — a
-                 dual-stream amplitude+phase ConvNeXt model. ~22 M
-                 params, fully convolutional, claims SOTA at 8→16 kHz.
-                 Requires the user to download the pretrained generator
-                 (see ``asr_pipeline/vendor/ap_bwe/README.md``).
-
-Adding a new neural backend later (NVSR, AERO, ...) follows the same
-pattern as ``enhancement.py``: implement ``load``/``unload``/``process``
-on a small backend class and register it in ``_BACKENDS``.
+  - ``naive``    : identity pass-through. Input is already 16 kHz
+                   numerically; this backend is a no-op and serves as
+                   the A/B baseline against the neural backends.
+  - ``ap_bwe``   : vendored AP-BWE (``asr_pipeline.vendor.ap_bwe``) — a
+                   dual-stream amplitude+phase ConvNeXt model. ~22 M
+                   params, fully convolutional, claims SOTA at 8→16 kHz.
+                   Requires the user to download the pretrained generator
+                   (see ``asr_pipeline/vendor/ap_bwe/README.md``).
+  - ``flowhigh`` : FlowHigh (Yun et al., ICASSP 2025, arXiv 2501.04926).
+                   Single-step flow-matching SR model from Resemble AI's
+                   pip-installable fork. Native output 48 kHz —
+                   downsampled to the pipeline rate inside the backend.
+                   Install:  ``pip install git+https://github.com/resemble-ai/flowhigh.git@dev``
+                   Checkpoints auto-download on first
+                   ``FlowHighSR.from_pretrained()``.
+  - ``nvsr``     : Stub. NVSR's pretrained weights + model code live as
+                   scripts in ``examples/NVSR/`` in haoheliu/ssr_eval —
+                   the pypi wheel is eval-framework only. Using NVSR
+                   requires vendoring those files into
+                   ``asr_pipeline/vendor/nvsr/`` (same pattern as the
+                   MP-SENet vendor). Schema entry kept so configs can
+                   reference it; ``load()`` raises ``NotImplementedError``
+                   until the vendor work is done.
 """
 
 from __future__ import annotations
@@ -222,6 +233,177 @@ class _APBWEBackend:
 
 
 # ---------------------------------------------------------------------------
+# FlowHigh backend
+# ---------------------------------------------------------------------------
+
+
+_FLOWHIGH_TARGET_SR = 48_000  # FlowHigh always outputs at 48 kHz.
+
+
+class _FlowHighBackend:
+    """FlowHigh (Yun et al. 2025) wrapper.
+
+    The Resemble AI fork exposes a single ``FlowHighSR`` class with
+    ``from_pretrained(device=...)`` and ``generate(wav, sr_in, sr_out)``.
+    Native output is 48 kHz; we downsample back to the pipeline rate
+    inside ``extend()`` so callers see a same-rate-in/same-rate-out
+    contract identical to AP-BWE.
+
+    ``input_sr`` is configurable because the README only confirms
+    12 / 16 kHz; the model accepts "any rate < 48 kHz" but 8 kHz isn't
+    listed. Surfacing the knob lets the user A/B 16 (no resample-in) vs.
+    8 (matches the separator's actual spectral content) by ear.
+    """
+
+    def __init__(self, input_sr: int) -> None:
+        self.input_sr = input_sr
+        self._model = None
+        self._device: torch.device | None = None
+
+    def load(self, device: torch.device) -> None:
+        try:
+            from flowhigh import FlowHighSR
+        except ImportError as e:
+            raise ImportError(
+                "FlowHigh backend selected but `flowhigh` package is not "
+                "installed. Install with:\n"
+                "    pip install git+https://github.com/resemble-ai/flowhigh.git@dev"
+            ) from e
+
+        _log(f"load: instantiating FlowHighSR on {device}...")
+        t0 = time.perf_counter()
+        # The README example passes the device as a string ("cuda"); pass
+        # the exact torch.device string so we honour the pipeline's device
+        # selection (in particular a specific GPU index).
+        model = FlowHighSR.from_pretrained(device=str(device))
+        try:
+            n_params = sum(p.numel() for p in model.parameters())
+        except Exception:
+            n_params = 0
+        _log(
+            f"load: FlowHigh ready "
+            f"({n_params/1e6:.1f}M params, {time.perf_counter()-t0:.2f}s) — "
+            f"input_sr={self.input_sr}, target_sr={_FLOWHIGH_TARGET_SR}"
+        )
+
+        self._model = model
+        self._device = device
+
+    def unload(self) -> None:
+        self._model = None
+        self._device = None
+
+    @torch.no_grad()
+    def extend(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
+        if self._model is None:
+            raise RuntimeError("FlowHighBackend.extend called before load().")
+        if len(audio_np) < 128:
+            # Too short for the model's framing — pass through unchanged.
+            return audio_np.astype(np.float32)
+
+        orig_len = len(audio_np)
+
+        # FlowHigh's `generate()` signature declares `audio: np.ndarray`,
+        # and its scipy/librosa upsampling path operates on numpy. Don't
+        # be misled by the README example using `torchaudio.load()`'s
+        # tensor output — feeding a CUDA tensor here causes an implicit
+        # `.numpy()` call to fail. Feed numpy.
+        audio_for_model = audio_np.astype(np.float32)
+        if sample_rate != self.input_sr:
+            # Resample on CPU via torchaudio.functional (matches the rate
+            # of the rest of the pipeline's audio handling). Small input,
+            # cheap.
+            x_t = torch.from_numpy(audio_for_model).unsqueeze(0)
+            x_t = AF.resample(x_t, sample_rate, self.input_sr)
+            audio_for_model = x_t.squeeze(0).numpy().astype(np.float32)
+
+        # FlowHigh peak-normalises its input to 1.0 internally and emits
+        # output peak-normalised to ~0.99 — i.e. the absolute level of
+        # the output is independent of the input. To keep the backend's
+        # contract consistent with the level-preserving naive / AP-BWE
+        # backends, capture the input RMS and restore it on the output.
+        # (Stage 4's `overlap_rms_match_solo` would also fix this, but
+        # the backend contract is "same level in, same level out" — we
+        # don't want one backend to silently break that assumption.)
+        # Measured on the *original* audio_np at sample_rate, not on the
+        # resampled-for-model version — the 16→8 kHz downsample drops
+        # energy in the 4-8 kHz band for full-band signals, which would
+        # under-restore the level when the model output is at sample_rate.
+        in_rms = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
+
+        wav_hr = self._model.generate(
+            audio_for_model, self.input_sr, _FLOWHIGH_TARGET_SR
+        )
+
+        # Output is a torch tensor on the model's device, shape [1, T].
+        if wav_hr.dim() == 2:
+            wav_hr = wav_hr.squeeze(0)
+        if _FLOWHIGH_TARGET_SR != sample_rate:
+            wav_hr = AF.resample(
+                wav_hr.unsqueeze(0), _FLOWHIGH_TARGET_SR, sample_rate
+            ).squeeze(0)
+        out = wav_hr.detach().cpu().numpy().astype(np.float32)
+
+        if len(out) > orig_len:
+            out = out[:orig_len]
+        elif len(out) < orig_len:
+            out = np.pad(out, (0, orig_len - len(out)))
+
+        out_rms = float(np.sqrt(np.mean(out ** 2))) if len(out) else 0.0
+        if in_rms > 1e-8 and out_rms > 1e-8:
+            out = out * (in_rms / out_rms)
+            # Defensive: peak-clip protection. If the rescale pushed past
+            # ±1 (shouldn't happen if input RMS < 1, but pathological
+            # inputs exist), shrink to fit. Hard-clipping here would be
+            # worse than a slight level miss.
+            peak = float(np.max(np.abs(out)))
+            if peak > 1.0:
+                out = out / peak
+        return out
+
+
+# ---------------------------------------------------------------------------
+# NVSR backend (stub)
+# ---------------------------------------------------------------------------
+
+
+class _NVSRBackend:
+    """NVSR stub. Raises ``NotImplementedError`` at load().
+
+    NVSR (Liu et al., INTERSPEECH 2022, arXiv 2203.14941) ships only as
+    scripts under ``examples/NVSR/`` in github.com/haoheliu/ssr_eval —
+    the pypi ``ssr_eval`` wheel is the evaluation framework only and
+    does not contain the model code or weights. Until someone vendors
+    the relevant files into ``asr_pipeline/vendor/nvsr/`` (mirroring how
+    MP-SENet is vendored under ``vendor/mpsenet/``), this backend exists
+    only so configs referencing ``backend: nvsr`` parse without a
+    ``__post_init__`` validation error.
+
+    Files needed to make this real:
+      - ``examples/NVSR/nvsr_unet.py`` — the U-Net model
+      - ``examples/NVSR/main.py``      — preprocessing + inference
+      - voicefixer / TFGAN vocoder weights (the README links the
+        pretrained checkpoint via Google Drive)
+      - any imports the example uses from ``ssr_eval.utils``
+    """
+
+    def load(self, device: torch.device) -> None:
+        raise NotImplementedError(
+            "NVSR backend not implemented. The pypi `ssr_eval` package "
+            "ships only the evaluation framework; the NVSR model lives "
+            "in examples/NVSR/ in the GitHub repo and must be vendored "
+            "into asr_pipeline/vendor/nvsr/ before this backend can run."
+        )
+
+    def unload(self) -> None:
+        return None
+
+    def extend(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
+        # Defensive — load() raises first, so this is unreachable in practice.
+        raise NotImplementedError("NVSR backend not implemented.")
+
+
+# ---------------------------------------------------------------------------
 # Stage dispatcher
 # ---------------------------------------------------------------------------
 
@@ -232,7 +414,9 @@ class SuperResolutionStage(Stage):
     def __init__(self, config: SuperResolutionConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: _NaiveBackend | _APBWEBackend | None = None
+        self._backend: (
+            _NaiveBackend | _APBWEBackend | _FlowHighBackend | _NVSRBackend | None
+        ) = None
 
     def load(self, device: torch.device) -> None:
         if self.config.backend == "naive":
@@ -240,6 +424,10 @@ class SuperResolutionStage(Stage):
             backend = _NaiveBackend()
         elif self.config.backend == "ap_bwe":
             backend = _APBWEBackend(self.config.checkpoint_path)
+        elif self.config.backend == "flowhigh":
+            backend = _FlowHighBackend(self.config.flowhigh_input_sr)
+        elif self.config.backend == "nvsr":
+            backend = _NVSRBackend()
         else:
             raise ValueError(
                 f"Unknown super_resolution backend: {self.config.backend!r}"
@@ -248,11 +436,15 @@ class SuperResolutionStage(Stage):
         self._backend = backend
 
     def load_signature(self) -> tuple:
-        # Naive backend has no weights — backend selector alone is enough.
-        # AP-BWE additionally pulls a checkpoint from disk, so changing
-        # the checkpoint path must trigger a reload too.
+        # Naive / NVSR backends have no per-config state beyond the backend
+        # name itself. AP-BWE additionally pulls a checkpoint from disk;
+        # FlowHigh's behaviour depends on the input-SR knob (changing it
+        # doesn't change which weights are loaded, but it changes what gets
+        # fed to the model, so include it for re-run safety).
         if self.config.backend == "ap_bwe":
             return (self.config.backend, self.config.checkpoint_path)
+        if self.config.backend == "flowhigh":
+            return (self.config.backend, self.config.flowhigh_input_sr)
         return (self.config.backend,)
 
     def unload(self) -> None:
@@ -278,18 +470,47 @@ class SuperResolutionStage(Stage):
         # final message, and confirms at a glance how much audio was actually
         # touched (vs. the recording's full length).
         total_chunk_s = sum(
-            len(e["s1_gated"]) + len(e["s2_gated"]) for e in ctx.overlap_separated
+            len(e["s1_raw"]) + len(e["s2_raw"]) for e in ctx.overlap_separated
         ) / (2 * sr)
         _log(
             f"run: applying backend={backend_name!r} to {n} overlap region(s) "
             f"× 2 streams ({total_chunk_s:.1f}s of audio total)"
         )
+
+        # We extend the *raw* (unmasked) separator output and apply the VAD
+        # mask after BWE, for two reasons:
+        #   1. The mask's hard zero-to-content edges in `s{1,2}_gated` look
+        #      like clicks/discontinuities to BWE, which it tries to "extend"
+        #      upward into ringing.
+        #   2. When a stream is entirely silent in this segment (the VAD
+        #      gated everything out), feeding silence to BWE produces sawtooth-
+        #      shaped artifacts because the model wasn't trained on silence.
+        #      Post-BWE masking collapses those to true zeros.
+        # The early-out below skips BWE entirely for fully-silent streams —
+        # purely an optimisation, since the post-mask multiply would zero the
+        # whole output anyway.
         t0 = time.perf_counter()
+        n_skipped = 0
         for i_ovl, entry in enumerate(ctx.overlap_separated):
-            entry["s1_gated"] = self._backend.extend(entry["s1_gated"], sr)
-            entry["s2_gated"] = self._backend.extend(entry["s2_gated"], sr)
-            # Progress every 10 chunks so long recordings show signs of life
-            # (mirrors the assembly stage's overlap-assignment loop cadence).
+            for src_key, mask_key in (("s1", "mask1"), ("s2", "mask2")):
+                raw = entry[f"{src_key}_raw"]
+                mask = entry[mask_key]
+                if mask.sum() == 0:
+                    # Fully-silent stream for this overlap — BWE would only
+                    # produce artifacts that the mask multiply would then
+                    # erase. Skip and emit clean zeros.
+                    entry[f"{src_key}_gated"] = np.zeros_like(raw, dtype=np.float32)
+                    n_skipped += 1
+                    continue
+                bwe = self._backend.extend(raw, sr)
+                # Align mask length to BWE output (STFT/iSTFT rounding can
+                # drift by a handful of samples).
+                n_out = len(bwe)
+                if len(mask) >= n_out:
+                    mask_aligned = mask[:n_out]
+                else:
+                    mask_aligned = np.pad(mask, (0, n_out - len(mask)))
+                entry[f"{src_key}_gated"] = (bwe * mask_aligned).astype(np.float32)
             if (i_ovl + 1) % 10 == 0 or i_ovl + 1 == n:
                 _log(
                     f"  extended {i_ovl+1}/{n} regions "
@@ -299,7 +520,7 @@ class SuperResolutionStage(Stage):
         rtf = total_chunk_s / elapsed if elapsed > 0 else float("inf")
         _log(
             f"run: done in {elapsed:.2f}s ({rtf:.1f}× real-time, "
-            f"backend={backend_name!r})"
+            f"backend={backend_name!r}, {n_skipped}/{2*n} silent stream(s) skipped)"
         )
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
