@@ -1,27 +1,34 @@
-"""Stage 3c — bandwidth extension on separated chunks.
+"""Stage 3c — VAD masking + optional bandwidth extension.
 
-The separator (Stage 3b) runs at 8 kHz and its outputs reach this stage
-already resampled to 16 kHz numerically but with content band-limited to
-0–4 kHz. Without this stage, those narrow-band chunks are spliced into
-Stage 4's per-speaker streams alongside fully-wideband 16 kHz solo audio
-from Stage 3a — and the spectral discontinuity at every seam can hurt
-ASR even when low-band audio is fine in isolation.
+Inputs from Stage 3b's ``ctx.overlap_separated`` entries:
+- ``s{1,2}_raw``  the separator's unmasked output (16 kHz numerical,
+                  spectrally band-limited to 0–4 kHz because the
+                  separator itself runs at 8 kHz)
+- ``mask{1,2}``   per-stream binary VAD mask computed by 3b
+- ``emit_*``      the emit-region boundaries 3b finalised
 
-This stage is OFF by default. When ``enabled: true``, it rewrites each
-``s1_gated`` / ``s2_gated`` array in ``ctx.overlap_separated`` to be
-wideband. Raw arrays (``s1_raw`` / ``s2_raw``) are left untouched so the
-notebook can show before/after diagnostics.
+This stage is the *only* place where the VAD mask gets applied. 3b
+computes the mask (it needs it anyway to decide ``snap_to_silence``
+emit-region extensions) but no longer multiplies it into the streams.
+Splitting compute-vs-apply lets the BWE backends see the *full*
+separator output rather than the masked-with-hard-edges version — mask
+edges look like discontinuities and feed ringing into BWE; running BWE
+on the unmasked signal and applying the mask afterwards is cleaner.
 
-Backends are selected via ``SuperResolutionConfig.backend``:
+Output: each entry's ``s{1,2}_gated`` is set to ``backend(s{1,2}_raw) *
+mask{1,2}``. Stage 4 consumes only ``_gated`` arrays, so it sees
+identical structure regardless of which backend ran. ``_raw`` is left
+untouched so the notebook can A/B pre/post-BWE diagnostics.
 
-  - ``naive``    : identity pass-through. Input is already 16 kHz
-                   numerically; this backend is a no-op and serves as
-                   the A/B baseline against the neural backends.
+Backends are selected via ``PostSeparationProcessingConfig.backend``:
+
+  - ``naive``    : identity. ``s_gated = s_raw * mask``. The default —
+                   use it when you want VAD masking only, no BWE.
   - ``ap_bwe``   : vendored AP-BWE (``asr_pipeline.vendor.ap_bwe``) — a
                    dual-stream amplitude+phase ConvNeXt model. ~22 M
                    params, fully convolutional, claims SOTA at 8→16 kHz.
-                   Requires the user to download the pretrained generator
-                   (see ``asr_pipeline/vendor/ap_bwe/README.md``).
+                   Requires the user to download the pretrained
+                   generator (see ``asr_pipeline/vendor/ap_bwe/README.md``).
   - ``flowhigh`` : FlowHigh (Yun et al., ICASSP 2025, arXiv 2501.04926).
                    Single-step flow-matching SR model from Resemble AI's
                    pip-installable fork. Native output 48 kHz —
@@ -37,6 +44,11 @@ Backends are selected via ``SuperResolutionConfig.backend``:
                    MP-SENet vendor). Schema entry kept so configs can
                    reference it; ``load()`` raises ``NotImplementedError``
                    until the vendor work is done.
+
+This stage is always-on: it has no ``enabled`` flag because Stage 4
+depends on ``s_gated`` being populated. Skipping it would break
+assembly. To "turn off" BWE, set ``backend: naive`` — the stage still
+runs, applying the mask, but no neural model touches the audio.
 """
 
 from __future__ import annotations
@@ -51,18 +63,17 @@ import soundfile as sf
 import torch
 import torchaudio.functional as AF
 
-from asr_pipeline.config import SuperResolutionConfig
+from asr_pipeline.config import PostSeparationProcessingConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
 
 
 def _log(msg: str) -> None:
-    """Progress message for the super-resolution stage. Writes to both
-    stdout and the debug log file (mirrors the assembly stage so the
-    notebook view always shows when/whether BWE actually ran).
+    """Progress message. Writes to both stdout and the debug log file
+    so notebook users see what backend ran and how long it took.
     """
-    dlog("super_resolution", msg)
+    dlog("post_separation_processing", msg)
 
 
 # ---------------------------------------------------------------------------
@@ -73,12 +84,9 @@ def _log(msg: str) -> None:
 class _NaiveBackend:
     """Pass-through baseline. Separator output reached this stage already
     resampled to 16 kHz numerically by ``torchaudio.functional.resample``,
-    so the bandwidth-extension job for the "do nothing" variant is just
-    to keep that signal as-is.
-
-    Useful for A/B framing — turning the stage on with backend=naive
-    isolates the cost of plumbing (config plumbing, ctx mutation, spill)
-    from the cost of the neural model.
+    so the "no BWE" variant is just identity. The VAD mask is applied
+    afterwards by the stage's ``run()`` loop — so ``backend: naive``
+    means "VAD mask only".
     """
 
     def load(self, device: torch.device) -> None:
@@ -408,11 +416,14 @@ class _NVSRBackend:
 # ---------------------------------------------------------------------------
 
 
-class SuperResolutionStage(Stage):
-    name = "super_resolution"
+class PostSeparationProcessingStage(Stage):
+    name = "post_separation_processing"
 
-    def __init__(self, config: SuperResolutionConfig) -> None:
-        super().__init__(enabled=config.enabled)
+    def __init__(self, config: PostSeparationProcessingConfig) -> None:
+        # Always-on stage — assembly depends on `s_gated`, so we never
+        # let this be disabled at the config level. The Stage base class
+        # accepts an `enabled` flag, but we don't expose it here.
+        super().__init__(enabled=True)
         self.config = config
         self._backend: (
             _NaiveBackend | _APBWEBackend | _FlowHighBackend | _NVSRBackend | None
@@ -420,7 +431,7 @@ class SuperResolutionStage(Stage):
 
     def load(self, device: torch.device) -> None:
         if self.config.backend == "naive":
-            _log("load: backend=naive (identity pass-through)")
+            _log("load: backend=naive (VAD mask only, no BWE)")
             backend = _NaiveBackend()
         elif self.config.backend == "ap_bwe":
             backend = _APBWEBackend(self.config.checkpoint_path)
@@ -430,7 +441,8 @@ class SuperResolutionStage(Stage):
             backend = _NVSRBackend()
         else:
             raise ValueError(
-                f"Unknown super_resolution backend: {self.config.backend!r}"
+                f"Unknown post_separation_processing backend: "
+                f"{self.config.backend!r}"
             )
         backend.load(device)
         self._backend = backend
@@ -458,9 +470,11 @@ class SuperResolutionStage(Stage):
     def run(self, ctx: PipelineContext) -> None:
         _log("run: entered")
         if self._backend is None:
-            raise RuntimeError("SuperResolutionStage.run called before load().")
+            raise RuntimeError(
+                "PostSeparationProcessingStage.run called before load()."
+            )
         if not ctx.overlap_separated:
-            _log("run: no overlap regions — nothing to extend")
+            _log("run: no overlap regions — nothing to do")
             return
 
         sr = ctx.sample_rate
@@ -473,22 +487,24 @@ class SuperResolutionStage(Stage):
             len(e["s1_raw"]) + len(e["s2_raw"]) for e in ctx.overlap_separated
         ) / (2 * sr)
         _log(
-            f"run: applying backend={backend_name!r} to {n} overlap region(s) "
-            f"× 2 streams ({total_chunk_s:.1f}s of audio total)"
+            f"run: applying backend={backend_name!r} + VAD mask to "
+            f"{n} overlap region(s) × 2 streams "
+            f"({total_chunk_s:.1f}s of audio total)"
         )
 
         # We extend the *raw* (unmasked) separator output and apply the VAD
         # mask after BWE, for two reasons:
-        #   1. The mask's hard zero-to-content edges in `s{1,2}_gated` look
-        #      like clicks/discontinuities to BWE, which it tries to "extend"
+        #   1. The mask's hard zero-to-content edges look like clicks/
+        #      discontinuities to BWE, which it would try to "extend"
         #      upward into ringing.
         #   2. When a stream is entirely silent in this segment (the VAD
-        #      gated everything out), feeding silence to BWE produces sawtooth-
-        #      shaped artifacts because the model wasn't trained on silence.
-        #      Post-BWE masking collapses those to true zeros.
+        #      gated everything out), feeding silence to BWE produces
+        #      sawtooth-shaped artifacts because the model wasn't trained
+        #      on silence. Post-BWE masking collapses those to true zeros.
         # The early-out below skips BWE entirely for fully-silent streams —
         # purely an optimisation, since the post-mask multiply would zero the
-        # whole output anyway.
+        # whole output anyway. With `backend: naive` it's also just less
+        # work.
         t0 = time.perf_counter()
         n_skipped = 0
         for i_ovl, entry in enumerate(ctx.overlap_separated):
@@ -496,24 +512,26 @@ class SuperResolutionStage(Stage):
                 raw = entry[f"{src_key}_raw"]
                 mask = entry[mask_key]
                 if mask.sum() == 0:
-                    # Fully-silent stream for this overlap — BWE would only
-                    # produce artifacts that the mask multiply would then
-                    # erase. Skip and emit clean zeros.
+                    # Fully-silent stream for this overlap — backend output
+                    # would only produce artifacts that the mask multiply
+                    # would then erase. Skip and emit clean zeros.
                     entry[f"{src_key}_gated"] = np.zeros_like(raw, dtype=np.float32)
                     n_skipped += 1
                     continue
-                bwe = self._backend.extend(raw, sr)
-                # Align mask length to BWE output (STFT/iSTFT rounding can
-                # drift by a handful of samples).
-                n_out = len(bwe)
+                processed = self._backend.extend(raw, sr)
+                # Align mask length to backend output (STFT/iSTFT rounding
+                # can drift by a handful of samples).
+                n_out = len(processed)
                 if len(mask) >= n_out:
                     mask_aligned = mask[:n_out]
                 else:
                     mask_aligned = np.pad(mask, (0, n_out - len(mask)))
-                entry[f"{src_key}_gated"] = (bwe * mask_aligned).astype(np.float32)
+                entry[f"{src_key}_gated"] = (
+                    processed * mask_aligned
+                ).astype(np.float32)
             if (i_ovl + 1) % 10 == 0 or i_ovl + 1 == n:
                 _log(
-                    f"  extended {i_ovl+1}/{n} regions "
+                    f"  processed {i_ovl+1}/{n} regions "
                     f"({time.perf_counter()-t0:.1f}s elapsed)"
                 )
         elapsed = time.perf_counter() - t0
@@ -524,23 +542,23 @@ class SuperResolutionStage(Stage):
         )
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
-        # Separation already spills `overlap_{idx}_s{1,2}.wav`. If we ran a
-        # non-identity backend, write a parallel set tagged with the
-        # backend name so the user can A/B by ear without re-running.
-        if self.config.backend == "naive":
-            return
+        # Always write the final s_gated arrays — they're this stage's
+        # output and the input Stage 4 will consume. For non-naive
+        # backends, also tag the filename with the backend name so the
+        # user can keep multiple A/B-comparison sets in one artifact dir.
         if not ctx.overlap_separated:
             return
         tag = self.config.backend
+        suffix = "" if tag == "naive" else f"_bwe_{tag}"
         for entry in ctx.overlap_separated:
             idx = entry["idx"]
             sf.write(
-                artifact_dir / f"overlap_{idx}_s1_bwe_{tag}.wav",
+                artifact_dir / f"overlap_{idx}_s1_gated{suffix}.wav",
                 entry["s1_gated"].astype(np.float32),
                 ctx.sample_rate,
             )
             sf.write(
-                artifact_dir / f"overlap_{idx}_s2_bwe_{tag}.wav",
+                artifact_dir / f"overlap_{idx}_s2_gated{suffix}.wav",
                 entry["s2_gated"].astype(np.float32),
                 ctx.sample_rate,
             )

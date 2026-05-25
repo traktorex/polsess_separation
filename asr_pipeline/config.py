@@ -194,25 +194,22 @@ class SeparationConfig:
 
 
 @dataclass
-class SuperResolutionConfig:
-    """Stage 3c: bandwidth extension on separated chunks.
+class PostSeparationProcessingConfig:
+    """Stage 3c: VAD mask application + optional bandwidth extension.
 
-    The separator runs at 8 kHz. Stage 3b upsamples its output to 16 kHz
-    numerically via polyphase resampling, but the content stays band-limited
-    to 0–4 kHz. When Stage 4 splices these chunks alongside 16 kHz wideband
-    solo audio from Stage 3a, the assembled stream has a spectral
-    discontinuity at every seam — which can confuse ASR even when Whisper
-    handles low-band-only audio fine in isolation.
+    Reads ``s{1,2}_raw`` (unmasked separator output) and ``mask{1,2}``
+    (VAD mask computed by 3b) from ``ctx.overlap_separated`` entries,
+    runs the selected backend on the raw streams, multiplies by the
+    mask, writes the result to ``s{1,2}_gated``. Stage 4 consumes
+    ``_gated`` arrays only.
 
-    This optional stage applies a neural bandwidth-extension model to each
-    separated chunk so the assembled stream is spectrally consistent.
-
-    Default: disabled. When enabled, only the ``s1_gated`` / ``s2_gated``
-    arrays in ``ctx.overlap_separated`` are touched — solo audio is already
-    wideband from Stage 3a.
+    Always-on: this stage has no ``enabled`` knob because Stage 4
+    depends on ``s_gated`` being populated. To run "VAD mask only with
+    no BWE", set ``backend: naive`` — the stage still runs (the mask
+    multiplication is its core job) but no neural model touches the
+    audio. The 8 kHz spectral content is left as-is.
     """
 
-    enabled: bool = False
     # Backend selector:
     #   - "naive": no neural model. Input is already 16 kHz numerically
     #     (separator output upsampled by polyphase resampling); this
@@ -330,7 +327,9 @@ class PipelineConfig:
     routing: RoutingConfig = field(default_factory=RoutingConfig)
     enhancement: EnhancementConfig = field(default_factory=EnhancementConfig)
     separation: SeparationConfig = field(default_factory=SeparationConfig)
-    super_resolution: SuperResolutionConfig = field(default_factory=SuperResolutionConfig)
+    post_separation_processing: PostSeparationProcessingConfig = field(
+        default_factory=PostSeparationProcessingConfig
+    )
     assembly: AssemblyConfig = field(default_factory=AssemblyConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
 
@@ -366,16 +365,17 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid enhancement.backend: {self.enhancement.backend!r}"
             )
-        if self.super_resolution.backend not in (
+        if self.post_separation_processing.backend not in (
             "naive", "ap_bwe", "flowhigh", "nvsr",
         ):
             raise ValueError(
-                f"Invalid super_resolution.backend: {self.super_resolution.backend!r}"
+                f"Invalid post_separation_processing.backend: "
+                f"{self.post_separation_processing.backend!r}"
             )
-        if self.super_resolution.flowhigh_input_sr <= 0:
+        if self.post_separation_processing.flowhigh_input_sr <= 0:
             raise ValueError(
                 f"flowhigh_input_sr must be positive, got "
-                f"{self.super_resolution.flowhigh_input_sr}"
+                f"{self.post_separation_processing.flowhigh_input_sr}"
             )
 
         if self.spill_intermediate and self.artifact_dir is None:
@@ -404,7 +404,7 @@ def load_pipeline_config_from_dict(config_dict: dict) -> PipelineConfig:
         ("routing", RoutingConfig),
         ("enhancement", EnhancementConfig),
         ("separation", SeparationConfig),
-        ("super_resolution", SuperResolutionConfig),
+        ("post_separation_processing", PostSeparationProcessingConfig),
         ("assembly", AssemblyConfig),
         ("transcription", TranscriptionConfig),
     ):

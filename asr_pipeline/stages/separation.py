@@ -635,8 +635,12 @@ class SeparationStage(Stage):
                 attack_frames=cfg.vad_attack_frames,
                 release_frames=cfg.vad_release_frames,
             )
-            s1_gated = s1_raw * mask1
-            s2_gated = s2_raw * mask2
+            # NB: we DON'T apply the mask here — that's Stage 3c's job
+            # (`post_separation_processing`). 3c needs the unmasked
+            # streams as input to its BWE backend (mask edges look like
+            # discontinuities to BWE). The mask is still computed here
+            # because `seam_mode == "snap_to_silence"` uses it to extend
+            # emit-region boundaries via VAD silence detection.
 
             # Emit region (where the assembler will splice the streams).
             emit_start_s, emit_end_s = self._pick_emit_region(
@@ -661,10 +665,12 @@ class SeparationStage(Stage):
                 "mix": mix,
                 "s1_raw": s1_raw,
                 "s2_raw": s2_raw,
-                "s1_gated": s1_gated,
-                "s2_gated": s2_gated,
                 "mask1": mask1,
                 "mask2": mask2,
+                # `s{1,2}_gated` is populated by Stage 3c
+                # (post_separation_processing). Downstream code (assembly,
+                # the explore notebook's 3c diagnostic) reads `_gated`,
+                # so the field is only added after 3c runs.
                 # Raw per-frame VAD probabilities (16 kHz audio -> 512-sample
                 # frames -> 32 ms per frame). Lets the notebook plot the actual
                 # silero curve next to the binary mask.
@@ -777,14 +783,17 @@ class SeparationStage(Stage):
         }
         for entry in ctx.overlap_separated:
             idx = entry["idx"]
+            # Spill the *unmasked* separator outputs — they're what this
+            # stage actually produces. Stage 3c spills the masked
+            # `_gated` versions in turn.
             sf.write(
-                artifact_dir / f"overlap_{idx}_s1.wav",
-                entry["s1_gated"].astype(np.float32),
+                artifact_dir / f"overlap_{idx}_s1_raw.wav",
+                entry["s1_raw"].astype(np.float32),
                 ctx.sample_rate,
             )
             sf.write(
-                artifact_dir / f"overlap_{idx}_s2.wav",
-                entry["s2_gated"].astype(np.float32),
+                artifact_dir / f"overlap_{idx}_s2_raw.wav",
+                entry["s2_raw"].astype(np.float32),
                 ctx.sample_rate,
             )
             meta["overlaps"].append({

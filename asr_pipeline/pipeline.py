@@ -34,7 +34,7 @@ from asr_pipeline.stages import (
     RoutingStage,
     SeparationStage,
     Stage,
-    SuperResolutionStage,
+    PostSeparationProcessingStage,
     TranscriptionStage,
 )
 
@@ -61,7 +61,7 @@ class Pipeline:
             RoutingStage(config.routing),
             EnhancementStage(config.enhancement),
             SeparationStage(config.separation),
-            SuperResolutionStage(config.super_resolution),
+            PostSeparationProcessingStage(config.post_separation_processing),
             AssemblyStage(config.assembly),
             TranscriptionStage(config.transcription),
         ]

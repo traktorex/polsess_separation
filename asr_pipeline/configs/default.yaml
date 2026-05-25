@@ -44,8 +44,11 @@ separation:
   vad_release_frames: 1                # frames of dilation at speech offset
   vad_mode: silero
 
-super_resolution:
-  enabled: true                       # off by default; separated chunks stay band-limited
+post_separation_processing:
+  # VAD mask application + optional bandwidth extension. Always-on:
+  # Stage 4 depends on the masked `_gated` arrays this stage writes,
+  # so there's no `enabled` knob. Set `backend: naive` to apply only
+  # the mask (no neural BWE).
   backend: ap_bwe                       # naive | ap_bwe | flowhigh | nvsr(stub)
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work

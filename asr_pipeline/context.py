@@ -73,8 +73,13 @@ class PipelineContext:
     # Same length as `ctx.audio`; sliced per-speaker at assembly time.
     enhanced_full: Optional[np.ndarray] = None
 
-    # Stage 3b — overlap separation
-    # one entry per overlap region: {start, end, s1, s2, s1_gated, s2_gated, ...}
+    # Overlap separation + post-processing — one dict per overlap region.
+    # Populated incrementally:
+    #   - Stage 3b (separation) writes: start, end, pad_*, emit_*, mix,
+    #     s1_raw, s2_raw, mask1, mask2, probs1, probs2, chunked, volume_scale
+    #   - Stage 3c (post_separation_processing) writes: s1_gated, s2_gated
+    # Stage 4 (assembly) reads `_gated` only, so it doesn't matter to it
+    # which backend produced them — just that 3c ran.
     overlap_separated: List[Dict[str, Any]] = field(default_factory=list)
 
     # Stage 4 — assembly

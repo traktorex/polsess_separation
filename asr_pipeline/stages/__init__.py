@@ -5,7 +5,9 @@ from asr_pipeline.stages.diarization import DiarizationStage
 from asr_pipeline.stages.routing import RoutingStage
 from asr_pipeline.stages.enhancement import EnhancementStage
 from asr_pipeline.stages.separation import SeparationStage
-from asr_pipeline.stages.super_resolution import SuperResolutionStage
+from asr_pipeline.stages.post_separation_processing import (
+    PostSeparationProcessingStage,
+)
 from asr_pipeline.stages.assembly import AssemblyStage
 from asr_pipeline.stages.transcription import TranscriptionStage
 
@@ -15,7 +17,7 @@ __all__ = [
     "RoutingStage",
     "EnhancementStage",
     "SeparationStage",
-    "SuperResolutionStage",
+    "PostSeparationProcessingStage",
     "AssemblyStage",
     "TranscriptionStage",
 ]
