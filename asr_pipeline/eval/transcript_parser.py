@@ -40,9 +40,17 @@ _PIPELINE_LINE_RE = re.compile(
     r"^\s*\[\s*(\d+\.\d+)\s*(?:→|->|—)\s*(\d+\.\d+)\s*\]\s*(.*)$"
 )
 
-# GT format: `[HH:MM:SS.cc → HH:MM:SS.cc] text`.
-_GT_LINE_RE = re.compile(
+# GT format — two flavours we accept:
+#   `[HH:MM:SS.cc → HH:MM:SS.cc] text`   (older script-generated GT)
+#   `[ s.cc → s.cc]            text`     (newer hand-corrected GT — copied
+#                                         from the pipeline / explore_pipeline
+#                                         stage 5 output, which prints
+#                                         decimal seconds rather than HH:MM:SS).
+_GT_LINE_HMS_RE = re.compile(
     r"^\s*\[\s*(\d+):(\d+):(\d+\.\d+)\s*(?:→|->|—)\s*(\d+):(\d+):(\d+\.\d+)\s*\]\s*(.*)$"
+)
+_GT_LINE_SECONDS_RE = re.compile(
+    r"^\s*\[\s*(\d+(?:\.\d+)?)\s*(?:→|->|—)\s*(\d+(?:\.\d+)?)\s*\]\s*(.*)$"
 )
 
 
@@ -78,24 +86,41 @@ def parse_transcript_file(path: str | Path) -> dict[str, list[Utterance]]:
 def parse_gt_txt(path: str | Path) -> list[Utterance]:
     """Parse one GT .txt file (one channel) → list of utterances.
 
-    The file format has one segment per line with `[HH:MM:SS.cc →
-    HH:MM:SS.cc]` prefixes; non-matching lines (blank, comments) are
-    skipped. After human correction the timestamps are still preserved,
-    so we keep them for tcpWER's per-word time alignment.
+    Accepts either timestamp format (`[HH:MM:SS.cc → ...]` or `[s.cc → s.cc]`);
+    blank / non-matching lines (sub-headers, comments) are skipped.
     """
     path = Path(path)
     utts: list[Utterance] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
-        m = _GT_LINE_RE.match(raw)
-        if not m:
+        parsed = _parse_timed_line(raw)
+        if parsed is None:
             continue
-        h1, mi1, s1, h2, mi2, s2, text = m.groups()
-        start = int(h1) * 3600 + int(mi1) * 60 + float(s1)
-        end = int(h2) * 3600 + int(mi2) * 60 + float(s2)
-        text = text.strip()
+        start, end, text = parsed
         if text:
             utts.append(Utterance(start, end, text))
     return utts
+
+
+def _parse_timed_line(raw: str) -> tuple[float, float, str] | None:
+    """Try both `[HH:MM:SS.cc → ...]` and `[s.cc → s.cc]` forms.
+
+    Returns (start_s, end_s, text) or None if the line doesn't match
+    either form. Order matters: try HMS first because the seconds regex
+    would otherwise match the seconds field of an HMS timestamp.
+    """
+    m = _GT_LINE_HMS_RE.match(raw)
+    if m:
+        h1, mi1, s1, h2, mi2, s2, text = m.groups()
+        return (
+            int(h1) * 3600 + int(mi1) * 60 + float(s1),
+            int(h2) * 3600 + int(mi2) * 60 + float(s2),
+            text.strip(),
+        )
+    m = _GT_LINE_SECONDS_RE.match(raw)
+    if m:
+        s1, s2, text = m.groups()
+        return float(s1), float(s2), text.strip()
+    return None
 
 
 def concat_utterances(utts: Iterable[Utterance]) -> str:

@@ -20,6 +20,11 @@ punctuation that doesn't reflect actual ASR errors. MeetEval's built-in
 normalizers either over-strip (`lower,rm([^a-z0-9 ])` removes Polish
 letters) or under-strip (`lower,rm(.?!,)` misses `;:—…`), so we
 pre-normalize the SegLST `words` field ourselves.
+
+Note: an equivalent pure-numpy DER implementation exists in git history
+(commit before this one) — restore it if pyannote.metrics ever misbehaves
+inside a long-running Jupyter kernel. Numbers agree to within ~0.005 pp
+on real data, so the switch is mechanical.
 """
 
 from __future__ import annotations

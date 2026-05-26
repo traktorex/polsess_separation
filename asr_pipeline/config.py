@@ -293,13 +293,41 @@ class AssemblyConfig:
 
 @dataclass
 class TranscriptionConfig:
-    """Stage 5: Whisper ASR per assembled stream."""
+    """Stage 5: Whisper ASR per assembled stream.
+
+    Two backends, same surface contract::
+
+      - ``whisper`` (default): the original OpenAI Whisper package
+        (``whisper.load_model``). Supports the canonical OpenAI checkpoints
+        (``large-v3``, ``large-v2``, ``medium``, …). Fast to set up but no
+        wav2vec2 word-level alignment — Whisper's own word timestamps are
+        token-aligned and drift by 200–500 ms.
+      - ``whisperx``: WhisperX = faster-whisper + wav2vec2 forced alignment.
+        Word-level timestamps to ±50 ms. Also the only backend that supports
+        non-OpenAI Whisper checkpoints via HF model id, e.g.
+        ``bardsai/whisper-large-v2-pl-v2`` (Polish-finetuned, expected to
+        cut Polish WER vs vanilla large-v3).
+
+    Both backends emit the same output shape per speaker::
+
+        {"text": str, "segments": [{"start": float, "end": float,
+                                    "text": str, "words": [...]?}],
+         "language": str}
+    """
 
     enabled: bool = True
+    # Selector. See class docstring for trade-offs.
+    backend: str = "whisper"           # whisper | whisperx
+    # OpenAI short names (``large-v3``, ``large-v2``) or any HF model id
+    # parseable by faster-whisper when backend == ``whisperx``. Ignored
+    # checkpoints for the ``whisper`` backend must be canonical OpenAI names.
     model_name: str = "large-v3"
     language: str = "pl"
     initial_prompt: str = "Rozmowa po polsku."
     word_timestamps: bool = True
+    # WhisperX-only knobs (ignored when ``backend != whisperx``):
+    # the wav2vec2 model used for forced alignment.
+    align_model_name: str = "jonatasgrosman/wav2vec2-large-xlsr-53-polish"
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +404,10 @@ class PipelineConfig:
             raise ValueError(
                 f"flowhigh_input_sr must be positive, got "
                 f"{self.post_separation_processing.flowhigh_input_sr}"
+            )
+        if self.transcription.backend not in ("whisper", "whisperx"):
+            raise ValueError(
+                f"Invalid transcription.backend: {self.transcription.backend!r}"
             )
 
         if self.spill_intermediate and self.artifact_dir is None:
