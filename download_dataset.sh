@@ -4,9 +4,14 @@
 # Companion to setup.sh: setup.sh installs the project, this script provisions data.
 # Idempotent — refuses to overwrite an existing extraction unless --force is passed.
 #
+# Default source is the maintainer's rclone gdrive remote, since the public Drive link
+# trips Drive's anti-abuse limit on large files and won't work with gdown. To use rclone
+# you need an "rclone config" with a remote named 'gdrive' that has access to the file
+# (run `setup.sh --rclone` once to set it up).
+#
 # Usage:
-#   ./download_dataset.sh                    # download from the default Google Drive URL
-#   POLSESS_URL=... ./download_dataset.sh    # override source URL (HTTP / gdrive / rclone / local file)
+#   ./download_dataset.sh                    # default: rclone from gdrive:polsess/...
+#   POLSESS_URL=... ./download_dataset.sh    # override source (gdrive: / HTTP / local file)
 #   ./download_dataset.sh --force            # re-download even if already extracted
 
 set -euo pipefail
@@ -17,17 +22,15 @@ set -euo pipefail
 
 DATASETS_DIR="${DATASETS_DIR:-$HOME/datasets}"
 DATASET_NAME="PolSESS_C_final_128_v2"
+ARCHIVE_NAME="${DATASET_NAME}.zip"
 
-# Default Google Drive file ID. Override at runtime via POLSESS_URL env var if you need
-# a different source (full HTTP URL, rclone remote path, or local file path).
-DEFAULT_GDRIVE_ID="1lFdBDW6pWO_oK_PIwbxquWfg6V9VQ9wW"
-DEFAULT_URL="https://drive.google.com/uc?id=${DEFAULT_GDRIVE_ID}"
+# Default: rclone remote path. Requires an `rclone config` with a remote named 'gdrive'.
+DEFAULT_URL="gdrive:polsess/${ARCHIVE_NAME}"
 
 POLSESS_URL="${POLSESS_URL:-$DEFAULT_URL}"
 
-# polsess_separation expects POLSESS_DATA_ROOT to point at the inner dataset directory.
-# Archive structure: PolSESS_C_final_128_v2.tar.gz → PolSESS_C_final_128_v2/PolSESS_C_final_128_v2/{train,val,test,...}
-EXTRACTED_PATH="$DATASETS_DIR/$DATASET_NAME/$DATASET_NAME"
+# Archive unzips to a single-level directory (no double-nesting).
+EXTRACTED_PATH="$DATASETS_DIR/$DATASET_NAME"
 
 # ============================================================================
 # Helpers (matches setup.sh)
@@ -48,7 +51,7 @@ while [ $# -gt 0 ]; do
         --force)
             FORCE=true; shift ;;
         -h|--help)
-            sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -67,24 +70,42 @@ if [ -d "$EXTRACTED_PATH" ] && [ "$FORCE" = false ]; then
 fi
 
 # ============================================================================
+# Ensure unzip is available (the archive is a .zip — fails noisily without it)
+# ============================================================================
+
+if ! command -v unzip &>/dev/null; then
+    info "Installing unzip..."
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq && apt-get install -y -qq unzip
+    else
+        error "unzip not found and apt-get unavailable — install unzip manually"
+    fi
+fi
+
+# ============================================================================
 # Download
 # ============================================================================
 
 mkdir -p "$DATASETS_DIR"
-archive="/tmp/${DATASET_NAME}.tar.gz"
+archive="/tmp/${ARCHIVE_NAME}"
 
 info "Downloading $DATASET_NAME from: $POLSESS_URL"
 
-if [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
-    # gdown 6.x handles Drive's virus-scan confirmation by default; passing id= avoids URL-parsing quirks.
+if [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != http* ]]; then
+    # rclone remote path (e.g. gdrive:polsess/foo.zip)
+    if ! command -v rclone &>/dev/null; then
+        error "rclone not installed — run './setup.sh --rclone' first, or override POLSESS_URL with an HTTP URL or local file"
+    fi
+    rclone copy "$POLSESS_URL" /tmp/ --progress
+    src_name="$(basename "$POLSESS_URL")"
+    [ -f "/tmp/$src_name" ] && [ "/tmp/$src_name" != "$archive" ] && mv "/tmp/$src_name" "$archive"
+elif [[ "$POLSESS_URL" == *"drive.google.com"* ]]; then
+    # Last-resort path — Drive's anti-abuse usually kills this for the 47 GB archive.
+    warn "Using gdown against drive.google.com — large public files often hit Drive's quota wall. Prefer rclone."
     pip install --upgrade --no-cache-dir 'gdown>=6.0.0'
     gdrive_id="$(echo "$POLSESS_URL" | sed -nE 's#.*[?&]id=([^&]+).*#\1#p; s#.*/file/d/([^/]+)/.*#\1#p' | head -1)"
     [ -z "$gdrive_id" ] && error "Could not extract Drive file ID from $POLSESS_URL"
     python3 -c "import gdown; gdown.download(id='$gdrive_id', output='$archive', quiet=False)"
-elif [[ "$POLSESS_URL" == *":"* && "$POLSESS_URL" != http* ]]; then
-    rclone copy "$POLSESS_URL" /tmp/ --progress
-    src_name="$(basename "$POLSESS_URL")"
-    [ -f "/tmp/$src_name" ] && mv "/tmp/$src_name" "$archive"
 elif [ -f "$POLSESS_URL" ]; then
     cp "$POLSESS_URL" "$archive"
 else
@@ -98,7 +119,7 @@ ok "Archive downloaded ($(du -h "$archive" | cut -f1))"
 # ============================================================================
 
 info "Extracting to $DATASETS_DIR..."
-tar xzf "$archive" -C "$DATASETS_DIR"
+unzip -q "$archive" -d "$DATASETS_DIR"
 rm -f "$archive"
 ok "Extraction complete"
 

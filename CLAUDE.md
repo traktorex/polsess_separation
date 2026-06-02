@@ -105,15 +105,41 @@ jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipelin
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
 
-**ASR subsystem (`asr/`):** Two distinct pipelines for different recording regimes.
-- `evaluate_asr.py` / `evaluate_asr_intrusive.py` (+ `dataset.py`, `transcribe.py`, `metrics.py`): one-shot pipeline — separate the whole recording, then run ASR on each source. Targets REAL-M and the synthetic LibriMix-based dataset, which assume both speakers talking concurrently most of the time. Predates access to CLARIN.
-- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap. Builds a per-speaker stream using diarization and separates only the overlap regions.
-- `explore_pipeline.ipynb`: interactive frontend for the productionised pipeline in `asr_pipeline/` — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
-- `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels — DER (diarization), SI-SDR/SI-SDRi (separation), cpWER (ASR). Backed by `asr_pipeline/eval/`.
+**ASR subsystem (`asr/`):** Notebooks + the legacy one-shot eval flow.
+- `evaluate_asr.py` / `evaluate_asr_intrusive.py` (+ `dataset.py`, `transcribe.py`, `metrics.py`): one-shot pipeline — separate the whole recording, then run ASR on each source. Targets REAL-M and the synthetic LibriMix-based dataset (both speakers concurrent most of the time). Predates access to CLARIN.
+- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap; per-speaker stream from diarization, separator on overlap regions only.
+- `explore_pipeline.ipynb`: interactive frontend for the productionised `asr_pipeline/` package — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
+- `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
 
-**`asr_pipeline/` package** — productionised pipeline (`Pipeline` orchestrator + six stages: diarization → routing → enhancement → separation → assembly → transcription). Phase-major execution (one model loaded at a time). Config via nested dataclasses + YAML; configs in `asr_pipeline/configs/`. Debug logs go to `/tmp/asr_pipeline_debug.log` (override with `ASR_PIPELINE_DEBUG_LOG`) — useful when VSCode WSL bridge drops and stdout becomes unreachable.
+**`asr_pipeline/` package** — productionised pipeline. `Pipeline` orchestrator runs seven stages in fixed order:
+1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
+2. **routing** — split overlap vs solo regions.
+3. **enhancement** — `mpsenet` default; ClearerVoice (`mossformer_gan_se_16k`, …) and DeepFilterNet backends available.
+4. **separation** — SepFormer 64k baseline checkpoint by default; runs on overlap fragments only.
+5. **post_separation_processing** — VAD mask + optional BWE (`naive` / `ap_bwe` / `flowhigh`). Always-on (downstream depends on its `_gated` arrays); set `backend: naive` to apply only the mask.
+6. **assembly** — stitch per-speaker streams, ECAPA anchor for speaker identity across pieces.
+7. **transcription** — `whisper` / `whisperx` backends; default = WhisperX `large-v2` + `jonatasgrosman/wav2vec2-large-xlsr-53-polish` alignment (rationale in `asr_pipeline/configs/README.md`).
 
-**`asr_pipeline/eval/`** — evaluation helpers reused by `evaluate_pipeline.ipynb`: `parse_transcript_file`, `si_sdr`, `find_speaker_permutation`, `cpwer`, `compute_der`. CLARIN debleed dataset lives under `~/datasets/clarin_gotowy/gotowy/` (root = `<id>.wav` stereo inputs; `debleed/<id>_{L,R}.wav` = oracle per-speaker channels; `after_pipeline/<id>_{s1,s2}.wav` = pipeline outputs; `transcripts/<id>.txt` = pipeline transcripts; `eval_cache/` = cached enhanced oracles + reference Whisper transcripts).
+Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping.
+
+**`asr_pipeline/eval/`** — three-layer scoring. `evaluate_recording(rec) → ScoreCard` runs all three layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root.
+- **L1 diarization** — DER between `pipeline/diarization.json` and reference RTTM.
+- **L2 audio quality** — intrusive SI-SDR / PESQ-WB / STOI (chunked, median-aggregated, speech-presence filtered) when oracle audio is available; non-intrusive TorchAudio-SQUIM (chunked, mean-aggregated) always.
+- **L3 ASR** — cpWER + tcpWER per ablation mode (full / no-sep / no-enh), ORC-WER on the mixture baseline. Backed by `meeteval`.
+
+Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_file`, `parse_rttm`, `compute_der`, `cpwer_meeteval`, `orc_wer_meeteval`.
+
+**ASR datasets**
+- `~/datasets/clarin_gotowy/gotowy/` — CLARIN debleed eval set (oracle per-speaker channels). Root = `<id>.wav` stereo inputs; `debleed/<id>_{L,R}.wav` = oracle channels; `debleed_enhanced/` = MossFormerGAN-enhanced oracles; `after_pipeline/<id>_{s1,s2}.wav` = pipeline outputs; `transcripts/<id>.txt` = pipeline transcripts; `eval_cache/` = cached references.
+- `~/datasets/clarin_all_2speakers/` — full CLARIN 2-speaker download (no oracle channels). `clarin_download/<id>.wav` raw inputs (+ `Korpus.csv`, `Korpus_with_filename.csv`); `diarization/<id>.json` pyannote outputs; `enhanced_mossformer/<id>.wav` MossFormerGAN-enhanced; `auto_transcription_raw/<id>.{txt,json}` and `auto_transcription_enhanced_mossformer/<id>.{txt,json}` WhisperX transcripts.
+
+**ASR helper scripts (`scripts/`)**
+- `run_pipeline_on_recording.py` — full pipeline on one recording in three ablation modes (`pipeline` / `pipeline_nosep` / `pipeline_noenh`); drives the L3 WER table.
+- `prepare_eval_references.py` — cache enhanced oracles + GT-style transcripts for the eval module.
+- `enhance_clarin_debleed.py` — batch MossFormerGAN_SE_16K on oracle debleed channels.
+- `transcribe_clarin_debleed.py` / `transcribe_clarin_debleed_multimodel.py` — Whisper on debleed channels with diarization-based residue gating.
+- `diarize_clarin_2speakers.py` — pyannote over the full 2-speaker download → `diarization/<id>.json`.
+- `transcribe_clarin_2speakers.py` — WhisperX over the full 2-speaker download, raw and MossFormerGAN-enhanced.
 
 **Training Flow:** `train.py` → config → dataloaders → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning).
 
