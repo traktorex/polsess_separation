@@ -22,6 +22,7 @@ times in seconds.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
@@ -121,6 +122,45 @@ def _parse_timed_line(raw: str) -> tuple[float, float, str] | None:
         s1, s2, text = m.groups()
         return float(s1), float(s2), text.strip()
     return None
+
+
+def parse_eaf(path: str | Path) -> dict[str, list[Utterance]]:
+    """Parse an ELAN ``.eaf`` file → ``{speaker_label: [Utterance, ...]}``.
+
+    This is the reader for the **hand-corrected GT** — the EAF is the source
+    of truth, so the eval never needs a separate ``.txt`` export.
+
+    Each ``TIER`` becomes one speaker. The ``Speaker_`` prefix is stripped
+    from ``TIER_ID`` so ``Speaker_A`` → ``A`` (matching the pipeline's A/B
+    labels). Only ``ALIGNABLE_ANNOTATION``s with non-empty text and
+    resolvable start/end time slots are kept; utterances are returned sorted
+    by start time. Tiers ELAN may add on save (empty tiers, symbolic
+    subdivisions) yield empty lists, which downstream code drops.
+    """
+    path = Path(path)
+    root = ET.parse(path).getroot()
+
+    slots: dict[str, float] = {}
+    for ts in root.iter("TIME_SLOT"):
+        v = ts.get("TIME_VALUE")
+        if v is not None:
+            slots[ts.get("TIME_SLOT_ID")] = int(v) / 1000.0
+
+    out: dict[str, list[Utterance]] = {}
+    for tier in root.iter("TIER"):
+        tier_id = tier.get("TIER_ID") or ""
+        label = tier_id[len("Speaker_"):] if tier_id.startswith("Speaker_") else tier_id
+        utts: list[Utterance] = []
+        for aa in tier.iter("ALIGNABLE_ANNOTATION"):
+            start = slots.get(aa.get("TIME_SLOT_REF1"))
+            end = slots.get(aa.get("TIME_SLOT_REF2"))
+            val = aa.find("ANNOTATION_VALUE")
+            text = (val.text or "").strip() if val is not None else ""
+            if text and start is not None and end is not None:
+                utts.append(Utterance(start, end, text))
+        utts.sort(key=lambda u: u.start)
+        out[label] = utts
+    return out
 
 
 def concat_utterances(utts: Iterable[Utterance]) -> str:

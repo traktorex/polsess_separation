@@ -9,7 +9,7 @@ artifact_dir: null
 diarization:
   enabled: true
   model_id: pyannote/speaker-diarization-3.1
-  hf_token: "hf_YOUR_TOKEN_HERE"
+  # hf_token comes from $HF_TOKEN env var.
   num_speakers: 2
 
 routing:
@@ -40,7 +40,6 @@ separation:
   vad_soft_threshold: 0.20
   vad_attack_frames: 1
   vad_release_frames: 1
-  vad_mode: silero
 
 assembly:
   enabled: true

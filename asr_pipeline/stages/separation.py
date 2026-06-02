@@ -9,8 +9,8 @@ For each overlap region in `ctx.overlap_regions`:
 2. Run the separator (resample 16 k -> 8 k -> separator -> 8 k -> 16 k).
    For overlaps wider than ``overlap_add_threshold_s`` we chunk + overlap-add.
 3. Volume-normalise the two outputs (``volume_normalization``).
-4. VAD-gate each output stream (``vad_threshold``, ``vad_mode``) to suppress
-   the residual energy the separator inevitably leaks where there's no speech.
+4. VAD-gate each output stream (``vad_threshold`` + silero) to suppress the
+   residual energy the separator inevitably leaks where there's no speech.
 5. Pick the *emit region* (``seam_mode``) — the time range within the
    padded window that the assembler will splice into the per-speaker
    stream. ``zero_crossing`` nudges the seam to a nearby zero crossing in
@@ -35,7 +35,7 @@ import torch
 import torchaudio.functional as AF
 
 from asr_pipeline.config import SeparationConfig
-from asr_pipeline.context import PipelineContext
+from asr_pipeline.context import OverlapSeparated, PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
 
@@ -411,12 +411,6 @@ def _volume_normalise(
             return s1, s2, 1.0
         alpha = mix_rms / combined_rms
         return s1 * alpha, s2 * alpha, alpha
-    if mode == "match_solo":
-        raise NotImplementedError(
-            "volume_normalization='match_solo' requires solo-region RMS, "
-            "which is only known in Stage 4. Use per_piece_rms_norm in "
-            "AssemblyConfig instead, or pick 'sum_equals_mix' / 'none'."
-        )
     raise ValueError(f"Unknown volume_normalization mode: {mode!r}")
 
 
@@ -519,28 +513,21 @@ class SeparationStage(Stage):
         )
         separator.eval()
 
-        if self.config.vad_mode == "silero":
-            vad_model, _ = torch.hub.load(
-                "snakers4/silero-vad", "silero_vad", trust_repo=True
-            )
-            vad_model = vad_model.to(device)
-        elif self.config.vad_mode == "energy":
-            raise NotImplementedError(
-                "vad_mode='energy' is not implemented yet; use 'silero'."
-            )
-        else:
-            raise ValueError(f"Unknown vad_mode: {self.config.vad_mode!r}")
+        vad_model, _ = torch.hub.load(
+            "snakers4/silero-vad", "silero_vad", trust_repo=True
+        )
+        vad_model = vad_model.to(device)
 
         self._separator = separator
         self._vad = vad_model
         self._device = device
 
     def load_signature(self) -> tuple:
-        # Separator checkpoint + VAD mode both control which weights end up
-        # on the GPU. All other separation knobs (context window mode, seam
-        # mode, VAD thresholds, volume normalisation, etc.) are runtime
-        # behaviour — re-read on every call, no reload needed.
-        return (self.config.checkpoint_path, self.config.vad_mode)
+        # Only the separator checkpoint controls which weights end up on the
+        # GPU. All other knobs (context window mode, seam mode, VAD
+        # thresholds, volume normalisation, etc.) are runtime behaviour —
+        # re-read on every call, no reload needed.
+        return (self.config.checkpoint_path,)
 
     def unload(self) -> None:
         # Detailed logging here because this method is the prime suspect for
@@ -652,7 +639,9 @@ class SeparationStage(Stage):
                 sample_rate=sr,
             )
 
-            results.append({
+            # The TypedDict schema is defined in `asr_pipeline/context.py`.
+            # `s{1,2}_gated` is added by Stage 3c (post_separation_processing).
+            entry: OverlapSeparated = {
                 "idx": int(idx),
                 "start": start_s,
                 "end": end_s,
@@ -667,16 +656,13 @@ class SeparationStage(Stage):
                 "s2_raw": s2_raw,
                 "mask1": mask1,
                 "mask2": mask2,
-                # `s{1,2}_gated` is populated by Stage 3c
-                # (post_separation_processing). Downstream code (assembly,
-                # the explore notebook's 3c diagnostic) reads `_gated`,
-                # so the field is only added after 3c runs.
                 # Raw per-frame VAD probabilities (16 kHz audio -> 512-sample
                 # frames -> 32 ms per frame). Lets the notebook plot the actual
                 # silero curve next to the binary mask.
                 "probs1": probs1,
                 "probs2": probs2,
-            })
+            }
+            results.append(entry)
 
         ctx.overlap_separated = results
 
@@ -777,7 +763,6 @@ class SeparationStage(Stage):
                 "overlap_add_threshold_s": self.config.overlap_add_threshold_s,
                 "volume_normalization": self.config.volume_normalization,
                 "vad_threshold": self.config.vad_threshold,
-                "vad_mode": self.config.vad_mode,
             },
             "overlaps": [],
         }

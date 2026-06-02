@@ -36,14 +36,6 @@ Backends are selected via ``PostSeparationProcessingConfig.backend``:
                    Install:  ``pip install git+https://github.com/resemble-ai/flowhigh.git@dev``
                    Checkpoints auto-download on first
                    ``FlowHighSR.from_pretrained()``.
-  - ``nvsr``     : Stub. NVSR's pretrained weights + model code live as
-                   scripts in ``examples/NVSR/`` in haoheliu/ssr_eval —
-                   the pypi wheel is eval-framework only. Using NVSR
-                   requires vendoring those files into
-                   ``asr_pipeline/vendor/nvsr/`` (same pattern as the
-                   MP-SENet vendor). Schema entry kept so configs can
-                   reference it; ``load()`` raises ``NotImplementedError``
-                   until the vendor work is done.
 
 This stage is always-on: it has no ``enabled`` flag because Stage 4
 depends on ``s_gated`` being populated. Skipping it would break
@@ -371,47 +363,6 @@ class _FlowHighBackend:
 
 
 # ---------------------------------------------------------------------------
-# NVSR backend (stub)
-# ---------------------------------------------------------------------------
-
-
-class _NVSRBackend:
-    """NVSR stub. Raises ``NotImplementedError`` at load().
-
-    NVSR (Liu et al., INTERSPEECH 2022, arXiv 2203.14941) ships only as
-    scripts under ``examples/NVSR/`` in github.com/haoheliu/ssr_eval —
-    the pypi ``ssr_eval`` wheel is the evaluation framework only and
-    does not contain the model code or weights. Until someone vendors
-    the relevant files into ``asr_pipeline/vendor/nvsr/`` (mirroring how
-    MP-SENet is vendored under ``vendor/mpsenet/``), this backend exists
-    only so configs referencing ``backend: nvsr`` parse without a
-    ``__post_init__`` validation error.
-
-    Files needed to make this real:
-      - ``examples/NVSR/nvsr_unet.py`` — the U-Net model
-      - ``examples/NVSR/main.py``      — preprocessing + inference
-      - voicefixer / TFGAN vocoder weights (the README links the
-        pretrained checkpoint via Google Drive)
-      - any imports the example uses from ``ssr_eval.utils``
-    """
-
-    def load(self, device: torch.device) -> None:
-        raise NotImplementedError(
-            "NVSR backend not implemented. The pypi `ssr_eval` package "
-            "ships only the evaluation framework; the NVSR model lives "
-            "in examples/NVSR/ in the GitHub repo and must be vendored "
-            "into asr_pipeline/vendor/nvsr/ before this backend can run."
-        )
-
-    def unload(self) -> None:
-        return None
-
-    def extend(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        # Defensive — load() raises first, so this is unreachable in practice.
-        raise NotImplementedError("NVSR backend not implemented.")
-
-
-# ---------------------------------------------------------------------------
 # Stage dispatcher
 # ---------------------------------------------------------------------------
 
@@ -426,7 +377,7 @@ class PostSeparationProcessingStage(Stage):
         super().__init__(enabled=True)
         self.config = config
         self._backend: (
-            _NaiveBackend | _APBWEBackend | _FlowHighBackend | _NVSRBackend | None
+            _NaiveBackend | _APBWEBackend | _FlowHighBackend | None
         ) = None
 
     def load(self, device: torch.device) -> None:
@@ -437,8 +388,6 @@ class PostSeparationProcessingStage(Stage):
             backend = _APBWEBackend(self.config.checkpoint_path)
         elif self.config.backend == "flowhigh":
             backend = _FlowHighBackend(self.config.flowhigh_input_sr)
-        elif self.config.backend == "nvsr":
-            backend = _NVSRBackend()
         else:
             raise ValueError(
                 f"Unknown post_separation_processing backend: "

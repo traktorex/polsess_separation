@@ -171,7 +171,9 @@ class SeparationConfig:
     overlap_add_threshold_s: float = 12.0
 
     # Volume normalisation applied to each separated stream before emission.
-    volume_normalization: str = "sum_equals_mix"  # "sum_equals_mix" | "match_solo" | "none"
+    # Per-speaker overlap-to-solo RMS matching lives in AssemblyConfig
+    # (`overlap_rms_match_solo`), not here.
+    volume_normalization: str = "sum_equals_mix"  # "sum_equals_mix" | "none"
 
     # VAD applied to each separator output to suppress residuals.
     # `vad_threshold` is the "definitely speech" upper bound. Frames above it
@@ -190,7 +192,6 @@ class SeparationConfig:
     # frame probability. Set both to 0 to disable.
     vad_attack_frames: int = 1
     vad_release_frames: int = 1
-    vad_mode: str = "silero"                    # "silero" | "energy" (energy = NotImplemented)
 
 
 @dataclass
@@ -226,13 +227,6 @@ class PostSeparationProcessingConfig:
     #     pipeline rate. Reports beating AP-BWE on VCTK LSD/ViSQOL.
     #     Install: pip install git+https://github.com/resemble-ai/flowhigh.git@dev
     #     Checkpoint auto-downloads on first FlowHighSR.from_pretrained().
-    #   - "nvsr": Stub. Pretrained NVSR (Liu et al., INTERSPEECH 2022,
-    #     2203.14941) ships only as scripts under examples/NVSR/ in the
-    #     haoheliu/ssr_eval repo — the pypi wheel is eval-framework
-    #     only. Using NVSR requires vendoring the model code (same
-    #     pattern as asr_pipeline/vendor/mpsenet/). This backend raises
-    #     at load() until that's done; the schema entry exists so configs
-    #     can still parse.
     backend: str = "naive"
     # Path to the AP-BWE generator checkpoint (PyTorch state dict
     # containing the 'generator' key). Ignored by non-AP-BWE backends.
@@ -328,6 +322,13 @@ class TranscriptionConfig:
     # WhisperX-only knobs (ignored when ``backend != whisperx``):
     # the wav2vec2 model used for forced alignment.
     align_model_name: str = "jonatasgrosman/wav2vec2-large-xlsr-53-polish"
+    # When True, additionally run the same backend on the whole mixture
+    # (``ctx.audio``) as a single stream, writing the result to
+    # ``ctx.mixture_transcript``. Used for the thesis ablation table
+    # (mixture baseline vs. pipeline-with-separation). Same backend,
+    # prompt, and args as the per-speaker transcription — otherwise the
+    # ablation comparison isn't fair.
+    transcribe_mixture: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -374,13 +375,11 @@ class PipelineConfig:
         ):
             raise ValueError(f"Invalid seam_mode: {self.separation.seam_mode!r}")
         if self.separation.volume_normalization not in (
-            "sum_equals_mix", "match_solo", "none",
+            "sum_equals_mix", "none",
         ):
             raise ValueError(
                 f"Invalid volume_normalization: {self.separation.volume_normalization!r}"
             )
-        if self.separation.vad_mode not in ("silero", "energy"):
-            raise ValueError(f"Invalid vad_mode: {self.separation.vad_mode!r}")
         if self.assembly.output_mode not in ("shortened", "full_length"):
             raise ValueError(f"Invalid output_mode: {self.assembly.output_mode!r}")
         if self.enhancement.backend not in (
@@ -394,7 +393,7 @@ class PipelineConfig:
                 f"Invalid enhancement.backend: {self.enhancement.backend!r}"
             )
         if self.post_separation_processing.backend not in (
-            "naive", "ap_bwe", "flowhigh", "nvsr",
+            "naive", "ap_bwe", "flowhigh",
         ):
             raise ValueError(
                 f"Invalid post_separation_processing.backend: "
@@ -414,6 +413,12 @@ class PipelineConfig:
             raise ValueError(
                 "spill_intermediate is True but artifact_dir is None — "
                 "set artifact_dir (e.g. via --output) or disable spilling."
+            )
+
+        if self.diarization.enabled and not self.diarization.hf_token:
+            raise ValueError(
+                "diarization.enabled is True but hf_token is unset — "
+                "export HF_TOKEN or set diarization.hf_token in YAML."
             )
 
 

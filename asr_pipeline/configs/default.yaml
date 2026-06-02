@@ -11,7 +11,8 @@ artifact_dir: null
 diarization:
   enabled: true
   model_id: pyannote/speaker-diarization-3.1
-  hf_token: "hf_YOUR_TOKEN_HERE"   # picked up from $HF_TOKEN if null
+  # hf_token is read from the $HF_TOKEN env var by default. Do NOT
+  # hardcode a real token here — it ends up in git history.
   num_speakers: 2
 
 routing:
@@ -27,7 +28,7 @@ enhancement:
 
 separation:
   enabled: true
-  checkpoint_path: checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/sepformer_SB_best.pt
+  checkpoint_path: checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt
   separator_sample_rate: 8000
   training_chunk_length_s: 4.0
   context_window_mode: expand_to_chunk
@@ -42,14 +43,13 @@ separation:
   vad_soft_threshold: 0.10             # Schmitt-trigger lower threshold (0 to disable)
   vad_attack_frames: 1                 # frames of dilation at speech onset (32 ms each)
   vad_release_frames: 1                # frames of dilation at speech offset
-  vad_mode: silero
 
 post_separation_processing:
   # VAD mask application + optional bandwidth extension. Always-on:
   # Stage 4 depends on the masked `_gated` arrays this stage writes,
   # so there's no `enabled` knob. Set `backend: naive` to apply only
   # the mask (no neural BWE).
-  backend: ap_bwe                       # naive | ap_bwe | flowhigh | nvsr(stub)
+  backend: ap_bwe                       # naive | ap_bwe | flowhigh
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
   # (extension is ignored by torch.load).
@@ -76,7 +76,21 @@ assembly:
 
 transcription:
   enabled: true
-  model_name: large-v3
+  # backend selector. See class docstring in stages/transcription.py.
+  #   whisper  = openai-whisper (canonical OpenAI checkpoints only;
+  #              heuristic word timestamps, drift 200-500 ms).
+  #   whisperx = faster-whisper + wav2vec2 forced alignment. Accepts HF
+  #              model ids (auto-converted to CT2 on first use under
+  #              ~/models/ct2-whisper/<safe-name>/). Word timestamps to
+  #              ±50 ms.
+  backend: whisperx
+  # OpenAI short name (large-v3 / large-v2 / ...) when backend=whisper.
+  # OpenAI short name OR HF Whisper id when backend=whisperx.
+  model_name: large-v2
   language: pl
   initial_prompt: Rozmowa po polsku.
   word_timestamps: true
+  # wav2vec2 forced-alignment model. ONLY used by backend=whisperx.
+  align_model_name: jonatasgrosman/wav2vec2-large-xlsr-53-polish
+  # Rationale for choosing (backend, model_name): see configs/README.md
+  # (5-variant comparison, 2026-05-25 / -26).

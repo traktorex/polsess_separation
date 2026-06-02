@@ -8,13 +8,47 @@ stage fails or is disabled.
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NotRequired, Optional, Tuple, TypedDict
 
 import numpy as np
 import pandas as pd
 
 
 Interval = Tuple[float, float]
+
+
+class OverlapSeparated(TypedDict):
+    """One entry in `ctx.overlap_separated` — the central 3b → 3c → 4 contract.
+
+    Stays a plain dict at runtime (TypedDict is a type-checker hint only).
+    Notebook code that does ``ovl["s1_gated"]`` keeps working.
+
+    Fields are populated incrementally:
+      - Stage 3b (``SeparationStage``) constructs the dict with all fields
+        EXCEPT ``s1_gated`` / ``s2_gated``.
+      - Stage 3c (``PostSeparationProcessingStage``) writes ``s1_gated`` and
+        ``s2_gated`` after applying the VAD mask + optional BWE.
+    """
+
+    idx: int
+    start: float                        # raw overlap interval (stage 2)
+    end: float
+    pad_start: float                    # padded window picked by stage 3b
+    pad_end: float
+    emit_start: float                   # emit region (seam adjustments applied)
+    emit_end: float
+    chunked: bool
+    volume_scale: float
+    mix: np.ndarray                     # padded mixture fed to the separator
+    s1_raw: np.ndarray                  # unmasked separator output (stream 1)
+    s2_raw: np.ndarray                  # unmasked separator output (stream 2)
+    mask1: np.ndarray                   # silero VAD mask on s1_raw
+    mask2: np.ndarray
+    probs1: np.ndarray                  # per-frame VAD probabilities for s1
+    probs2: np.ndarray
+    # Populated by Stage 3c — assembly reads these:
+    s1_gated: NotRequired[np.ndarray]   # post-BWE * mask1
+    s2_gated: NotRequired[np.ndarray]
 
 
 @dataclass
@@ -73,14 +107,11 @@ class PipelineContext:
     # Same length as `ctx.audio`; sliced per-speaker at assembly time.
     enhanced_full: Optional[np.ndarray] = None
 
-    # Overlap separation + post-processing — one dict per overlap region.
-    # Populated incrementally:
-    #   - Stage 3b (separation) writes: start, end, pad_*, emit_*, mix,
-    #     s1_raw, s2_raw, mask1, mask2, probs1, probs2, chunked, volume_scale
-    #   - Stage 3c (post_separation_processing) writes: s1_gated, s2_gated
-    # Stage 4 (assembly) reads `_gated` only, so it doesn't matter to it
-    # which backend produced them — just that 3c ran.
-    overlap_separated: List[Dict[str, Any]] = field(default_factory=list)
+    # Overlap separation + post-processing. Each entry is an
+    # `OverlapSeparated` (TypedDict above) — schema defined there. Stage 4
+    # (assembly) reads `s_gated` only, so it doesn't matter to it which 3c
+    # backend produced them — just that 3c ran.
+    overlap_separated: List[OverlapSeparated] = field(default_factory=list)
 
     # Stage 4 — assembly
     # key: speaker label from pyannote; value: 1-D float32 array
@@ -93,3 +124,7 @@ class PipelineContext:
     # Stage 5 — transcription
     # key: speaker label from pyannote; value: Whisper result dict
     transcripts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Stage 5 — single-stream baseline on the whole mixture (populated only
+    # when `transcription.transcribe_mixture: true`). Same shape as one
+    # entry in `transcripts`.
+    mixture_transcript: Optional[Dict[str, Any]] = None

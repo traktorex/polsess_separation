@@ -235,6 +235,14 @@ class _ClearVoiceBackend:
         self.native_sample_rate = native_sample_rate
         self._cv = None  # ClearVoice instance
         self._device: torch.device | None = None
+        # ClearVoice's `one_time_decode_length` (seconds): audio longer than
+        # this triggers its internal segmented decode — which has an upstream
+        # bug (`np.zeros(b, t)` instead of `np.zeros((b, t))` in
+        # decode_batch.py, crashes on long input). We keep every forward
+        # below this threshold and overlap-add ourselves. Read per-model in
+        # load(); 15 s is a safe floor across the SE models (FRCRN 120,
+        # MossFormer2 20, …).
+        self._otdl_s: float = 15.0
 
     def load(self, device: torch.device) -> None:
         from clearvoice import ClearVoice
@@ -257,6 +265,10 @@ class _ClearVoiceBackend:
                 sm.model.to(device).eval()
         self._cv = cv
         self._device = device
+        # Respect each backend's one-pass window so we chunk just under it.
+        otdl = getattr(getattr(sm, "args", None), "one_time_decode_length", None)
+        if otdl:
+            self._otdl_s = float(otdl)
 
     def unload(self) -> None:
         self._cv = None
@@ -279,9 +291,7 @@ class _ClearVoiceBackend:
                 res_type="soxr_hq",
             )
 
-        batched = x[np.newaxis, :].astype(np.float32)  # (1, T)
-        out = self._cv(batched)  # numpy array, shape varies
-        out = np.asarray(out, dtype=np.float32).squeeze()
+        out = self._enhance_native(x)
 
         if sample_rate != self.native_sample_rate:
             out = librosa.resample(
@@ -296,6 +306,44 @@ class _ClearVoiceBackend:
         elif len(out) < orig_len:
             out = np.pad(out, (0, orig_len - len(out)))
         return out.astype(np.float32)
+
+    def _cv_call(self, x_native: np.ndarray) -> np.ndarray:
+        """One ClearVoice forward on native-rate mono audio → mono output."""
+        batched = x_native[np.newaxis, :].astype(np.float32)  # (1, T)
+        out = self._cv(batched)
+        return np.asarray(out, dtype=np.float32).squeeze()
+
+    def _enhance_native(self, x: np.ndarray) -> np.ndarray:
+        """Enhance native-rate mono audio, overlap-adding long input.
+
+        ClearVoice's own long-audio segmentation (input longer than
+        `one_time_decode_length`) is bugged, so we keep every forward under
+        that threshold and stitch with a canonical 50 %-hop Hann window
+        (constant overlap-add) — the same scheme the MP-SENet backend uses.
+        Single-coverage regions reduce to the raw model output; overlaps
+        crossfade. Short input is a single forward (unchanged behaviour).
+        """
+        sr = self.native_sample_rate
+        window = max(int(self._otdl_s * 0.8 * sr), sr)   # stay under threshold; ≥ 1 s
+        if len(x) <= window:
+            return self._cv_call(x)[: len(x)]
+
+        hop = window // 2
+        win = np.hanning(window).astype(np.float32)
+        out = np.zeros(len(x), dtype=np.float32)
+        norm = np.zeros(len(x), dtype=np.float32)
+        idx = 0
+        while idx < len(x):
+            seg = x[idx: idx + window]
+            seg_out = self._cv_call(seg)[: len(seg)]
+            w = win[: len(seg)]
+            out[idx: idx + len(seg)] += seg_out * w
+            norm[idx: idx + len(seg)] += w
+            if idx + window >= len(x):
+                break
+            idx += hop
+        norm[norm < 1e-8] = 1.0
+        return out / norm
 
 
 # ---------------------------------------------------------------------------

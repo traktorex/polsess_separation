@@ -16,7 +16,7 @@ from __future__ import annotations
 import gc
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import numpy as np
 import torch
@@ -24,42 +24,12 @@ import torch
 from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.stages.base import Stage
+from asr_pipeline.transcript_format import format_transcript, to_jsonable
 
 
 # ---------------------------------------------------------------------------
 # Output formatting helpers (shared by both backends)
 # ---------------------------------------------------------------------------
-
-
-def _format_transcript(whisper_result: dict) -> str:
-    """Pretty per-segment transcript dump (POC cell 20 format)."""
-    if not isinstance(whisper_result, dict):
-        return ""
-    segments = whisper_result.get("segments") or []
-    if not segments:
-        return (whisper_result.get("text") or "").strip()
-    lines = []
-    for seg in segments:
-        start = float(seg.get("start", 0.0))
-        end = float(seg.get("end", 0.0))
-        text = (seg.get("text") or "").strip()
-        lines.append(f"[{start:6.2f} → {end:6.2f}]  {text}")
-    return "\n".join(lines)
-
-
-def _jsonable(obj: Any) -> Any:
-    """Recursively convert numpy/torch scalars to plain Python for json.dump."""
-    if isinstance(obj, dict):
-        return {k: _jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_jsonable(x) for x in obj]
-    if isinstance(obj, (np.floating, np.integer)):
-        return obj.item()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    if isinstance(obj, torch.Tensor):
-        return obj.detach().cpu().tolist()
-    return obj
 
 
 def _normalise_result(result: dict, language: str) -> dict:
@@ -206,6 +176,11 @@ class _WhisperXBackend:
             language=self.cfg.language,
             asr_options={"initial_prompt": self.cfg.initial_prompt},
         )
+        # Always load the wav2vec2 align model when using WhisperX — it
+        # also catches hallucinations (words that can't be aligned to actual
+        # audio are filtered out) and re-segments the output to actual word
+        # boundaries, so its value is more than just word-level timestamps.
+        # If you actually want no alignment, pick `backend: whisper` instead.
         self._align_model, self._align_metadata = whisperx.load_align_model(
             language_code=self.cfg.language,
             device=device_str,
@@ -287,18 +262,29 @@ class TranscriptionStage(Stage):
         if self._backend is None:
             raise RuntimeError("TranscriptionStage.run called before load().")
 
-        if not ctx.assembled:
-            ctx.transcripts = {}
-            return
-
         min_samples = ctx.sample_rate // 2  # 0.5 s — POC's lower bound
+
+        # Per-speaker assembled streams.
         results: dict[str, dict] = {}
-        for spk, audio in ctx.assembled.items():
+        for spk, audio in (ctx.assembled or {}).items():
             if len(audio) < min_samples:
-                results[spk] = {"text": "", "segments": [], "language": self.config.language}
+                results[spk] = {
+                    "text": "", "segments": [], "language": self.config.language,
+                }
                 continue
             results[spk] = self._backend.transcribe(audio)
         ctx.transcripts = results
+
+        # Mixture baseline (single-stream Whisper on the whole recording).
+        # Used by the ablation table — same backend / prompt / args as the
+        # per-speaker pass, so the comparison is fair.
+        if self.config.transcribe_mixture and ctx.audio is not None:
+            if len(ctx.audio) < min_samples:
+                ctx.mixture_transcript = {
+                    "text": "", "segments": [], "language": self.config.language,
+                }
+            else:
+                ctx.mixture_transcript = self._backend.transcribe(ctx.audio)
 
     # ------------------------------------------------------------------
     # Spill
@@ -311,7 +297,7 @@ class TranscriptionStage(Stage):
             txt_path = artifact_dir / f"transcript_{label}.txt"
             json_path = artifact_dir / f"transcript_{label}.json"
             with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(_format_transcript(result))
+                f.write(format_transcript(result))
                 f.write("\n")
             with open(json_path, "w", encoding="utf-8") as f:
-                json.dump(_jsonable(result), f, indent=2, ensure_ascii=False)
+                json.dump(to_jsonable(result), f, indent=2, ensure_ascii=False)

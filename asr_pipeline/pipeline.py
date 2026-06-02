@@ -26,7 +26,7 @@ import torch
 from asr_pipeline.config import PipelineConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import LOG_PATH, dlog, reset_log
-from asr_pipeline.io import ensure_artifact_dir, load_audio_as_mono_16k
+from asr_pipeline.io import ensure_artifact_dir, load_audio_as_mono
 from asr_pipeline.stages import (
     AssemblyStage,
     DiarizationStage,
@@ -116,7 +116,7 @@ class Pipeline:
             input_path=Path(audio_path),
             sample_rate=self.config.sample_rate,
         )
-        ctx.audio = load_audio_as_mono_16k(
+        ctx.audio = load_audio_as_mono(
             audio_path, target_sr=self.config.sample_rate
         )
         _log(f"load_audio: loaded {len(ctx.audio)/ctx.sample_rate:.2f}s audio")
