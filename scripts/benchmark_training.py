@@ -34,7 +34,9 @@ CONFIGS = [
     ("DPRNN (k=2)", "experiments/dprnn/variants/dprnn_baseline_kernel2.yaml"),
     ("SepFormer", "experiments/sepformer/sepformer_baseline.yaml"),
     ("SepFormer (pos-enc)", "experiments/sepformer/sepformer_baseline_positionalenc.yaml"),
-    ("SPMamba", "experiments/spmamba/spmamba_sb_reduced.yaml"),
+    ("SepFormer (final 128k)", "experiments/sepformer/6-final-training/128k_final.yaml"),
+    ("SPMamba (reduced 1.2M)", "experiments/spmamba/spmamba_sb_reduced.yaml"),
+    ("SPMamba (unreduced 6M)", "experiments/spmamba/spmamba_sb.yaml"),
     ("MambaTasNet-XS", "experiments/mamba_tasnet/mamba_tasnet_xs.yaml"),
     ("MambaTasNet-S", "experiments/mamba_tasnet/mamba_tasnet_s.yaml"),
     ("MambaTasNet-M", "experiments/mamba_tasnet/mamba_tasnet_m.yaml"),
@@ -198,6 +200,11 @@ def main():
     parser.add_argument("--train-samples", type=int, default=2000, help="Training samples (default: 2000)")
     parser.add_argument("--val-samples", type=int, default=400, help="Validation samples (default: 400)")
     parser.add_argument("--output", default="benchmark_training.csv", help="Output CSV path")
+    parser.add_argument("--only", nargs="+", default=None,
+                        help="Only benchmark configs whose name contains any of these substrings "
+                             "(e.g. --only sepformer spmamba)")
+    parser.add_argument("--project-epochs", type=int, default=70,
+                        help="Epoch count used to project full-run days for 64k/128k (default: 70)")
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -217,17 +224,35 @@ def main():
     logger = logging.getLogger("polsess")
     logger.setLevel(logging.WARNING)
 
+    configs = CONFIGS
+    if args.only:
+        needles = [s.lower() for s in args.only]
+        configs = [(n, p) for (n, p) in CONFIGS if any(s in n.lower() for s in needles)]
+        if not configs:
+            print(f"No configs match --only {args.only}.")
+            print("Available:", ", ".join(n for n, _ in CONFIGS))
+            sys.exit(1)
+
     results = []
-    for name, config_path in CONFIGS:
+    for name, config_path in configs:
         print(f"Benchmarking {name}...")
-        result = benchmark_training(
-            name, config_path,
-            n_epochs=args.n_epochs,
-            train_samples=args.train_samples,
-            val_samples=args.val_samples,
-            device_str="cuda",
-            logger=logger,
-        )
+        try:
+            result = benchmark_training(
+                name, config_path,
+                n_epochs=args.n_epochs,
+                train_samples=args.train_samples,
+                val_samples=args.val_samples,
+                device_str="cuda",
+                logger=logger,
+            )
+        except RuntimeError as e:
+            torch.cuda.empty_cache()
+            if "out of memory" in str(e).lower():
+                print(f"  → OOM: {name} does not fit at batch_size=1 on this GPU "
+                      "(try a shorter training segment).")
+            else:
+                print(f"  → FAILED: {str(e)[:100]}")
+            result = None
         if result:
             print(f"  → Avg: {result['avg_train_epoch_s']:.1f}s/train epoch, "
                   f"{result['avg_val_epoch_s']:.1f}s/val epoch, "
@@ -245,6 +270,19 @@ def main():
               f"{r['avg_train_epoch_s']:>13.1f} {r['avg_val_epoch_s']:>13.1f} {total:>13.1f} {r['peak_memory_mb']:>14.0f}")
     print("=" * 105)
     print(f"GPU: {gpu_name} | {args.train_samples} train + {args.val_samples} val samples | batch_size=1")
+
+    # Project full-run wall-clock. batch_size=1 → train time scales linearly with sample count.
+    # Approximate: train-only (ignores validation overhead, which adds a bit each epoch).
+    if results:
+        print(f"\nProjected TRAIN wall-clock @ {args.project_epochs} epochs "
+              f"(scaled from {args.train_samples} samples; excludes validation):")
+        print(f"{'Model':<25} {'64k':>10} {'128k':>10}")
+        print("-" * 47)
+        for r in results:
+            train_s_per_sample = r["avg_train_epoch_s"] / r["train_samples"]
+            d64 = train_s_per_sample * 64000 * args.project_epochs / 86400
+            d128 = train_s_per_sample * 128000 * args.project_epochs / 86400
+            print(f"{r['name']:<25} {d64:>8.1f}d {d128:>8.1f}d")
 
     # Save CSV
     output_path = Path(args.output)
