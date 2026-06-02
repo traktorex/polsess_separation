@@ -2,6 +2,8 @@
 
 from .conv_tasnet import ConvTasNet
 from .sepformer import SepFormer
+from .resepformer import RESepFormer
+from .mossformer2 import MossFormer2
 from .dprnn import DPRNN
 
 # Mamba models require mamba-ssm (Linux + CUDA only)
@@ -16,6 +18,8 @@ if MAMBA_AVAILABLE:
 MODELS = {
     'convtasnet': ConvTasNet,
     'sepformer': SepFormer,
+    'resepformer': RESepFormer,
+    'mossformer2': MossFormer2,
     'dprnn': DPRNN,
 }
 
@@ -49,7 +53,7 @@ def get_model(model_type: str):
 
 
 __all__ = [
-    'ConvTasNet', 'SepFormer', 'DPRNN', 'MAMBA_AVAILABLE',
+    'ConvTasNet', 'SepFormer', 'RESepFormer', 'MossFormer2', 'DPRNN', 'MAMBA_AVAILABLE',
     'MODELS', 'MAMBA_MODELS', 'get_model',
 ]
 

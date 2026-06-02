@@ -100,7 +100,9 @@ jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipelin
 **Configuration (`config.py`):** Dataclasses (`DataConfig`, `ModelConfig`, `TrainingConfig`) with nested model/dataset params. Priority: defaults < env vars < YAML < CLI args. Use `get_config_from_args()` for CLI, `load_config_for_run(wandb.config)` for sweeps.
 
 **Model Registry (`models/__init__.py`):** Dict-based. `get_model("name")` returns class. Mamba models auto-excluded without `mamba-ssm`.
-- `convtasnet` (~8M), `sepformer` (~26M), `dprnn` (~2-3M) — cross-platform
+- `convtasnet` (~8M), `sepformer` (~26M), `resepformer` (~8M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M) — cross-platform
+  - `resepformer` = RE-SepFormer (Subakan et al. 2022): resource-efficient SepFormer. Thin wrapper reusing SpeechBrain's `ResourceEfficientSeparator` mask network + the same dual_path `Encoder`/`Decoder` as `sepformer`.
+  - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched). Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
 - `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.6M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
@@ -178,7 +180,7 @@ training:
 ## Key Technical Details
 
 - **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow. Non-Mamba models use float16 + GradScaler; Mamba models use bfloat16 without GradScaler (detected by model class name in `trainer.py`).
-- **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix.
+- **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix. Skipped for Mamba models. `mossformer2` is compiled with `dynamic=False` (per-shape static specialization): its vendored rotary block disables the seq-len cache (`cache_if_possible=False`) and its token-shift/group-rearrange can't be lowered under symbolic shapes — so fixed-length crops compile once, new lengths trigger a one-time static recompile. See `train.py` + `apply_torch_compile`.
 - **MM-IPC (Mix Modification by Inverted Phase Cancellation):** Augmentation that randomly varies background complexity during training by subtracting audio layers from the full mix. Indoor variants (with reverb): SER/SR/ER/R. Outdoor variants (no reverb): SE/S/E/C. Letters indicate what's present: S=scene, E=event, R=reverb, C=clean. Implemented via lazy loading in `datasets/polsess_dataset.py`. Validation uses deterministic selection (seeded by sample index).
 - **Curriculum Learning:** Configure in YAML `training.curriculum_learning`. Progressive variant introduction + optional LR scheduler gating. Note: when curriculum learning is active, the LR scheduler is **disabled by default** until a curriculum entry includes `lr_scheduler: start` — omitting this key means the scheduler never runs.
 - **Gradient Accumulation:** `training.grad_accumulation_steps` for effective batch scaling.

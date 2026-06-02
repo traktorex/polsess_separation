@@ -19,24 +19,31 @@ def apply_torch_compile(
     model: torch.nn.Module,
     logger: Optional[logging.Logger] = None,
     mode: str = "default",
+    dynamic: Optional[bool] = None,
 ) -> torch.nn.Module:
-    """Apply torch.compile if available (PyTorch 2.0+, Linux only)."""
+    """Apply torch.compile if available (PyTorch 2.0+, Linux only).
+
+    `dynamic` is passed straight to torch.compile: None (default) lets Dynamo
+    auto-detect dynamic shapes; False forces per-shape static specialization
+    (needed by MossFormer2, whose token-shift / group-rearrange cannot be lowered
+    under symbolic shapes — see train.py).
+    """
     if not hasattr(torch, "compile"):
         if logger:
             logger.info("torch.compile not available (PyTorch < 2.0)")
         return model
-    
+
     if sys.platform != "linux":
         if logger:
             logger.info(
                 f"Skipping torch.compile (requires Triton/Linux, detected: {sys.platform})"
             )
         return model
-    
+
     try:
         if logger:
-            logger.info(f"Compiling model with torch.compile (mode={mode})...")
-        compiled_model = torch.compile(model, mode=mode)
+            logger.info(f"Compiling model with torch.compile (mode={mode}, dynamic={dynamic})...")
+        compiled_model = torch.compile(model, mode=mode, dynamic=dynamic)
         if logger:
             logger.info("Model compiled successfully!")
         return compiled_model

@@ -1,8 +1,6 @@
 """Evaluation script for PolSESS speech separation models (SI-SDR, PESQ, STOI)."""
 
-import warnings
-warnings.filterwarnings("ignore", message=".*torchaudio.*", category=UserWarning)
-warnings.filterwarnings("ignore", message=".*pkg_resources.*", category=UserWarning)
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
 
 import logging
 import torch

@@ -1,5 +1,7 @@
 """Training script for W&B hyperparameter sweeps."""
 
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
+
 import torch
 import wandb
 from torch.utils.data import DataLoader

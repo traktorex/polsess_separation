@@ -1,5 +1,7 @@
 """Training script for speech separation using various model architectures."""
 
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
+
 import torch
 from torch.utils.data import DataLoader
 from config import get_config_from_args
@@ -125,14 +127,22 @@ def main():
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only). Skip for Mamba models:
-    # Dynamo tracing into mamba_ssm.MambaInnerFn breaks the delta/conv1d_out
-    # dtype contract on native Linux.
+    # Apply torch.compile (PyTorch 2.0+, Linux only).
+    #   - Mamba: skipped. Dynamo tracing into mamba_ssm.MambaInnerFn breaks the
+    #     delta/conv1d_out dtype contract on native Linux.
+    #   - MossFormer2: compiled with dynamic=False. Its vendored rotary block has
+    #     the seq-len cache disabled (cache_if_possible=False), and its token-shift
+    #     / group-rearrange cannot be lowered under symbolic shapes — so we force
+    #     per-shape static specialization. Fixed-length training crops compile once;
+    #     a new length triggers a one-time static recompile. (If this ever regresses
+    #     on another torch build, fall back to skipping compile for mossformer2.)
     if config.model.model_type in MAMBA_MODELS:
         logger.info(
             f"Skipping torch.compile for {config.model.model_type} "
             "(incompatible with mamba_ssm CUDA kernels)."
         )
+    elif config.model.model_type == "mossformer2":
+        model = apply_torch_compile(model, logger=logger, dynamic=False)
     else:
         model = apply_torch_compile(model, logger=logger)
 

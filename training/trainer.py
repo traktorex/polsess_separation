@@ -469,15 +469,13 @@ class Trainer:
                 mix = batch["mix"].to(self.device)
                 clean = batch["clean"].to(self.device)
 
-                if self.use_amp:
-                    with torch.amp.autocast("cuda", dtype=self.amp_dtype):
-                        mix_input = mix.unsqueeze(1)
-                        estimates = self.model(mix_input)
-                        _, sisdr_value = self.loss_fn(estimates, clean)
-                else:
-                    mix_input = mix.unsqueeze(1)
-                    estimates = self.model(mix_input)
-                    _, sisdr_value = self.loss_fn(estimates, clean)
+                # Validation always runs in fp32 (no autocast), matching evaluate.py.
+                # Under fp16 autocast, MossFormer2's squared-ReLU attention can
+                # overflow in eval mode once the model sharpens, producing NaN val
+                # SI-SDR; the fp32 forward avoids it. Training precision is unchanged.
+                mix_input = mix.unsqueeze(1)
+                estimates = self.model(mix_input)
+                _, sisdr_value = self.loss_fn(estimates, clean)
                 # Weight by actual batch size for correct averaging
                 batch_size = len(mix)
                 sisdri_value = self._compute_sisdri(sisdr_value, mix, clean)
@@ -522,11 +520,8 @@ class Trainer:
                     clean = batch["clean"].to(self.device)
                     batch_size = len(mix)
 
-                    if self.use_amp:
-                        with torch.amp.autocast("cuda", dtype=self.amp_dtype):
-                            estimates = self.model(mix.unsqueeze(1))
-                    else:
-                        estimates = self.model(mix.unsqueeze(1))
+                    # fp32 forward (see validate()): avoids fp16 overflow in eval.
+                    estimates = self.model(mix.unsqueeze(1))
 
                     # Trim everyone to common length (matches evaluate.py).
                     min_len = min(estimates.shape[-1], clean.shape[-1])
