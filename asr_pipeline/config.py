@@ -16,6 +16,15 @@ from typing import Optional
 import yaml
 
 
+def _one_of(value, name: str, allowed: tuple) -> None:
+    """Raise ValueError unless `value` is one of `allowed`. Keeps the
+    enum-string checks in `PipelineConfig.__post_init__` uniform."""
+    if value not in allowed:
+        raise ValueError(
+            f"Invalid {name}: {value!r} (allowed: {', '.join(map(repr, allowed))})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Per-stage configs
 # ---------------------------------------------------------------------------
@@ -72,8 +81,6 @@ class EnhancementConfig:
     #   - "mossformer2_se_48k": ClearerVoice MossFormer2, native 48k
     #     (pipeline at 16k → upsample/downsample handled internally by the
     #     backend; expect modest extra compute)
-    #   - "deepfilternet": DeepFilterNet3, native 48k, trained on DNS
-    #     Challenge data incl. reverb. Tiny (~2M).
     # The non-MPSENet backends ignore the `checkpoint_path` / `config_path`
     # fields below — they self-download to their respective caches on
     # first use.
@@ -298,9 +305,8 @@ class TranscriptionConfig:
         token-aligned and drift by 200–500 ms.
       - ``whisperx``: WhisperX = faster-whisper + wav2vec2 forced alignment.
         Word-level timestamps to ±50 ms. Also the only backend that supports
-        non-OpenAI Whisper checkpoints via HF model id, e.g.
-        ``bardsai/whisper-large-v2-pl-v2`` (Polish-finetuned, expected to
-        cut Polish WER vs vanilla large-v3).
+        non-OpenAI Whisper checkpoints via HF model id (e.g. a
+        language-specific Whisper finetune).
 
     Both backends emit the same output shape per speaker::
 
@@ -364,49 +370,26 @@ class PipelineConfig:
 
     def __post_init__(self):
         # Validate enum-string knobs early so misconfiguration is loud.
-        if self.separation.context_window_mode not in (
-            "expand_to_chunk", "fixed_pad", "none",
-        ):
-            raise ValueError(
-                f"Invalid context_window_mode: {self.separation.context_window_mode!r}"
-            )
-        if self.separation.seam_mode not in (
-            "zero_crossing", "overlap_boundary", "snap_to_silence",
-        ):
-            raise ValueError(f"Invalid seam_mode: {self.separation.seam_mode!r}")
-        if self.separation.volume_normalization not in (
-            "sum_equals_mix", "none",
-        ):
-            raise ValueError(
-                f"Invalid volume_normalization: {self.separation.volume_normalization!r}"
-            )
-        if self.assembly.output_mode not in ("shortened", "full_length"):
-            raise ValueError(f"Invalid output_mode: {self.assembly.output_mode!r}")
-        if self.enhancement.backend not in (
-            "mpsenet",
-            "frcrn_se_16k",
-            "mossformer_gan_se_16k",
-            "mossformer2_se_48k",
-            "deepfilternet",
-        ):
-            raise ValueError(
-                f"Invalid enhancement.backend: {self.enhancement.backend!r}"
-            )
-        if self.post_separation_processing.backend not in (
-            "naive", "ap_bwe", "flowhigh",
-        ):
-            raise ValueError(
-                f"Invalid post_separation_processing.backend: "
-                f"{self.post_separation_processing.backend!r}"
-            )
+        _one_of(self.separation.context_window_mode, "context_window_mode",
+                ("expand_to_chunk", "fixed_pad", "none"))
+        _one_of(self.separation.seam_mode, "seam_mode",
+                ("zero_crossing", "overlap_boundary", "snap_to_silence"))
+        _one_of(self.separation.volume_normalization, "volume_normalization",
+                ("sum_equals_mix", "none"))
+        _one_of(self.assembly.output_mode, "output_mode",
+                ("shortened", "full_length"))
+        _one_of(self.enhancement.backend, "enhancement.backend",
+                ("mpsenet", "frcrn_se_16k", "mossformer_gan_se_16k", "mossformer2_se_48k"))
+        _one_of(self.post_separation_processing.backend,
+                "post_separation_processing.backend",
+                ("naive", "ap_bwe", "flowhigh"))
+        _one_of(self.transcription.backend, "transcription.backend",
+                ("whisper", "whisperx"))
+
         if self.post_separation_processing.flowhigh_input_sr <= 0:
             raise ValueError(
                 f"flowhigh_input_sr must be positive, got "
                 f"{self.post_separation_processing.flowhigh_input_sr}"
-            )
-        if self.transcription.backend not in ("whisper", "whisperx"):
-            raise ValueError(
-                f"Invalid transcription.backend: {self.transcription.backend!r}"
             )
 
         if self.spill_intermediate and self.artifact_dir is None:

@@ -8,7 +8,7 @@
   `torchmetrics.functional.audio.*` directly for SI-SDR / PESQ-WB /
   STOI (intrusive) and `torchaudio.pipelines.SQUIM_OBJECTIVE` for the
   non-intrusive estimates. Both libraries are already used elsewhere
-  in the project (evaluate.py, asr/evaluate_asr.py), so we stay
+  in the project (e.g. evaluate.py), so we stay
   consistent with them rather than rolling our own.
 - **Layer 3 (cpWER / tcpWER)** — `cpwer_meeteval`, wraps the MeetEval
   package's cpWER + tcpWER. Permutation, alignment, and time-constrained

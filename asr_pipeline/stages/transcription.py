@@ -8,7 +8,7 @@ Two backends, same per-speaker output shape::
 
 - ``whisper``: vanilla openai-whisper. Fast to set up, no wav2vec2 alignment.
 - ``whisperx``: WhisperX = faster-whisper + wav2vec2 forced alignment.
-  Word-level timestamps to ±50 ms. Supports HF model ids (e.g. bardsai).
+  Word-level timestamps to ±50 ms. Supports arbitrary HF Whisper model ids.
 """
 
 from __future__ import annotations
@@ -92,8 +92,8 @@ def _ensure_ct2_model(model_name: str) -> str:
     The conversion is two-step: first re-materialise the HF model with the
     *fast* tokenizer so a unified ``tokenizer.json`` exists, then run
     ``ct2-transformers-converter`` on the local dir. The intermediate dir
-    is removed at the end. This handles older HF models (e.g. bardsai's
-    Polish Whispers) that ship only the split tokenizer files
+    is removed at the end. This handles older HF Whisper finetunes that
+    ship only the split tokenizer files
     (``vocab.json`` + ``merges.txt`` + …) — without the re-materialise step,
     the converter fails on a missing ``tokenizer.json``.
     """
@@ -150,8 +150,8 @@ class _WhisperXBackend:
     """WhisperX = faster-whisper + wav2vec2 forced alignment.
 
     The alignment step is what makes word timestamps trustworthy. ``model_name``
-    can be a canonical OpenAI short name (``large-v3``), an HF model id (e.g.
-    ``bardsai/whisper-large-v2-pl-v2``), or a local CT2-converted dir. HF ids
+    can be a canonical OpenAI short name (``large-v3``), an arbitrary HF
+    Whisper model id, or a local CT2-converted dir. HF ids
     are auto-converted to CT2 format on first use via ``_ensure_ct2_model``
     and cached under ``~/models/ct2-whisper/``.
     """

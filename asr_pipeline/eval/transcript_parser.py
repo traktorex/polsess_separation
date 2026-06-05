@@ -8,9 +8,8 @@
     === Speaker B (SPEAKER_01) ===
     [ 28.46 →  29.96]  Dziękuje za uwagę.
 
-- `parse_gt_txt` — the GT correction format produced by
-  `scripts/transcribe_clarin_debleed.py` (one file per oracle channel,
-  one segment per line):
+- `parse_gt_txt` — the GT correction format (one file per oracle
+  channel, one segment per line):
 
     [00:00:01.20 → 00:00:03.45] To jest pierwszy segment.
     [00:00:03.50 → 00:00:05.80] To jest drugi segment.

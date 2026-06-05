@@ -1,6 +1,6 @@
 """Stage 1 — pyannote speaker diarization.
 
-Ported from `asr/asr_pipeline.ipynb` cell 10. Runs pyannote
+Ported from `asr/archive/asr_pipeline.ipynb` cell 10. Runs pyannote
 `speaker-diarization-3.1` on mono 16 kHz audio, constrained to two
 speakers, and emits per-speaker segments + an overlap timeline.
 """

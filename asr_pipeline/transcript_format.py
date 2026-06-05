@@ -21,11 +21,13 @@ from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from xml.dom import minidom
 
 import numpy as np
 import torch
+
+from asr_pipeline.debug_log import dlog
 
 
 def format_transcript(whisper_result: dict) -> str:
@@ -65,10 +67,23 @@ def to_jsonable(obj: Any) -> Any:
         return [to_jsonable(x) for x in obj]
     if isinstance(obj, (np.floating, np.integer)):
         return obj.item()
+    if isinstance(obj, np.bool_):
+        # np.bool_ is NOT an np.integer subclass, so it would otherwise fall
+        # through and break json.dump. Log it so we learn whether Whisper
+        # results actually carry numpy bools in practice.
+        dlog("transcript_format",
+             "to_jsonable: converting np.bool_ -> bool (contingency fired)")
+        return bool(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
     if isinstance(obj, torch.Tensor):
         return obj.detach().cpu().tolist()
+    if not isinstance(obj, (str, int, float, bool, type(None))):
+        # Anything reaching here is a non-JSON-native scalar that json.dump
+        # will likely choke on. Surface it instead of failing silently later.
+        dlog("transcript_format",
+             f"to_jsonable: unhandled type {type(obj).__name__} passed through "
+             f"as-is (json.dump may fail) — add an explicit branch if this recurs")
     return obj
 
 

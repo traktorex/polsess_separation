@@ -397,7 +397,7 @@ class PostSeparationProcessingStage(Stage):
         self._backend = backend
 
     def load_signature(self) -> tuple:
-        # Naive / NVSR backends have no per-config state beyond the backend
+        # The naive backend has no per-config state beyond the backend
         # name itself. AP-BWE additionally pulls a checkpoint from disk;
         # FlowHigh's behaviour depends on the input-SR knob (changing it
         # doesn't change which weights are loaded, but it changes what gets

@@ -17,7 +17,9 @@ under the eval root.
 
 Low-level helpers (kept exported for direct use in notebooks):
 
-- ``compute_der``, ``cpwer_meeteval``, ``orc_wer_meeteval`` from `metrics.py`.
+- ``compute_der`` + the cpWER / ORC / MIMO WER & CER family
+  (``cpwer_meeteval``, ``orc_wer_meeteval``, ``mimo_wer_meeteval``,
+  ``orc_wer_multistream``, ``cp_cer_meeteval``, ``mimo_cer_meeteval``) from `metrics.py`.
 - ``parse_gt_txt``, ``parse_transcript_file`` from `transcript_parser.py`.
 - ``parse_rttm`` from `recordings.py`.
 """
@@ -35,8 +37,12 @@ from asr_pipeline.eval.layer2 import (
 from asr_pipeline.eval.layer3 import compute_layer3
 from asr_pipeline.eval.metrics import (
     compute_der,
+    cp_cer_meeteval,
     cpwer_meeteval,
+    mimo_cer_meeteval,
+    mimo_wer_meeteval,
     orc_wer_meeteval,
+    orc_wer_multistream,
 )
 from asr_pipeline.eval.recordings import (
     Recording,
@@ -67,7 +73,8 @@ __all__ = [
     # Layers
     "compute_layer1", "compute_layer2", "compute_layer3",
     # Low-level metrics
-    "compute_der", "cpwer_meeteval", "orc_wer_meeteval",
+    "compute_der", "cpwer_meeteval", "orc_wer_meeteval", "mimo_wer_meeteval",
+    "orc_wer_multistream", "cp_cer_meeteval", "mimo_cer_meeteval",
     "compute_intrusive", "pesq_wb_chunked", "stoi_chunked", "squim_chunked",
     "load_squim_model", "unload_squim_model",
     # Transcript IO

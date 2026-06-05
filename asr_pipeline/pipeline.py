@@ -142,14 +142,7 @@ class Pipeline:
 
     def unload(self) -> None:
         """Free the currently-loaded stage's model, if any."""
-        if self._current_stage_name is None:
-            return
-        self.get_stage(self._current_stage_name).unload()
-        self._current_stage_name = None
-        self._loaded_signature = ()
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
+        self._release_current()
 
     def get_stage(self, name: str) -> Stage:
         for s in self.stages:
@@ -161,6 +154,24 @@ class Pipeline:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+    def _release_current(self) -> None:
+        """Unload the currently-loaded stage's model and reset bookkeeping.
+
+        No-op when nothing is loaded. The single home for the
+        unload -> empty_cache -> gc.collect teardown (previously duplicated
+        across ``unload()`` and both ``_ensure_loaded`` branches).
+        """
+        if self._current_stage_name is None:
+            return
+        _log(f"_release_current: unloading {self._current_stage_name!r}...")
+        self.get_stage(self._current_stage_name).unload()
+        self._current_stage_name = None
+        self._loaded_signature = ()
+        if self.device.type == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
+        _log("_release_current: released")
+
     def _ensure_loaded(self, stage_name: str) -> None:
         """Make `stage_name` the currently-loaded stage.
 
@@ -183,24 +194,13 @@ class Pipeline:
                 f"_ensure_loaded({stage_name!r}): signature changed "
                 f"{self._loaded_signature!r} -> {new_sig!r}, reloading"
             )
-            stage.unload()
-            self._current_stage_name = None
-            self._loaded_signature = ()
-            if self.device.type == "cuda":
-                torch.cuda.empty_cache()
-            gc.collect()
+            self._release_current()
         elif self._current_stage_name is not None:
-            prev = self._current_stage_name
-            _log(f"_ensure_loaded({stage_name!r}): unloading previous stage {prev!r}")
-            self.get_stage(prev).unload()
-            self._current_stage_name = None
-            self._loaded_signature = ()
-            if self.device.type == "cuda":
-                _log(f"_ensure_loaded({stage_name!r}): post-unload empty_cache()...")
-                torch.cuda.empty_cache()
-            _log(f"_ensure_loaded({stage_name!r}): post-unload gc.collect()...")
-            gc.collect()
-            _log(f"_ensure_loaded({stage_name!r}): previous stage {prev!r} fully released")
+            _log(
+                f"_ensure_loaded({stage_name!r}): switching from "
+                f"{self._current_stage_name!r}"
+            )
+            self._release_current()
 
         _log(f"_ensure_loaded({stage_name!r}): calling stage.load()...")
         stage.load(self.device)

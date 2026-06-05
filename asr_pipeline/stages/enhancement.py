@@ -35,6 +35,7 @@ from __future__ import annotations
 import gc
 import json
 from pathlib import Path
+from typing import Callable
 
 import librosa
 import numpy as np
@@ -55,6 +56,47 @@ class _AttrDict(dict):
             return self[name]
         except KeyError as e:
             raise AttributeError(name) from e
+
+
+# ---------------------------------------------------------------------------
+# Shared long-audio chunking
+# ---------------------------------------------------------------------------
+
+
+def _hann_overlap_add(
+    audio: np.ndarray,
+    window_n: int,
+    process_chunk: Callable[[np.ndarray], np.ndarray],
+) -> np.ndarray:
+    """Process `audio` in 50%-hop Hann-windowed chunks of `window_n` samples,
+    overlap-adding the per-chunk outputs (canonical COLA reconstruction).
+
+    `process_chunk(seg)` enhances one chunk and returns audio at least as long
+    as `seg` (truncated to `len(seg)` here). Input shorter than `window_n` is a
+    single `process_chunk` call — for one chunk the Hann weights cancel, so the
+    result equals `process_chunk(audio)[:n]`. Shared by the MP-SENet and
+    ClearerVoice backends, whose long-audio chunking is otherwise identical.
+    """
+    n = len(audio)
+    if n <= window_n:
+        return process_chunk(audio)[:n].astype(np.float32)
+    hop = window_n // 2
+    win = np.hanning(window_n).astype(np.float32)
+    out = np.zeros(n, dtype=np.float32)
+    weights = np.zeros(n, dtype=np.float32)
+    start = 0
+    while start < n:
+        end = min(start + window_n, n)
+        seg = audio[start:end]
+        seg_out = process_chunk(seg)[: len(seg)]
+        w = win[: len(seg)]
+        out[start:end] += seg_out * w
+        weights[start:end] += w
+        if end == n:
+            break
+        start += hop
+    weights = np.maximum(weights, 1e-8)
+    return (out / weights).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -164,55 +206,27 @@ class _MPSENetBackend:
             audio_out = audio_out[: len(audio_np)]
         return audio_out
 
-    @torch.no_grad()
-    def _enhance_chunked(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        """Hann overlap-add MP-SENet over a long region.
-
-        Chunk size = `max_segment_length_s`; hop = chunk / 2 (canonical
-        50% COLA — the Hann window sum is exactly 1.0 in the interior, so
-        we get a click-free reconstruction; head/tail are divided by their
-        actual accumulated weights).
-        """
-        chunk_n = int(self.config.max_segment_length_s * sample_rate)
-        hop_n = chunk_n // 2
-        n = len(audio_np)
-        if n <= chunk_n:
-            return self._enhance_one_shot(audio_np)
-
-        out = np.zeros(n, dtype=np.float32)
-        weights = np.zeros(n, dtype=np.float32)
-        window = np.hanning(chunk_n).astype(np.float32)
-
-        start = 0
-        while start < n:
-            end = min(start + chunk_n, n)
-            seg = audio_np[start:end]
-            if len(seg) < self._h["win_size"]:
-                chunk_out = seg.astype(np.float32)
-            else:
-                seg_padded = (
-                    np.pad(seg, (0, chunk_n - len(seg)))
-                    if len(seg) < chunk_n
-                    else seg
-                )
-                chunk_out = self._enhance_one_shot(seg_padded)[: len(seg)]
-            w = window[: len(seg)]
-            out[start:end] += chunk_out * w
-            weights[start:end] += w
-            if end == n:
-                break
-            start += hop_n
-
-        weights = np.maximum(weights, 1e-6)
-        return (out / weights).astype(np.float32)
-
     def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
         if len(audio_np) < 256:
             return audio_np
-        threshold_n = int(self.config.max_segment_length_s * sample_rate)
-        if len(audio_np) <= threshold_n:
+        chunk_n = int(self.config.max_segment_length_s * sample_rate)
+        if len(audio_np) <= chunk_n:
+            # Short input: single forward at exact length (no chunk padding).
             return self._enhance_one_shot(audio_np)
-        return self._enhance_chunked(audio_np, sample_rate)
+
+        # Long input: Hann overlap-add. Each chunk is padded up to `chunk_n`
+        # before the forward (MP-SENet's O(T^2) attention expects the trained
+        # window); the helper truncates the output back to the chunk's real
+        # length. The <256-sample chunk guard mirrors `_enhance_one_shot`.
+        def _process(seg: np.ndarray) -> np.ndarray:
+            if len(seg) < self._h["win_size"]:
+                return seg.astype(np.float32)
+            seg_padded = (
+                np.pad(seg, (0, chunk_n - len(seg))) if len(seg) < chunk_n else seg
+            )
+            return self._enhance_one_shot(seg_padded)
+
+        return _hann_overlap_add(audio_np, chunk_n, _process)
 
 
 # ---------------------------------------------------------------------------
@@ -319,135 +333,12 @@ class _ClearVoiceBackend:
         ClearVoice's own long-audio segmentation (input longer than
         `one_time_decode_length`) is bugged, so we keep every forward under
         that threshold and stitch with a canonical 50 %-hop Hann window
-        (constant overlap-add) — the same scheme the MP-SENet backend uses.
-        Single-coverage regions reduce to the raw model output; overlaps
-        crossfade. Short input is a single forward (unchanged behaviour).
+        (constant overlap-add) — the same `_hann_overlap_add` scheme the
+        MP-SENet backend uses. Short input reduces to a single forward.
         """
         sr = self.native_sample_rate
         window = max(int(self._otdl_s * 0.8 * sr), sr)   # stay under threshold; ≥ 1 s
-        if len(x) <= window:
-            return self._cv_call(x)[: len(x)]
-
-        hop = window // 2
-        win = np.hanning(window).astype(np.float32)
-        out = np.zeros(len(x), dtype=np.float32)
-        norm = np.zeros(len(x), dtype=np.float32)
-        idx = 0
-        while idx < len(x):
-            seg = x[idx: idx + window]
-            seg_out = self._cv_call(seg)[: len(seg)]
-            w = win[: len(seg)]
-            out[idx: idx + len(seg)] += seg_out * w
-            norm[idx: idx + len(seg)] += w
-            if idx + window >= len(x):
-                break
-            idx += hop
-        norm[norm < 1e-8] = 1.0
-        return out / norm
-
-
-# ---------------------------------------------------------------------------
-# DeepFilterNet backend
-# ---------------------------------------------------------------------------
-
-
-def _patch_torchaudio_for_deepfilternet() -> None:
-    """Inject AudioMetaData stub into `torchaudio.backend.common`.
-
-    DeepFilterNet's `df.io` module unconditionally imports
-    `from torchaudio.backend.common import AudioMetaData`, but
-    torchaudio ≥ 2.2 removed that module. We never call the I/O
-    helpers in `df.io` (they're only used by DFN's CLI; we feed
-    `enhance()` directly with tensors), so a stub is enough to make
-    the package importable.
-    """
-    import sys
-    import types
-
-    if "torchaudio.backend.common" in sys.modules:
-        return
-
-    class _AudioMetaDataStub:  # pragma: no cover — never instantiated
-        pass
-
-    backend_mod = sys.modules.setdefault("torchaudio.backend", types.ModuleType("torchaudio.backend"))
-    common_mod = types.ModuleType("torchaudio.backend.common")
-    common_mod.AudioMetaData = _AudioMetaDataStub
-    backend_mod.common = common_mod
-    sys.modules["torchaudio.backend"] = backend_mod
-    sys.modules["torchaudio.backend.common"] = common_mod
-
-
-class _DeepFilterNetBackend:
-    """DeepFilterNet3 wrapper. Native 48 kHz; resamples 16 kHz pipeline
-    audio in/out via soxr_hq (same as the ClearerVoice 48k path).
-
-    DFN's tensor API is in `df.enhance.enhance(model, df_state, audio)`
-    where `audio` is a 1-D torch tensor (or `(channels, T)`) at the
-    model's native SR. The model and df_state are returned by
-    `init_df()`, which also handles checkpoint download to
-    `~/.cache/DeepFilterNet/`.
-    """
-
-    def __init__(self) -> None:
-        self._model = None
-        self._df_state = None
-        self._device: torch.device | None = None
-        self._native_sr: int | None = None
-
-    def load(self, device: torch.device) -> None:
-        _patch_torchaudio_for_deepfilternet()
-        from df.enhance import init_df  # local import: avoid eager torchaudio drift
-
-        # init_df doesn't take a device arg — it picks via CUDA_VISIBLE_DEVICES.
-        # The returned model is already on whichever GPU it picked; we move
-        # it to our preferred device explicitly so we don't end up split
-        # across two GPUs.
-        model, df_state, _ = init_df()
-        model.to(device).eval()
-        self._model = model
-        self._df_state = df_state
-        self._device = device
-        self._native_sr = int(df_state.sr())
-
-    def unload(self) -> None:
-        self._model = None
-        self._df_state = None
-        self._device = None
-        self._native_sr = None
-
-    @torch.no_grad()
-    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        if self._model is None or self._df_state is None:
-            raise RuntimeError("DeepFilterNetBackend.enhance called before load().")
-        if len(audio_np) < 256:
-            return audio_np
-        from df.enhance import enhance as df_enhance
-
-        orig_len = len(audio_np)
-        x = audio_np.astype(np.float32)
-        if sample_rate != self._native_sr:
-            x = librosa.resample(
-                x, orig_sr=sample_rate, target_sr=self._native_sr, res_type="soxr_hq",
-            )
-
-        # DFN's `enhance` expects audio on CPU — `df_features` internally
-        # calls `df.analysis(audio.numpy())` (a Rust function) for the ERB
-        # band feature, then moves the features onto the model's device.
-        x_t = torch.from_numpy(x).unsqueeze(0)  # (1, T), CPU
-        y_t = df_enhance(self._model, self._df_state, x_t)
-        y = y_t.detach().cpu().numpy().squeeze().astype(np.float32)
-
-        if sample_rate != self._native_sr:
-            y = librosa.resample(
-                y, orig_sr=self._native_sr, target_sr=sample_rate, res_type="soxr_hq",
-            )
-
-        if len(y) > orig_len:
-            y = y[:orig_len]
-        elif len(y) < orig_len:
-            y = np.pad(y, (0, orig_len - len(y)))
-        return y.astype(np.float32)
+        return _hann_overlap_add(x, window, self._cv_call)
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +359,7 @@ class EnhancementStage(Stage):
     def __init__(self, config: EnhancementConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: _MPSENetBackend | _ClearVoiceBackend | _DeepFilterNetBackend | None = None
+        self._backend: _MPSENetBackend | _ClearVoiceBackend | None = None
 
     def load(self, device: torch.device) -> None:
         if self.config.backend == "mpsenet":
@@ -476,8 +367,6 @@ class EnhancementStage(Stage):
         elif self.config.backend in _CLEARVOICE_BACKENDS:
             model_name, native_sr = _CLEARVOICE_BACKENDS[self.config.backend]
             backend = _ClearVoiceBackend(model_name, native_sr)
-        elif self.config.backend == "deepfilternet":
-            backend = _DeepFilterNetBackend()
         else:
             raise ValueError(
                 f"Unknown enhancement backend: {self.config.backend!r}"

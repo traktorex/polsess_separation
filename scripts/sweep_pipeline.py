@@ -79,7 +79,6 @@ CONFIGS: dict[str, dict] = {
     # --- enhancement backend (solo regions) ---
     "enh_mossformer":    {"enhancement.backend": "mossformer_gan_se_16k"},
     "enh_frcrn":         {"enhancement.backend": "frcrn_se_16k"},
-    "enh_deepfilter":    {"enhancement.backend": "deepfilternet"},
     "enh_none":          {"enhancement.enabled": False},
     # --- bandwidth extension (overlap regions) ---
     "bwe_naive":         {"post_separation_processing.backend": "naive"},
@@ -134,7 +133,7 @@ CONFIGS: dict[str, dict] = {
 # Named groups for --groups selection. "baseline" is always included.
 GROUPS: dict[str, list[str]] = {
     "asr":        ["asr_largev3"],
-    "enhance":    ["enh_mossformer", "enh_frcrn", "enh_deepfilter", "enh_none"],
+    "enhance":    ["enh_mossformer", "enh_frcrn", "enh_none"],
     "bwe":        ["bwe_naive", "bwe_flowhigh"],
     "separation": ["sep_seam_zc", "sep_seam_boundary", "sep_vad_strict", "sep_vol_none"],
     "assembly":   ["asm_perpiece_rms"],
