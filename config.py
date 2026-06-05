@@ -15,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_new_64/PolSESS_C_new_64",
+            "/home/user/datasets/PolSESS_C_final_128_v2",
         )
     )
 
@@ -98,6 +98,7 @@ class MossFormer2Params:
     kernel_size: int = 16  # Encoder kernel size (decoder stride = kernel_size // 2)
     C: int = 2  # Output sources (number of speakers)
     num_blocks: int = 24  # GFSMN depth (paper uses 24)
+    attn_dropout: float = 0.1  # Self-attention dropout (upstream hard-codes 0.1)
 
 
 @dataclass
@@ -405,7 +406,7 @@ class Config:
             p = self.model.mossformer2
             lines.extend([
                 f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.kernel_size // 2}",
-                f"  Backbone: MossFormer + gated-FSMN, blocks={p.num_blocks}",
+                f"  Backbone: MossFormer + gated-FSMN, blocks={p.num_blocks}, attn_dropout={p.attn_dropout}",
                 f"  Output: C={p.C}",
             ])
         elif mt == "spmamba":
@@ -445,7 +446,15 @@ class Config:
             f"  Grad clip norm: {self.training.grad_clip_norm}",
             f"  LR scheduler: factor={self.training.lr_factor}, patience={self.training.lr_patience}",
             f"  Seed: {self.training.seed}",
-            f"  AMP: {self.training.use_amp}",
+            # Mirrors Trainer._setup_amp dispatch: Mamba + MossFormer2 train in
+            # bf16 (no GradScaler), everything else fp16 + GradScaler.
+            f"  AMP: {self.training.use_amp}"
+            + (
+                " (bf16, no GradScaler)"
+                if self.training.use_amp
+                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2")
+                else " (fp16 + GradScaler)" if self.training.use_amp else ""
+            ),
         ])
 
         if self.training.grad_accumulation_steps > 1:
@@ -782,8 +791,9 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     task, model_type, lr_factor, lr_patience, curriculum_learning,
     validation_variants, dropout, chunk_size, rnn_type.
     Note: dropout and chunk_size are routed to the active model's params
-    (DPRNN or SepFormer). For SepFormer, chunk_size also sets hop_size
-    to chunk_size // 2 automatically.
+    (DPRNN, SepFormer, or MossFormer2 — where dropout maps to attn_dropout).
+    For SepFormer, chunk_size also sets hop_size to chunk_size // 2
+    automatically.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -844,6 +854,10 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
             # Keep hop_size = chunk_size // 2 (standard dual-path convention)
             if key == "chunk_size":
                 config.model.sepformer.hop_size = getattr(sweep_config, key) // 2
+
+    # Special cases: MossFormer2 architecture overrides (nested)
+    if "dropout" in sweep_config and config.model.mossformer2 is not None:
+        config.model.mossformer2.attn_dropout = sweep_config.dropout
 
     # Validate and return
     config.__post_init__()

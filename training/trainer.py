@@ -20,6 +20,16 @@ from utils import (
 
 DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
 
+# Abort the run after this many NaN/Inf training batches in a row. Skipping the
+# odd bad batch is fine, but a long unbroken stretch means the model state is
+# unrecoverable and every further batch is wasted compute (seen in the
+# MossFormer2 128k sweep before the bf16 fix, 2026-06-05).
+MAX_CONSECUTIVE_NAN_BATCHES = 1000
+
+
+class ConsecutiveNaNError(RuntimeError):
+    """Training produced MAX_CONSECUTIVE_NAN_BATCHES NaN/Inf losses in a row."""
+
 
 class Trainer:
     """Trainer for speech separation models with AMP."""
@@ -83,6 +93,9 @@ class Trainer:
         # Per-variant SI-SDRi from the previous epoch (for the delta row in the table).
         self.prev_variant_sisdri = None
         self.current_epoch = 0
+        # Consecutive NaN/Inf batch counter — persists across epoch boundaries,
+        # reset by any finite-loss batch. See MAX_CONSECUTIVE_NAN_BATCHES.
+        self.consecutive_nan_batches = 0
         self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
 
         # Curriculum learning setup
@@ -99,6 +112,12 @@ class Trainer:
         has the same exponent range as float32) and harmful (grows unbounded
         since the model internally runs float32).
 
+        MossFormer2: bf16 autocast, no GradScaler — its squared-ReLU attention
+        overflows fp16's range (max 65504) once activations sharpen. Validation
+        already runs fp32 for this reason (see _validate); training hit the same
+        overflow at low attn_dropout / higher LR (128k sweep, 2026-06-05). bf16
+        has fp32's exponent range, so the squared activations cannot overflow.
+
         Other models: fp16 autocast + GradScaler — standard mixed precision.
         """
         if not self.use_amp or device != "cuda":
@@ -108,7 +127,9 @@ class Trainer:
 
         # Dispatch on model_type rather than class name: torch.compile wraps the
         # model in OptimizedModule, which would silently defeat a class-name check.
-        if self.config.model.model_type in MAMBA_MODELS:
+        if self.config.model.model_type in MAMBA_MODELS or (
+            self.config.model.model_type == "mossformer2"
+        ):
             self.scaler = None
             self.amp_dtype = torch.bfloat16
         else:
@@ -392,6 +413,7 @@ class Trainer:
                 loss = loss / accum_steps
 
             if torch.isnan(loss) or torch.isinf(loss):
+                self.consecutive_nan_batches += 1
                 self.logger.warning(
                     f"NaN/Inf detected at batch {batch_idx}, skipping batch"
                 )
@@ -401,7 +423,14 @@ class Trainer:
                 # calling empty_cache — otherwise they keep GPU memory pinned
                 del loss, estimates, mix_input, mix, clean
                 torch.cuda.empty_cache()
+                if self.consecutive_nan_batches >= MAX_CONSECUTIVE_NAN_BATCHES:
+                    raise ConsecutiveNaNError(
+                        f"{self.consecutive_nan_batches} consecutive NaN/Inf batches "
+                        f"(epoch {self.current_epoch}, last batch {batch_idx}) — "
+                        "model state is unrecoverable, aborting run"
+                    )
                 continue
+            self.consecutive_nan_batches = 0
 
             if self.scaler:
                 self.scaler.scale(loss).backward()
@@ -713,6 +742,30 @@ class Trainer:
             start_epoch = final_epoch - num_epochs + 1
             for idx, val_sisdr in enumerate(val_sisdr_history, start_epoch):
                 self.logger.info(f"  Epoch {idx}: Val {metric_name} = {val_sisdr:.2f} dB")
+
+        except ConsecutiveNaNError as e:
+            self.logger.error("=" * 80)
+            self.logger.error("TRAINING ABORTED — PERSISTENT NaN/Inf LOSS")
+            self.logger.error("=" * 80)
+            self.logger.error(str(e))
+            self.logger.error(f"Model: {self.config.model.model_type}")
+            self.logger.error(f"LR: {self.config.training.lr}")
+
+            # Log to W&B if available
+            if self.wandb_logger and self.wandb_logger.enabled:
+                import wandb
+                self.wandb_logger.log_metrics({
+                    "nan_abort": 1,
+                    "nan_abort_epoch": self.current_epoch,
+                })
+                self.logger.info("Logged NaN abort to W&B")
+                wandb.finish(exit_code=1)
+
+            self.logger.error("Terminating run gracefully to continue sweep...")
+            self.logger.error("=" * 80)
+
+            # Exit gracefully (sweep will continue with next run)
+            raise SystemExit(1)
 
         except torch.cuda.OutOfMemoryError as e:
             self.logger.error("=" * 80)

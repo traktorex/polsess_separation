@@ -16,7 +16,7 @@ from utils import (
     setup_logger,
     setup_device_and_amp,
     WandbLogger,
-    apply_torch_compile,
+    compile_for_model_type,
 )
 
 
@@ -124,8 +124,9 @@ def main():
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only)
-    model = apply_torch_compile(model, logger=logger)
+    # Apply torch.compile (PyTorch 2.0+, Linux only) with per-architecture
+    # settings — see compile_for_model_type for the Mamba/MossFormer2 rationale.
+    model = compile_for_model_type(model, config.model.model_type, logger=logger)
 
     # Setup WandB logger (use existing run)
     wandb_logger = WandbLogger(

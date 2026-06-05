@@ -184,20 +184,11 @@ python evaluate.py --help
 
 ### ASR Evaluation (WER/CER)
 
-```bash
-# Evaluate separation as ASR preprocessing on REAL-M
-python asr/evaluate_asr.py --checkpoint path/to/model.pt \
-    --dataset realm --mode separation --whisper-model large
-
-# Mixture baseline (no separation)
-python asr/evaluate_asr.py --dataset realm --mode mixture
-
-# Clean source baseline (LibriSpeech only)
-python asr/evaluate_asr.py --dataset librispeech --mode baseline
-
-# See all options
-python asr/evaluate_asr.py --help
-```
+The pre-CLARIN one-shot ASR-eval flow (separate → transcribe → WER/CER on
+REAL-M / LibriMix) is **archived** under `asr/archive/old-asr/`. The current
+CLARIN stream-based pipeline and its three-layer evaluation live in
+`asr_pipeline/` — drive them from `asr/explore_pipeline.ipynb` and
+`asr/evaluate_pipeline.ipynb`.
 
 ### Testing
 

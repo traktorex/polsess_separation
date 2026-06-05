@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 
-from models import get_model
+from models import get_model, MAMBA_MODELS
 
 
 def unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
@@ -51,6 +51,36 @@ def apply_torch_compile(
         if logger:
             logger.warning(f"torch.compile failed: {e}")
         return model
+
+
+def compile_for_model_type(
+    model: torch.nn.Module,
+    model_type: str,
+    logger: Optional[logging.Logger] = None,
+) -> torch.nn.Module:
+    """Apply torch.compile with per-architecture settings (shared by train.py and
+    train_sweep.py so the dispatch can't drift between them).
+
+      - Mamba: skipped. Dynamo tracing into mamba_ssm.MambaInnerFn breaks the
+        delta/conv1d_out dtype contract on native Linux.
+      - MossFormer2: compiled with dynamic=False. Its vendored rotary block has
+        the seq-len cache disabled (cache_if_possible=False), and its token-shift
+        / group-rearrange cannot be lowered under symbolic shapes — so we force
+        per-shape static specialization. Fixed-length training crops compile once;
+        a new length triggers a one-time static recompile. (If this ever regresses
+        on another torch build, fall back to skipping compile for mossformer2.)
+      - Everything else: torch.compile defaults.
+    """
+    if model_type in MAMBA_MODELS:
+        if logger:
+            logger.info(
+                f"Skipping torch.compile for {model_type} "
+                "(incompatible with mamba_ssm CUDA kernels)."
+            )
+        return model
+    if model_type == "mossformer2":
+        return apply_torch_compile(model, logger=logger, dynamic=False)
+    return apply_torch_compile(model, logger=logger)
 
 
 def count_parameters(model: torch.nn.Module, trainable_only: bool = False) -> int:

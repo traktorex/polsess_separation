@@ -5,7 +5,6 @@ from utils import warning_filters  # noqa: F401  must precede speechbrain import
 import torch
 from torch.utils.data import DataLoader
 from config import get_config_from_args
-from models import MAMBA_MODELS
 from models.factory import create_model_from_config
 from datasets import get_dataset, polsess_collate_fn
 from training.trainer import Trainer
@@ -15,7 +14,7 @@ from utils import (
     setup_logger,
     setup_device_and_amp,
     WandbLogger,
-    apply_torch_compile,
+    compile_for_model_type,
 )
 import os
 
@@ -127,24 +126,9 @@ def main():
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only).
-    #   - Mamba: skipped. Dynamo tracing into mamba_ssm.MambaInnerFn breaks the
-    #     delta/conv1d_out dtype contract on native Linux.
-    #   - MossFormer2: compiled with dynamic=False. Its vendored rotary block has
-    #     the seq-len cache disabled (cache_if_possible=False), and its token-shift
-    #     / group-rearrange cannot be lowered under symbolic shapes — so we force
-    #     per-shape static specialization. Fixed-length training crops compile once;
-    #     a new length triggers a one-time static recompile. (If this ever regresses
-    #     on another torch build, fall back to skipping compile for mossformer2.)
-    if config.model.model_type in MAMBA_MODELS:
-        logger.info(
-            f"Skipping torch.compile for {config.model.model_type} "
-            "(incompatible with mamba_ssm CUDA kernels)."
-        )
-    elif config.model.model_type == "mossformer2":
-        model = apply_torch_compile(model, logger=logger, dynamic=False)
-    else:
-        model = apply_torch_compile(model, logger=logger)
+    # Apply torch.compile (PyTorch 2.0+, Linux only) with per-architecture
+    # settings — see compile_for_model_type for the Mamba/MossFormer2 rationale.
+    model = compile_for_model_type(model, config.model.model_type, logger=logger)
 
     # Setup WandB logger
     wandb_logger = WandbLogger(

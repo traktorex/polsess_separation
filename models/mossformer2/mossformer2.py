@@ -462,11 +462,14 @@ class Computation_Block(nn.Module):
         out_channels,
         norm="ln",
         skip_around_intra=True,
+        attn_dropout=0.1,
     ):
         super(Computation_Block, self).__init__()
 
         ##MossFormer+: MossFormer with recurrence
-        self.intra_mdl = MossFormerM(num_blocks=num_blocks, d_model=out_channels)
+        self.intra_mdl = MossFormerM(
+            num_blocks=num_blocks, d_model=out_channels, attn_dropout=attn_dropout
+        )
         ##MossFormerM2: the orignal MossFormer
         #self.intra_mdl = MossFormerM2(num_blocks=num_blocks, d_model=out_channels)
         self.skip_around_intra = skip_around_intra
@@ -556,6 +559,7 @@ class MossFormer_MaskNet(nn.Module):
         skip_around_intra=True,
         use_global_pos_enc=True,
         max_length=20000,
+        attn_dropout=0.1,
     ):
         super(MossFormer_MaskNet, self).__init__()
         self.num_spks = num_spks
@@ -572,6 +576,7 @@ class MossFormer_MaskNet(nn.Module):
                     out_channels,
                     norm,
                     skip_around_intra=skip_around_intra,
+                    attn_dropout=attn_dropout,
                 )
 
         self.conv1d_out = nn.Conv1d(
@@ -691,6 +696,7 @@ class MossFormer(nn.Module):
         skip_around_intra=True,
         use_global_pos_enc=True,
         max_length=20000,
+        attn_dropout=0.1,
     ):
         super(MossFormer, self).__init__()
         self.num_spks = num_spks
@@ -704,6 +710,7 @@ class MossFormer(nn.Module):
             skip_around_intra=skip_around_intra,
             use_global_pos_enc=use_global_pos_enc,
             max_length=max_length,
+            attn_dropout=attn_dropout,
         )
         self.dec = Decoder(
            in_channels=out_channels,
@@ -753,7 +760,8 @@ class MossFormer2_SS(nn.Module):
             num_spks=args.num_spks,
             skip_around_intra=True,
             use_global_pos_enc=True,
-            max_length=20000)
+            max_length=20000,
+            attn_dropout=args.attn_dropout)
 
     def forward(self, x):
         outputs = self.model(x)

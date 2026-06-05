@@ -517,3 +517,88 @@ def test_training_summary_epoch_numbers_after_resume(tmp_path, capsys):
     assert "Epoch 6:" in summary_lines[0], f"Expected 'Epoch 6:', got: {summary_lines[0]}"
     assert "Epoch 7:" in summary_lines[1], f"Expected 'Epoch 7:', got: {summary_lines[1]}"
     assert "Epoch 8:" in summary_lines[2], f"Expected 'Epoch 8:', got: {summary_lines[2]}"
+
+
+def test_consecutive_nan_abort(tmp_path, monkeypatch):
+    """train_epoch raises ConsecutiveNaNError after MAX_CONSECUTIVE_NAN_BATCHES
+    NaN losses in a row, and train() converts it to a graceful SystemExit(1)
+    so a sweep agent can move on to the next run."""
+    import pytest
+    import training.trainer as trainer_module
+    from training.trainer import Trainer, ConsecutiveNaNError
+
+    monkeypatch.setattr(trainer_module, "MAX_CONSECUTIVE_NAN_BATCHES", 3)
+
+    cfg = make_config(tmp_path)
+    train_dataset = SyntheticDataset(n_samples=12, time_steps=256)
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(n_samples=4, time_steps=256),
+        batch_size=cfg.data.batch_size,
+        collate_fn=polsess_collate_fn,
+    )
+
+    trainer = Trainer(
+        DummyModel(), train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None,
+    )
+
+    def nan_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean) * float("nan")
+        return loss, float("nan")
+
+    trainer.loss_fn = nan_loss_wrapper
+
+    with pytest.raises(ConsecutiveNaNError):
+        trainer.train_epoch()
+    assert trainer.consecutive_nan_batches == 3
+
+    # train() wraps the abort in SystemExit(1) (sweep-friendly, mirrors OOM path)
+    trainer.consecutive_nan_batches = 0
+    with pytest.raises(SystemExit) as exc_info:
+        trainer.train(num_epochs=1, save_dir=cfg.training.save_dir)
+    assert exc_info.value.code == 1
+
+
+def test_consecutive_nan_counter_resets_on_good_batch(tmp_path, monkeypatch):
+    """A finite-loss batch resets the consecutive NaN counter, so intermittent
+    NaNs below the threshold never abort training."""
+    import training.trainer as trainer_module
+    from training.trainer import Trainer
+
+    monkeypatch.setattr(trainer_module, "MAX_CONSECUTIVE_NAN_BATCHES", 3)
+
+    cfg = make_config(tmp_path)
+    # 12 samples / batch_size 2 = 6 batches
+    train_dataset = SyntheticDataset(n_samples=12, time_steps=256)
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(n_samples=4, time_steps=256),
+        batch_size=cfg.data.batch_size,
+        collate_fn=polsess_collate_fn,
+    )
+
+    trainer = Trainer(
+        DummyModel(), train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None,
+    )
+
+    # NaN on batches 0,1 then good on 2, NaN on 3,4, good on 5 — never 3 in a row
+    calls = {"n": 0}
+
+    def alternating_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        is_nan = calls["n"] % 3 != 2
+        calls["n"] += 1
+        if is_nan:
+            return loss * float("nan"), float("nan")
+        return loss, loss.item()
+
+    trainer.loss_fn = alternating_loss_wrapper
+
+    trainer.train_epoch()  # must not raise
+    assert trainer.consecutive_nan_batches == 0

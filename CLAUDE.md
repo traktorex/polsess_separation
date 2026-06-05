@@ -57,18 +57,6 @@ python evaluate.py --checkpoint path/to/model.pt --dataset librimix --librimix-r
 python evaluate.py --checkpoint path/to/model.pt --output results.csv
 ```
 
-**ASR Evaluation:**
-```bash
-# Separation on REAL-M (WER/CER + SQUIM)
-python asr/evaluate_asr.py --checkpoint path/to/model.pt --dataset realm --mode separation --whisper-model large
-# Mixture baseline
-python asr/evaluate_asr.py --dataset realm --mode mixture
-# Clean source baseline on LibriSpeech
-python asr/evaluate_asr.py --dataset librispeech --mode baseline
-# Disable SQUIM (WER/CER only)
-python asr/evaluate_asr.py --dataset realm --mode mixture --no-squim
-```
-
 **Testing:**
 ```bash
 pytest
@@ -92,7 +80,7 @@ python scripts/benchmark_training.py
 **Interactive:**
 ```bash
 jupyter notebook test_model_interactive.ipynb
-jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipeline (see ASR section)
+jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr_pipeline/ package (see ASR section)
 ```
 
 ## Architecture Overview
@@ -102,21 +90,20 @@ jupyter notebook asr/asr_pipeline.ipynb   # POC for the stream-based ASR pipelin
 **Model Registry (`models/__init__.py`):** Dict-based. `get_model("name")` returns class. Mamba models auto-excluded without `mamba-ssm`.
 - `convtasnet` (~8M), `sepformer` (~26M), `resepformer` (~8M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M) — cross-platform
   - `resepformer` = RE-SepFormer (Subakan et al. 2022): resource-efficient SepFormer. Thin wrapper reusing SpeechBrain's `ResourceEfficientSeparator` mask network + the same dual_path `Encoder`/`Decoder` as `sepformer`.
-  - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched). Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
+  - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched); `attn_dropout` (default 0.1, upstream hard-coded) covers attention-path dropout — FSMN-gate dropout stays fixed at 0.1. Sweep override key `dropout` routes to `attn_dropout`. Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
 - `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.6M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
 
-**ASR subsystem (`asr/`):** Notebooks + the legacy one-shot eval flow.
-- `evaluate_asr.py` / `evaluate_asr_intrusive.py` (+ `dataset.py`, `transcribe.py`, `metrics.py`): one-shot pipeline — separate the whole recording, then run ASR on each source. Targets REAL-M and the synthetic LibriMix-based dataset (both speakers concurrent most of the time). Predates access to CLARIN.
-- `asr_pipeline.ipynb` (+ `diarization.ipynb`, `crosstalk_analysis.py`): POC for the **intended thesis pipeline** — recordings with mostly one active speaker and occasional overlap; per-speaker stream from diarization, separator on overlap regions only.
+**ASR subsystem (`asr/`):** Notebooks driving the productionised CLARIN pipeline. The pre-CLARIN one-shot REAL-M/LibriMix eval flow (`evaluate_asr.py` + intrusive variant + `dataset.py`/`transcribe.py`/`metrics.py` + its `test_asr.py`) is **archived** under `asr/archive/old-asr/`; the original Gradio POC notebook (`asr_pipeline.ipynb`) + early LibriMix-prep scripts sit in `asr/archive/`. Archived code is parked — its imports reference the old top-level `asr.` package layout and would need rewiring to run.
+- `clarin_fragments.ipynb` / `clarin_subset_review.ipynb`: select + review the CLARIN test fragments (uses `scripts/clarin_fragment_finder.py`).
 - `explore_pipeline.ipynb`: interactive frontend for the productionised `asr_pipeline/` package — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
 - `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
 
 **`asr_pipeline/` package** — productionised pipeline. `Pipeline` orchestrator runs seven stages in fixed order:
 1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
 2. **routing** — split overlap vs solo regions.
-3. **enhancement** — `mpsenet` default; ClearerVoice (`mossformer_gan_se_16k`, …) and DeepFilterNet backends available.
+3. **enhancement** — `mpsenet` default; ClearerVoice backends (`frcrn_se_16k`, `mossformer_gan_se_16k`, `mossformer2_se_48k`) available.
 4. **separation** — SepFormer 64k baseline checkpoint by default; runs on overlap fragments only.
 5. **post_separation_processing** — VAD mask + optional BWE (`naive` / `ap_bwe` / `flowhigh`). Always-on (downstream depends on its `_gated` arrays); set `backend: naive` to apply only the mask.
 6. **assembly** — stitch per-speaker streams, ECAPA anchor for speaker identity across pieces.
@@ -139,7 +126,6 @@ Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_f
 - `run_pipeline_on_recording.py` — full pipeline on one recording in three ablation modes (`pipeline` / `pipeline_nosep` / `pipeline_noenh`); drives the L3 WER table.
 - `prepare_eval_references.py` — cache enhanced oracles + GT-style transcripts for the eval module.
 - `enhance_clarin_debleed.py` — batch MossFormerGAN_SE_16K on oracle debleed channels.
-- `transcribe_clarin_debleed.py` / `transcribe_clarin_debleed_multimodel.py` — Whisper on debleed channels with diarization-based residue gating.
 - `diarize_clarin_2speakers.py` — pyannote over the full 2-speaker download → `diarization/<id>.json`.
 - `transcribe_clarin_2speakers.py` — WhisperX over the full 2-speaker download, raw and MossFormerGAN-enhanced.
 
@@ -179,8 +165,8 @@ training:
 
 ## Key Technical Details
 
-- **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow. Non-Mamba models use float16 + GradScaler; Mamba models use bfloat16 without GradScaler (detected by model class name in `trainer.py`).
-- **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix. Skipped for Mamba models. `mossformer2` is compiled with `dynamic=False` (per-shape static specialization): its vendored rotary block disables the seq-len cache (`cache_if_possible=False`) and its token-shift/group-rearrange can't be lowered under symbolic shapes — so fixed-length crops compile once, new lengths trigger a one-time static recompile. See `train.py` + `apply_torch_compile`.
+- **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow. Most models use float16 + GradScaler; Mamba models **and MossFormer2** use bfloat16 without GradScaler (dispatch on `model_type` in `training/trainer.py:_setup_amp`). MossFormer2's squared-ReLU attention overflows fp16 once activations sharpen — first seen as NaN val SI-SDR (fixed by fp32 validation), then as training NaNs at low `attn_dropout` / higher LR in the 128k sweep.
+- **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix. Skipped for Mamba models. `mossformer2` is compiled with `dynamic=False` (per-shape static specialization): its vendored rotary block disables the seq-len cache (`cache_if_possible=False`) and its token-shift/group-rearrange can't be lowered under symbolic shapes — so fixed-length crops compile once, new lengths trigger a one-time static recompile. Per-architecture dispatch lives in `compile_for_model_type` (`utils/model_utils.py`), shared by `train.py` and `train_sweep.py`.
 - **MM-IPC (Mix Modification by Inverted Phase Cancellation):** Augmentation that randomly varies background complexity during training by subtracting audio layers from the full mix. Indoor variants (with reverb): SER/SR/ER/R. Outdoor variants (no reverb): SE/S/E/C. Letters indicate what's present: S=scene, E=event, R=reverb, C=clean. Implemented via lazy loading in `datasets/polsess_dataset.py`. Validation uses deterministic selection (seeded by sample index).
 - **Curriculum Learning:** Configure in YAML `training.curriculum_learning`. Progressive variant introduction + optional LR scheduler gating. Note: when curriculum learning is active, the LR scheduler is **disabled by default** until a curriculum entry includes `lr_scheduler: start` — omitting this key means the scheduler never runs.
 - **Gradient Accumulation:** `training.grad_accumulation_steps` for effective batch scaling.
@@ -207,7 +193,7 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 
 ## Common Pitfalls
 
-1. **NaN in SI-SDR:** AMP underflow — EPS patch should handle it. If not, `use_amp: false`.
+1. **NaN in SI-SDR:** AMP underflow — EPS patch should handle it. If not, `use_amp: false`. The trainer skips NaN/Inf batches; after 1000 consecutive NaN batches it aborts the run (`ConsecutiveNaNError` → `SystemExit(1)`, sweep-friendly — see `MAX_CONSECUTIVE_NAN_BATCHES` in `training/trainer.py`).
 2. **Memory overflow:** Reduce `batch_size`, use `grad_accumulation_steps` to compensate.
 3. **Config precedence:** CLI > YAML > env vars > defaults. Additionally, `Config.__post_init__` silently forces the model's output source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2), overriding whatever the YAML says.
 4. **MambaTasNet NaN:** Deep configs need `residual_in_fp32: true`.  `grad_clip_norm: 1.0` (not 5.0) might help too.

@@ -41,6 +41,7 @@ class MossFormer2(nn.Module):
         kernel_size: int = 16,
         C: int = 2,
         num_blocks: int = 24,
+        attn_dropout: float = 0.1,
     ):
         super().__init__()
         self.C = C
@@ -50,6 +51,7 @@ class MossFormer2(nn.Module):
             num_mossformer_layer=num_blocks,  # GFSMN depth
             encoder_kernel_size=kernel_size,  # decoder stride = kernel_size // 2
             num_spks=C,
+            attn_dropout=attn_dropout,      # self-attention dropout (upstream hard-codes 0.1)
         )
         self.model = MossFormer2_SS(args)
 

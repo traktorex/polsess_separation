@@ -21,6 +21,7 @@ from .model_utils import (
     load_model_for_inference,
     count_parameters,
     apply_torch_compile,
+    compile_for_model_type,
 )
 
 __all__ = [
@@ -38,4 +39,5 @@ __all__ = [
     "dataclass_to_dict",
     "ensure_dir",
     "apply_torch_compile",
+    "compile_for_model_type",
 ]
