@@ -168,6 +168,35 @@ def _normalize_text(s: str) -> str:
     return " ".join(out)
 
 
+def _seglst_from_dict(utts_by_spk: Dict[str, List[Utterance]], session_id: str):
+    """SegLST rows from per-speaker utterances, with normalization applied.
+
+    Shared by every metric below — one row per non-empty utterance.
+    meeteval is imported lazily so the module stays importable without it.
+    """
+    from meeteval.io.seglst import SegLST
+
+    return SegLST([
+        {
+            "session_id": session_id,
+            "speaker": spk,
+            "start_time": float(u.start),
+            "end_time": float(u.end),
+            "words": _normalize_text(u.text),
+        }
+        for spk, utts in utts_by_spk.items()
+        for u in utts
+        if u.text.strip()
+    ])
+
+
+def _seglst_from_list(
+    utterances: List[Utterance], session_id: str, speaker: str = "mixture"
+):
+    """SegLST rows from a flat utterance list under one pseudo-speaker."""
+    return _seglst_from_dict({speaker: utterances}, session_id)
+
+
 def cpwer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
@@ -196,25 +225,10 @@ def cpwer_meeteval(
     by default — fine for our use since GT segments come from Whisper's
     own segmentation.
     """
-    from meeteval.io.seglst import SegLST
     from meeteval.wer import cpwer, tcpwer
 
-    def _to_seglst(utts_by_spk: Dict[str, List[Utterance]]) -> SegLST:
-        return SegLST([
-            {
-                "session_id": session_id,
-                "speaker": spk,
-                "start_time": float(u.start),
-                "end_time": float(u.end),
-                "words": _normalize_text(u.text),
-            }
-            for spk, utts in utts_by_spk.items()
-            for u in utts
-            if u.text.strip()
-        ])
-
-    ref = _to_seglst(ref_utts_by_spk)
-    hyp = _to_seglst(hyp_utts_by_spk)
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
+    hyp = _seglst_from_dict(hyp_utts_by_spk, session_id)
 
     cp = cpwer(ref, hyp)[session_id]
     tcp = tcpwer(ref, hyp, collar=tcp_collar_s)[session_id]
@@ -252,34 +266,12 @@ def orc_wer_meeteval(
 
     Returns ``{"orc_wer", "errors", "length"}``.
     """
-    from meeteval.io.seglst import SegLST
     # meeteval renamed cpwer/tcpwer style but kept the WER variants joined.
     from meeteval.wer import orcwer
 
-    ref = SegLST([
-        {
-            "session_id": session_id,
-            "speaker": spk,
-            "start_time": float(u.start),
-            "end_time": float(u.end),
-            "words": _normalize_text(u.text),
-        }
-        for spk, utts in ref_utts_by_spk.items()
-        for u in utts
-        if u.text.strip()
-    ])
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
     # One pseudo-speaker for the mixture hypothesis.
-    hyp = SegLST([
-        {
-            "session_id": session_id,
-            "speaker": "mixture",
-            "start_time": float(u.start),
-            "end_time": float(u.end),
-            "words": _normalize_text(u.text),
-        }
-        for u in hyp_utterances
-        if u.text.strip()
-    ])
+    hyp = _seglst_from_list(hyp_utterances, session_id)
     orc = orcwer(ref, hyp)[session_id]
     return {
         "orc_wer": float(orc.error_rate),
@@ -321,32 +313,10 @@ def mimo_wer_meeteval(
 
     Returns ``{"mimo_wer", "errors", "length"}``.
     """
-    from meeteval.io.seglst import SegLST
     from meeteval.wer import mimower
 
-    ref = SegLST([
-        {
-            "session_id": session_id,
-            "speaker": spk,
-            "start_time": float(u.start),
-            "end_time": float(u.end),
-            "words": _normalize_text(u.text),
-        }
-        for spk, utts in ref_utts_by_spk.items()
-        for u in utts
-        if u.text.strip()
-    ])
-    hyp = SegLST([
-        {
-            "session_id": session_id,
-            "speaker": "mixture",
-            "start_time": float(u.start),
-            "end_time": float(u.end),
-            "words": _normalize_text(u.text),
-        }
-        for u in hyp_utterances
-        if u.text.strip()
-    ])
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
+    hyp = _seglst_from_list(hyp_utterances, session_id)
     m = mimower(ref, hyp)[session_id]
     return {
         "mimo_wer": float(m.error_rate),
@@ -370,24 +340,12 @@ def orc_wer_multistream(
 
     Same shape as ``cpwer_meeteval`` inputs; same Polish-aware normalization.
     """
-    from meeteval.io.seglst import SegLST
     from meeteval.wer import orcwer
 
-    def _seglst(utts_by_spk):
-        return SegLST([
-            {
-                "session_id": session_id,
-                "speaker": spk,
-                "start_time": float(u.start),
-                "end_time": float(u.end),
-                "words": _normalize_text(u.text),
-            }
-            for spk, utts in utts_by_spk.items()
-            for u in utts
-            if u.text.strip()
-        ])
-
-    orc = orcwer(_seglst(ref_utts_by_spk), _seglst(hyp_utts_by_spk))[session_id]
+    orc = orcwer(
+        _seglst_from_dict(ref_utts_by_spk, session_id),
+        _seglst_from_dict(hyp_utts_by_spk, session_id),
+    )[session_id]
     return {
         "orc_wer": float(orc.error_rate),
         "errors": int(orc.errors),
@@ -468,19 +426,10 @@ def mimo_cer_meeteval(
     from collections import deque
 
     from rapidfuzz.distance import Levenshtein
-    from meeteval.io.seglst import SegLST
     from meeteval.wer import mimower
 
-    ref = SegLST([
-        {"session_id": session_id, "speaker": spk, "start_time": float(u.start),
-         "end_time": float(u.end), "words": _normalize_text(u.text)}
-        for spk, utts in ref_utts_by_spk.items() for u in utts if u.text.strip()
-    ])
-    hyp = SegLST([
-        {"session_id": session_id, "speaker": "mixture", "start_time": float(u.start),
-         "end_time": float(u.end), "words": _normalize_text(u.text)}
-        for u in hyp_utterances if u.text.strip()
-    ])
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
+    hyp = _seglst_from_list(hyp_utterances, session_id)
     m = mimower(ref, hyp)[session_id]
 
     # Rebuild the reference in MIMO's merge order. `m.assignment` lists one

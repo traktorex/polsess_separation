@@ -364,9 +364,13 @@ def _mixture_fill_overlaps(
     """
     assignments: list[dict] = []
     for start_s, end_s in overlap_regions:
+        # Clamp instead of dropping: pyannote turns can overshoot the
+        # actual audio end by a fraction of a second (frame quantisation),
+        # and an overlap region inheriting that overshoot would otherwise
+        # lose its entire audio here.
         lo = int(start_s * sr)
-        hi = int(end_s * sr)
-        if hi <= lo or hi > len(audio):
+        hi = min(int(end_s * sr), len(audio))
+        if hi <= lo:
             continue
         clip = audio[lo:hi].astype(np.float32)
         emit_pieces = {spk: clip.copy() for spk in speakers}
@@ -389,7 +393,9 @@ def _assign_overlaps(
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
     summed cosine similarity to the anchors. Falls back to fixed assignment
-    when an anchor is missing. Slices each picked stream to the emit region.
+    when an anchor is missing or the streams are too short to embed
+    (< 0.1 s) — never drops a region. Slices each picked stream to the
+    emit region.
 
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
     emit_pieces: {speaker: audio_np}}`.
@@ -399,12 +405,27 @@ def _assign_overlaps(
     t_start = time.perf_counter()
     assignments: list[dict] = []
     for i_ovl, ovl in enumerate(overlap_separated):
-        if len(ovl["s1_gated"]) < sr // 10:
-            continue
-        emb1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr).cpu()
-        emb2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr).cpu()
+        if "s1_gated" not in ovl or "s2_gated" not in ovl:
+            raise RuntimeError(
+                "overlap_separated entries have no 's1_gated'/'s2_gated' — "
+                "run the post_separation_processing stage before assembly."
+            )
+        too_short = len(ovl["s1_gated"]) < sr // 10
+        if too_short:
+            # Too short for a stable ECAPA embedding. Fall back to fixed
+            # assignment instead of dropping the region — a drop would lose
+            # the audio for BOTH speakers, because the emit region has
+            # already been subtracted from the solo intervals.
+            _log(
+                f"  overlap {ovl['idx']}: too short for ECAPA "
+                f"({len(ovl['s1_gated'])/sr:.3f}s) — fixed assignment"
+            )
+        else:
+            emb1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr).cpu()
+            emb2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr).cpu()
         have_both_anchors = (
-            len(speakers) >= 2
+            not too_short
+            and len(speakers) >= 2
             and all(anchors.get(s) is not None for s in speakers[:2])
         )
         if have_both_anchors:
@@ -418,13 +439,17 @@ def _assign_overlaps(
                 stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
                 pairing = "swapped"
         else:
-            # Fallback: fixed assignment when an anchor is missing.
+            # Fallback: fixed assignment when the streams are too short to
+            # embed or when an anchor is missing.
             stream_for = {}
             if len(speakers) >= 1:
                 stream_for[speakers[0]] = ovl["s1_gated"]
             if len(speakers) >= 2:
                 stream_for[speakers[1]] = ovl["s2_gated"]
-            pairing = "arbitrary (weak anchor)"
+            pairing = (
+                "arbitrary (too short)" if too_short
+                else "arbitrary (weak anchor)"
+            )
 
         emit_pieces = {
             spk: _slice_emit(

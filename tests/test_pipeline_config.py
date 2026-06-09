@@ -45,14 +45,30 @@ def test_default_yaml_loads():
 
 
 def test_yaml_roundtrip(tmp_path):
-    """YAML -> PipelineConfig -> asdict -> YAML -> PipelineConfig is identity."""
+    """YAML -> PipelineConfig -> YAML -> PipelineConfig is identity, except
+    hf_token which the saver masks (it must never persist a live token)."""
     cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML))
 
     out_yaml = tmp_path / "roundtrip.yaml"
     save_pipeline_config_to_yaml(cfg, str(out_yaml))
 
     cfg_again = load_pipeline_config_from_yaml(str(out_yaml))
-    assert asdict(cfg) == asdict(cfg_again)
+    expected = asdict(cfg)
+    expected["diarization"]["hf_token"] = "REDACTED"
+    assert expected == asdict(cfg_again)
+
+
+def test_saved_yaml_never_contains_token(tmp_path):
+    """A live hf_token must not appear in a saved config file."""
+    cfg = PipelineConfig()
+    cfg.diarization.hf_token = "hf_live_secret_value"
+    out_yaml = tmp_path / "cfg.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    text = out_yaml.read_text()
+    assert "hf_live_secret_value" not in text
+    assert "REDACTED" in text
+    # The in-memory config is untouched.
+    assert cfg.diarization.hf_token == "hf_live_secret_value"
 
 
 def test_dict_roundtrip():

@@ -445,8 +445,16 @@ def load_pipeline_config_from_yaml(yaml_path: str) -> PipelineConfig:
 
 
 def save_pipeline_config_to_yaml(config: PipelineConfig, yaml_path: str) -> None:
-    """Save a `PipelineConfig` to YAML, preserving the nested structure."""
+    """Save a `PipelineConfig` to YAML, preserving the nested structure.
+
+    ``diarization.hf_token`` is masked as ``"REDACTED"`` so a live token
+    never lands in a saved config file (it's read from ``$HF_TOKEN`` at
+    load time anyway; the masked placeholder keeps validation passing).
+    """
     yaml_path = Path(yaml_path)
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
+    data = asdict(config)
+    if data.get("diarization", {}).get("hf_token"):
+        data["diarization"]["hf_token"] = "REDACTED"
     with open(yaml_path, "w") as f:
-        yaml.dump(asdict(config), f, default_flow_style=False, sort_keys=False)
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)

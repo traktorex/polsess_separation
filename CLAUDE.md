@@ -104,12 +104,12 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
 2. **routing** — split overlap vs solo regions.
 3. **enhancement** — `mpsenet` default; ClearerVoice backends (`frcrn_se_16k`, `mossformer_gan_se_16k`, `mossformer2_se_48k`) available.
-4. **separation** — SepFormer 64k baseline checkpoint by default; runs on overlap fragments only.
-5. **post_separation_processing** — VAD mask + optional BWE (`naive` / `ap_bwe` / `flowhigh`). Always-on (downstream depends on its `_gated` arrays); set `backend: naive` to apply only the mask.
+4. **separation** — SepFormer 128k checkpoint by default (`configs/default.yaml`; the dataclass default still points at the 64k baseline); runs on overlap fragments only.
+5. **post_separation_processing** — VAD mask + optional BWE (`naive` / `ap_bwe` / `flowhigh`). Always-on (downstream depends on its `_gated` arrays); set `backend: naive` to apply only the mask. `configs/default.yaml` ships `backend: ap_bwe` (dataclass default is `naive`).
 6. **assembly** — stitch per-speaker streams, ECAPA anchor for speaker identity across pieces.
 7. **transcription** — `whisper` / `whisperx` backends; default = WhisperX `large-v2` + `jonatasgrosman/wav2vec2-large-xlsr-53-polish` alignment (rationale in `asr_pipeline/configs/README.md`).
 
-Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping.
+Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping. Config serializers (`save_pipeline_config_to_yaml`, the `metadata.json` snapshot in `io.write_pipeline_outputs`) mask `diarization.hf_token` as `REDACTED` so live tokens never land in output files.
 
 **`asr_pipeline/eval/`** — three-layer scoring. `evaluate_recording(rec) → ScoreCard` runs all three layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root.
 - **L1 diarization** — DER between `pipeline/diarization.json` and reference RTTM.

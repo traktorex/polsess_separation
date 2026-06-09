@@ -16,8 +16,8 @@ Usage::
     python scripts/run_pipeline_on_recording.py \
         --recording-dir ~/datasets/eval/clarin/442dd69e
 
-The recording's ``mixture.wav`` is the input; the writer places outputs
-beside it. The driver doesn't touch the ``reference/`` subdir (that's
+The recording's ``<id>.wav`` (or legacy ``mixture.wav``) is the input;
+the writer places outputs beside it. The driver doesn't touch the ``reference/`` subdir (that's
 ``scripts/prepare_eval_references.py``'s job).
 """
 
@@ -148,7 +148,7 @@ def main() -> int:
     parser.add_argument(
         "--recording-dir", type=Path, required=True,
         help="Per-recording dir, e.g. ~/datasets/eval/clarin/442dd69e/. "
-             "Must contain mixture.wav.",
+             "Must contain <id>.wav or mixture.wav.",
     )
     parser.add_argument(
         "--config", type=Path,
@@ -167,9 +167,17 @@ def main() -> int:
     args = parser.parse_args()
 
     recording_dir = args.recording_dir.expanduser().resolve()
-    mixture = recording_dir / "mixture.wav"
+    # Same resolution order as asr_pipeline.eval.recordings.load_recording:
+    # new convention is `<dir>/<dir.name>.wav`, legacy is `mixture.wav`.
+    mixture = recording_dir / f"{recording_dir.name}.wav"
     if not mixture.exists():
-        print(f"error: {mixture} not found", file=sys.stderr)
+        mixture = recording_dir / "mixture.wav"
+    if not mixture.exists():
+        print(
+            f"error: neither {recording_dir.name}.wav nor mixture.wav "
+            f"found in {recording_dir}",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"recording: {recording_dir}")

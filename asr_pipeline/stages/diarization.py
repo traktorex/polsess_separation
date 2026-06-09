@@ -71,7 +71,12 @@ class DiarizationStage(Stage):
             }
             for t, _, spk in diar.itertracks(yield_label=True)
         ]
-        seg_df = pd.DataFrame(seg_records)
+        # Explicit columns so downstream `df["speaker"]` access works even
+        # when pyannote returns no segments at all (e.g. silent input) —
+        # `pd.DataFrame([])` would otherwise have no columns.
+        seg_df = pd.DataFrame(
+            seg_records, columns=["start", "end", "duration", "speaker"]
+        )
 
         ovl_records = [
             {

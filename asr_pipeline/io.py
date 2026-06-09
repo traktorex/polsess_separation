@@ -76,6 +76,21 @@ def load_audio_as_mono(audio_path: str, target_sr: int = 16_000) -> np.ndarray:
     return out
 
 
+def redact_config_snapshot(config_snapshot: dict) -> dict:
+    """Deep-copy a config snapshot with ``diarization.hf_token`` masked.
+
+    The snapshot (``dataclasses.asdict(cfg)``) would otherwise carry the
+    live HF token into every ``metadata.json`` / saved YAML — files that
+    get zipped and shared. The token is only needed at model-load time,
+    never for reproducibility, so it's safe to mask unconditionally.
+    """
+    snap = json.loads(json.dumps(config_snapshot))  # cheap deep copy (JSON-safe input)
+    diar = snap.get("diarization")
+    if isinstance(diar, dict) and diar.get("hf_token"):
+        diar["hf_token"] = "REDACTED"
+    return snap
+
+
 def ensure_artifact_dir(artifact_dir: Optional[str]) -> Optional[Path]:
     """Create the artefact directory if a path is provided. Return as Path."""
     if artifact_dir is None:
@@ -232,7 +247,7 @@ def write_pipeline_outputs(
         "n_overlap_separated": len(ctx.overlap_separated or []),
     }
     if config_snapshot is not None:
-        meta["config"] = config_snapshot
+        meta["config"] = redact_config_snapshot(config_snapshot)
     with open(pipeline_dir / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 

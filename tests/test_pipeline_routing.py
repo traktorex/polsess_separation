@@ -87,3 +87,24 @@ def test_select_then_merges():
 def test_select_empty_df():
     df = _ovl_df([])
     assert _select_overlap_regions(df, min_overlap_dur=0.2, merge_gap=0.5) == []
+
+
+def test_routing_stage_handles_empty_diarization():
+    """Regression: silent input → pyannote returns zero segments. The
+    DataFrame the diarization stage builds for that case (explicit columns,
+    no rows) must flow through routing without a KeyError."""
+    import pandas as pd
+
+    from asr_pipeline.config import RoutingConfig
+    from asr_pipeline.context import DiarizationResult, PipelineContext
+    from asr_pipeline.stages.routing import RoutingStage
+
+    seg_df = pd.DataFrame([], columns=["start", "end", "duration", "speaker"])
+    ovl_df = pd.DataFrame(columns=["start", "end", "duration"])
+    ctx = PipelineContext()
+    ctx.diarization = DiarizationResult(
+        segments_df=seg_df, overlaps_df=ovl_df, total_duration_s=0.0
+    )
+    RoutingStage(RoutingConfig()).run(ctx)
+    assert ctx.overlap_regions == []
+    assert ctx.speakers == []

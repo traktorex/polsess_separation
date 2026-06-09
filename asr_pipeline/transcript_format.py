@@ -19,6 +19,7 @@ Three output flavours:
 from __future__ import annotations
 
 import os
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -158,7 +159,7 @@ def write_eaf(
     # --- Root --------------------------------------------------------------
     root = ET.Element("ANNOTATION_DOCUMENT", {
         "AUTHOR": "asr_pipeline",
-        "DATE": "2025-01-01T00:00:00+00:00",
+        "DATE": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
         "FORMAT": "3.0",
         "VERSION": "3.0",
     })
