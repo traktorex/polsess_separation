@@ -607,6 +607,10 @@ class SeparationStage(Stage):
                     sr_separator=cfg.separator_sample_rate,
                     chunk_length_s=cfg.training_chunk_length_s,
                 )
+                # Report actual chunking, not the branch taken:
+                # _separate_overlap_add falls back to a single forward when
+                # the window still fits one chunk.
+                chunked = len(mix) > chunk_samples
             else:
                 s1_raw, s2_raw = _separate_single(
                     mix,
@@ -615,13 +619,7 @@ class SeparationStage(Stage):
                     sr_pipeline=sr,
                     sr_separator=cfg.separator_sample_rate,
                 )
-            # Report whether chunking actually occurred, not which branch
-            # ran: _separate_overlap_add falls back to a single forward when
-            # the window fits one chunk.
-            chunked = (
-                padded_dur_s > cfg.overlap_add_threshold_s
-                and len(mix) > chunk_samples
-            )
+                chunked = False
 
             # Volume normalisation.
             s1_raw, s2_raw, vol_scale = _volume_normalise(

@@ -18,6 +18,7 @@ import torch
 import torchaudio
 import torchaudio.functional as AF
 
+from asr_pipeline.config import redact_config_snapshot
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.transcript_format import (
@@ -74,21 +75,6 @@ def load_audio_as_mono(audio_path: str, target_sr: int = 16_000) -> np.ndarray:
     out = waveform.squeeze(0).numpy().astype(np.float32)
     _log(f"  done: {len(out)/target_sr:.2f}s mono @ {target_sr} Hz")
     return out
-
-
-def redact_config_snapshot(config_snapshot: dict) -> dict:
-    """Deep-copy a config snapshot with ``diarization.hf_token`` masked.
-
-    The snapshot (``dataclasses.asdict(cfg)``) would otherwise carry the
-    live HF token into every ``metadata.json`` / saved YAML — files that
-    get zipped and shared. The token is only needed at model-load time,
-    never for reproducibility, so it's safe to mask unconditionally.
-    """
-    snap = json.loads(json.dumps(config_snapshot))  # cheap deep copy (JSON-safe input)
-    diar = snap.get("diarization")
-    if isinstance(diar, dict) and diar.get("hf_token"):
-        diar["hf_token"] = "REDACTED"
-    return snap
 
 
 def ensure_artifact_dir(artifact_dir: Optional[str]) -> Optional[Path]:

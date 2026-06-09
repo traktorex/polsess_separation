@@ -8,12 +8,30 @@ parent project's `Config` — so the package can be lifted into CLARIN with
 only the one separator-loading seam in `stages/separation.py` to edit.
 """
 
+import json
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+
+def redact_config_snapshot(config_snapshot: dict) -> dict:
+    """Deep-copy a config snapshot with ``diarization.hf_token`` masked.
+
+    The single source of truth for which config fields must never appear in
+    a serialised snapshot (``metadata.json`` via ``io.write_pipeline_outputs``,
+    saved YAML via ``save_pipeline_config_to_yaml``). The token is only needed
+    at model-load time, never for reproducibility, so it's safe to mask
+    unconditionally. Defined here in the lightweight config leaf so both
+    writers can import it without pulling in ``io``'s heavy deps.
+    """
+    snap = json.loads(json.dumps(config_snapshot))  # cheap deep copy (JSON-safe input)
+    diar = snap.get("diarization")
+    if isinstance(diar, dict) and diar.get("hf_token"):
+        diar["hf_token"] = "REDACTED"
+    return snap
 
 
 def _one_of(value, name: str, allowed: tuple) -> None:
@@ -472,8 +490,6 @@ def save_pipeline_config_to_yaml(config: PipelineConfig, yaml_path: str) -> None
     """
     yaml_path = Path(yaml_path)
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
-    data = asdict(config)
-    if data.get("diarization", {}).get("hf_token"):
-        data["diarization"]["hf_token"] = "REDACTED"
+    data = redact_config_snapshot(asdict(config))
     with open(yaml_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
