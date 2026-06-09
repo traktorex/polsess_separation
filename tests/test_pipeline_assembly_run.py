@@ -224,18 +224,22 @@ def test_mixture_fill_skips_region_entirely_past_end():
 # ---------------------------------------------------------------------------
 
 
-def _ctx_with_segments(segments, overlap_separated=None, overlap_regions=None):
-    seg_df = pd.DataFrame(
+def _seg_df(segments):
+    """Diarization segments DataFrame from (speaker, start, end) tuples."""
+    return pd.DataFrame(
         [
             {"start": s, "end": e, "duration": e - s, "speaker": spk}
             for spk, s, e in segments
         ],
         columns=["start", "end", "duration", "speaker"],
     )
+
+
+def _ctx_with_segments(segments, overlap_separated=None, overlap_regions=None):
     ovl_df = pd.DataFrame(columns=["start", "end", "duration"])
     ctx = PipelineContext(sample_rate=SR)
     ctx.diarization = DiarizationResult(
-        segments_df=seg_df, overlaps_df=ovl_df, total_duration_s=10.0
+        segments_df=_seg_df(segments), overlaps_df=ovl_df, total_duration_s=10.0
     )
     ctx.overlap_separated = overlap_separated or []
     ctx.overlap_regions = overlap_regions
@@ -320,15 +324,8 @@ def _make_stage(ecapa=None, **config_kwargs) -> AssemblyStage:
 
 
 def _diarization(segments, total_duration_s):
-    seg_df = pd.DataFrame(
-        [
-            {"start": s, "end": e, "duration": e - s, "speaker": spk}
-            for spk, s, e in segments
-        ],
-        columns=["start", "end", "duration", "speaker"],
-    )
     return DiarizationResult(
-        segments_df=seg_df,
+        segments_df=_seg_df(segments),
         overlaps_df=pd.DataFrame(columns=["start", "end", "duration"]),
         total_duration_s=total_duration_s,
     )

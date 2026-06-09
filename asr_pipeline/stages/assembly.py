@@ -357,6 +357,7 @@ def _compute_anchors(
     """
     anchors: dict[str, Optional[torch.Tensor]] = {}
     solo_durations: dict[str, float] = {}
+    min_anchor_len = int(sr * _ECAPA_MIN_DURATION_S)
     _log(f"computing speaker anchors via ECAPA (anchor_max={anchor_cap_s}s)...")
     for spk in speakers:
         t0 = time.perf_counter()
@@ -378,7 +379,7 @@ def _compute_anchors(
             + (f", capped to {len(anchor_input)/sr:.1f}s" if capped else "")
             + " — calling ECAPA..."
         )
-        if len(anchor_input) >= int(sr * _ECAPA_MIN_DURATION_S):
+        if len(anchor_input) >= min_anchor_len:
             anchors[spk] = _ecapa_embed(anchor_input, ecapa, device, sr).cpu()
         else:
             anchors[spk] = None
@@ -455,6 +456,7 @@ def _assign_overlaps(
             f"only 2 — speakers {speakers[2:]} get no overlap audio."
         )
     t_start = time.perf_counter()
+    min_overlap_len = int(sr * _ECAPA_OVERLAP_MIN_DURATION_S)
     assignments: list[dict] = []
     for i_ovl, ovl in enumerate(overlap_separated):
         if "s1_gated" not in ovl or "s2_gated" not in ovl:
@@ -462,7 +464,7 @@ def _assign_overlaps(
                 "overlap_separated entries have no 's1_gated'/'s2_gated' — "
                 "run the post_separation_processing stage before assembly."
             )
-        too_short = len(ovl["s1_gated"]) < int(sr * _ECAPA_OVERLAP_MIN_DURATION_S)
+        too_short = len(ovl["s1_gated"]) < min_overlap_len
         have_both_anchors = (
             len(speakers) >= 2
             and all(anchors.get(s) is not None for s in speakers[:2])
