@@ -101,3 +101,31 @@ def test_missing_hf_token_raises(monkeypatch):
         cfg = PipelineConfig()
         cfg.diarization.hf_token = None
         cfg.__post_init__()
+
+
+def test_default_yaml_separation_matches_dataclass():
+    """Pin: dataclass defaults and default.yaml must name the same separator
+    setup. `load_pipeline_config_from_dict` falls back to the dataclass when
+    the `separation:` block is absent, so any divergence means programmatic
+    callers silently run a different separator/seam than YAML users."""
+    yaml_cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).separation
+    dc_cfg = PipelineConfig().separation
+    assert yaml_cfg.checkpoint_path == dc_cfg.checkpoint_path
+    assert yaml_cfg.seam_mode == dc_cfg.seam_mode
+    assert yaml_cfg.vad_threshold == dc_cfg.vad_threshold
+    assert yaml_cfg.vad_soft_threshold == dc_cfg.vad_soft_threshold
+
+
+@pytest.mark.parametrize("field,value", [
+    ("training_chunk_length_s", 0.0),
+    ("training_chunk_length_s", -1.0),
+    ("overlap_add_threshold_s", 0.0),
+    ("vad_soft_threshold", -0.1),
+])
+def test_invalid_separation_numbers_raise(field, value):
+    """YAML typos that would hang (hop=0 infinite loop) or flood the VAD
+    mask must fail at config time, not at run time."""
+    with pytest.raises(ValueError, match=field):
+        cfg = PipelineConfig()
+        setattr(cfg.separation, field, value)
+        cfg.__post_init__()

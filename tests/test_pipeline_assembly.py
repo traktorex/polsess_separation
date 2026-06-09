@@ -12,6 +12,7 @@ from asr_pipeline.config import AssemblyConfig
 from asr_pipeline.stages.assembly import (
     _apply_fade,
     _cap_anchor_audio,
+    _coalesce,
     _concat_full_length,
     _concat_shortened,
     _match_overlap_rms_to_solo,
@@ -55,6 +56,37 @@ def test_subtract_multiple_blockers():
 def test_subtract_drops_tiny_residuals():
     # Residual 0.0005 s < the 1e-3 floor -> dropped.
     assert _subtract([(0.0, 1.0)], [(0.0005, 1.0)]) == []
+
+
+# ---------------------------------------------------------------------------
+# _coalesce (same-speaker interval merge, feeds _subtract)
+# ---------------------------------------------------------------------------
+
+
+def test_coalesce_empty():
+    assert _coalesce([]) == []
+
+
+def test_coalesce_disjoint_untouched():
+    assert _coalesce([(0.0, 1.0), (2.0, 3.0)]) == [(0.0, 1.0), (2.0, 3.0)]
+
+
+def test_coalesce_merges_overlapping_same_speaker_segments():
+    # Regression: two overlapping same-speaker pyannote segments must not
+    # survive into two solo events that double-count the shared 3-5 s region
+    # (which would duplicate that speech into the transcript).
+    assert _coalesce([(0.0, 5.0), (3.0, 8.0)]) == [(0.0, 8.0)]
+
+
+def test_coalesce_sorts_then_merges_unordered():
+    assert _coalesce([(3.0, 8.0), (0.0, 5.0), (10.0, 11.0)]) == [
+        (0.0, 8.0), (10.0, 11.0)
+    ]
+
+
+def test_coalesce_leaves_touching_intervals_separate():
+    # Touching at a single point double-counts nothing, so they stay distinct.
+    assert _coalesce([(0.0, 2.0), (2.0, 4.0)]) == [(0.0, 2.0), (2.0, 4.0)]
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +292,16 @@ def test_concat_full_length_clips_overrunning_piece():
     stream, tmap = _concat_full_length(events, total_dur_s=3.0, sr=10)
     assert np.all(stream[25:30] == 1.0)
     assert tmap[0].concat_end == pytest.approx(3.0)
+
+
+def test_concat_full_length_clamps_negative_orig_start():
+    # A negative orig_start used to index from the array end and raise a
+    # broadcast ValueError; now the audio head is trimmed and the remainder
+    # is placed from sample 0 (mirrors _slice_emit's lower clamp).
+    events = [{"orig_start": -0.5, "orig_end": 0.5,
+               "audio": np.ones(10, dtype=np.float32), "kind": "solo"}]
+    stream, tmap = _concat_full_length(events, total_dur_s=3.0, sr=10)
+    assert len(stream) == 30
+    assert np.all(stream[0:5] == 1.0)   # 5-sample head trimmed, 5 placed at 0
+    assert np.all(stream[5:] == 0.0)
+    assert len(tmap) == 1

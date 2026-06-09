@@ -116,14 +116,15 @@ class SeparationConfig:
     """Stage 3b: source separation on overlap regions + VAD gating.
 
     Knobs are exposed as enum-string fields rather than separate strategy
-    classes (one function with branches per knob). Defaults reproduce the
-    POC notebook's behaviour.
+    classes (one function with branches per knob). Defaults match
+    ``configs/default.yaml`` (the config the eval harness runs) so
+    programmatic users and YAML users get the same pipeline; a pin test
+    in ``tests/test_pipeline_config.py`` enforces the agreement.
     """
 
     enabled: bool = True
     checkpoint_path: str = (
-        "checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/"
-        "sepformer_SB_best.pt"
+        "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"
     )
     separator_sample_rate: int = 8_000   # SR the separator was trained at
     # Audio duration (seconds) the separator was trained on. Used as the
@@ -164,7 +165,7 @@ class SeparationConfig:
     #                          separator output (captures vowel tails that
     #                          pyannote cut). Always emits a region at least
     #                          as wide as zero_crossing.
-    seam_mode: str = "zero_crossing"  # "zero_crossing" | "overlap_boundary" | "snap_to_silence"
+    seam_mode: str = "snap_to_silence"  # "zero_crossing" | "overlap_boundary" | "snap_to_silence"
     # Maximum distance (seconds) from the original overlap boundary to scan
     # for a zero crossing.
     seam_search_radius_s: float = 0.05
@@ -185,14 +186,14 @@ class SeparationConfig:
     # VAD applied to each separator output to suppress residuals.
     # `vad_threshold` is the "definitely speech" upper bound. Frames above it
     # always become part of the speech mask.
-    vad_threshold: float = 0.50
+    vad_threshold: float = 0.25
     # Schmitt-trigger style lower threshold. Frames between
     # `vad_soft_threshold` and `vad_threshold` count as speech *only* if they
     # extend a chain that touches a frame above `vad_threshold` (propagated
     # both forward and backward). This captures tails/onsets where silero is
     # less confident — common on neural-separator outputs. Set to a value
     # >= `vad_threshold` to disable (mask becomes a strict threshold).
-    vad_soft_threshold: float = 0.20
+    vad_soft_threshold: float = 0.10
     # Fixed positional dilation in 32 ms frames applied on top of the
     # threshold mask. Extends each speech run by `vad_attack_frames` before
     # its onset and `vad_release_frames` after its offset, regardless of
@@ -385,6 +386,24 @@ class PipelineConfig:
                 ("naive", "ap_bwe", "flowhigh"))
         _one_of(self.transcription.backend, "transcription.backend",
                 ("whisper", "whisperx"))
+
+        if self.separation.training_chunk_length_s <= 0:
+            raise ValueError(
+                f"separation.training_chunk_length_s must be positive, got "
+                f"{self.separation.training_chunk_length_s} (a non-positive "
+                f"chunk length would make overlap-add hop 0 → infinite loop)."
+            )
+        if self.separation.overlap_add_threshold_s <= 0:
+            raise ValueError(
+                f"separation.overlap_add_threshold_s must be positive, got "
+                f"{self.separation.overlap_add_threshold_s}"
+            )
+        if self.separation.vad_soft_threshold < 0:
+            raise ValueError(
+                f"separation.vad_soft_threshold must be >= 0, got "
+                f"{self.separation.vad_soft_threshold} (a negative value "
+                f"makes every frame 'weak' and floods the Schmitt mask)."
+            )
 
         if self.post_separation_processing.flowhigh_input_sr <= 0:
             raise ValueError(

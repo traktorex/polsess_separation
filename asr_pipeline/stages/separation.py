@@ -9,8 +9,9 @@ For each overlap region in `ctx.overlap_regions`:
 2. Run the separator (resample 16 k -> 8 k -> separator -> 8 k -> 16 k).
    For overlaps wider than ``overlap_add_threshold_s`` we chunk + overlap-add.
 3. Volume-normalise the two outputs (``volume_normalization``).
-4. VAD-gate each output stream (``vad_threshold`` + silero) to suppress the
-   residual energy the separator inevitably leaks where there's no speech.
+4. Compute a VAD gate for each output stream (``vad_threshold`` + silero).
+   The mask is *applied* in Stage 3c (post_separation_processing); here it
+   is only computed (and used by ``snap_to_silence`` seam selection).
 5. Pick the *emit region* (``seam_mode``) — the time range within the
    padded window that the assembler will splice into the per-speaker
    stream. ``zero_crossing`` nudges the seam to a nearby zero crossing in
@@ -25,7 +26,8 @@ from __future__ import annotations
 
 import gc
 import json
-from dataclasses import dataclass
+import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -175,6 +177,9 @@ def _vad_mask_silero(
 
 @dataclass
 class _Window:
+    """Absolute recording-time edges (seconds) of the padded window fed to
+    the separator — timestamps, not pad amounts."""
+
     pad_start_s: float
     pad_end_s: float
 
@@ -184,14 +189,15 @@ def _window_none(start_s: float, end_s: float) -> _Window:
     return _Window(pad_start_s=start_s, pad_end_s=end_s)
 
 
-def _signal_aware_pad(
+def _boundary_aware_pad(
     start_s: float,
     end_s: float,
     total_duration_s: float,
     target_total_s: float,
 ) -> tuple[float, float]:
     """Distribute pad to reach `target_total_s` total window length, biased
-    toward the side with available room.
+    toward the side with available room. (Boundary-aware only: looks at the
+    recording edges, never at the signal content.)
 
     Tries a symmetric split first. When one side hits a recording boundary
     (0 or `total_duration_s`), the leftover budget is redistributed to the
@@ -233,14 +239,14 @@ def _window_fixed_pad(
     """Symmetric `±context_pad_s` window, with two extensions:
 
     - If the resulting total window would be shorter than
-      `min_fragment_length_s`, the window is widened (via `_signal_aware_pad`)
+      `min_fragment_length_s`, the window is widened (via `_boundary_aware_pad`)
       until it reaches that floor.
     - When one side hits a recording boundary, the unused budget is
       redistributed to the other side.
     """
     overlap_dur = end_s - start_s
     target_total = max(overlap_dur + 2 * context_pad_s, min_fragment_length_s)
-    pad_start, pad_end = _signal_aware_pad(
+    pad_start, pad_end = _boundary_aware_pad(
         start_s, end_s, total_duration_s, target_total
     )
     return _Window(pad_start_s=pad_start, pad_end_s=pad_end)
@@ -258,7 +264,7 @@ def _window_expand_to_chunk(
 
     `target_total_s` is typically the separator's training chunk length
     — feeding it a window of the size it was trained on gives the
-    cleanest separation. Padding distribution uses `_signal_aware_pad`,
+    cleanest separation. Padding distribution uses `_boundary_aware_pad`,
     so when one side hits the recording boundary the leftover budget
     moves to the other side instead of being lost.
 
@@ -269,7 +275,7 @@ def _window_expand_to_chunk(
     part actually spliced into the per-speaker stream).
     """
     effective_target = max(target_total_s, min_fragment_length_s)
-    pad_start, pad_end = _signal_aware_pad(
+    pad_start, pad_end = _boundary_aware_pad(
         start_s, end_s, total_duration_s, effective_target
     )
     return _Window(pad_start_s=pad_start, pad_end_s=pad_end)
@@ -346,7 +352,11 @@ def _separate_overlap_add(
 
     Splits into 50%-overlapping Hann-windowed chunks of `chunk_length_s` each,
     runs the separator on each chunk, PIT-aligns successive chunks, and sums
-    with the Hann window for COLA reconstruction.
+    with the Hann window. Constant overlap-add holds in the interior; at the
+    stream's outermost edges the symmetric-Hann weights fall below the 1e-6
+    clamp, so the first/last ~`(chunk_samples·1e-3)/π` samples (~1.3 ms at
+    the 4 s production chunk) are attenuated toward zero. Same idiom as
+    `enhancement._hann_overlap_add`; accepted as inaudible.
     """
     chunk_samples = int(chunk_length_s * sr_pipeline)
     hop = chunk_samples // 2
@@ -429,7 +439,9 @@ def _pick_seam_zero_crossing(
     """
     n = len(audio)
     lo = max(1, target_idx - search_radius_samples)
-    hi = min(n, target_idx + search_radius_samples)
+    # +1 so the search is symmetric: without it the scan covers
+    # [target−r, target+r−1] and a transition exactly at target+r is missed.
+    hi = min(n, target_idx + search_radius_samples + 1)
     if hi <= lo:
         return target_idx
     region = audio[lo - 1 : hi]
@@ -567,15 +579,19 @@ class SeparationStage(Stage):
         assert device is not None
 
         results: list[dict] = []
+        n_regions = len(ctx.overlap_regions)
+        chunk_samples = int(cfg.training_chunk_length_s * sr)
+        t0 = time.perf_counter()
+        _log(f"run: separating {n_regions} overlap region(s)")
 
         for idx, (start_s, end_s) in enumerate(ctx.overlap_regions):
-            # Length sanity (mirrors the POC's < 256 sample skip).
+            # Length sanity (mirrors the POC's < 256 sample skip). NB: `idx`
+            # indexes ctx.overlap_regions, not the results list — skipped
+            # regions leave gaps in the spilled overlap_<idx>_*.wav filenames.
             if int((end_s - start_s) * sr) < _MIN_OVERLAP_SAMPLES:
                 continue
 
-            window = self._pick_window(
-                start_s, end_s, total_dur, ctx.audio, sr
-            )
+            window = self._pick_window(start_s, end_s, total_dur)
             pad_lo = int(window.pad_start_s * sr)
             pad_hi = int(window.pad_end_s * sr)
             mix = ctx.audio[pad_lo:pad_hi].astype(np.float32)
@@ -591,7 +607,6 @@ class SeparationStage(Stage):
                     sr_separator=cfg.separator_sample_rate,
                     chunk_length_s=cfg.training_chunk_length_s,
                 )
-                chunked = True
             else:
                 s1_raw, s2_raw = _separate_single(
                     mix,
@@ -600,7 +615,13 @@ class SeparationStage(Stage):
                     sr_pipeline=sr,
                     sr_separator=cfg.separator_sample_rate,
                 )
-                chunked = False
+            # Report whether chunking actually occurred, not which branch
+            # ran: _separate_overlap_add falls back to a single forward when
+            # the window fits one chunk.
+            chunked = (
+                padded_dur_s > cfg.overlap_add_threshold_s
+                and len(mix) > chunk_samples
+            )
 
             # Volume normalisation.
             s1_raw, s2_raw, vol_scale = _volume_normalise(
@@ -638,6 +659,20 @@ class SeparationStage(Stage):
                 combined_vad_mask=np.maximum(mask1, mask2),
                 sample_rate=sr,
             )
+            # Guard: adjacent emit regions must never cross. snap_to_silence
+            # can extend each boundary outward by up to seam_search_radius_s
+            # + snap_silence_max_extend_s (~0.35 s); with routing's 0.5 s
+            # merge gap, the previous region's extended end and this one's
+            # extended start can overlap — the same audio would then be
+            # spliced into two overlap events (duplicated words in the
+            # transcript). Clamp this region's start to the previous end.
+            if results and emit_start_s < results[-1]["emit_end"]:
+                _log(
+                    f"run: overlap {idx}: emit_start {emit_start_s:.3f}s "
+                    f"crossed previous emit_end "
+                    f"{results[-1]['emit_end']:.3f}s — clamping"
+                )
+                emit_start_s = min(results[-1]["emit_end"], emit_end_s)
 
             # The TypedDict schema is defined in `asr_pipeline/context.py`.
             # `s{1,2}_gated` is added by Stage 3c (post_separation_processing).
@@ -663,6 +698,11 @@ class SeparationStage(Stage):
                 "probs2": probs2,
             }
             results.append(entry)
+            if (idx + 1) % 10 == 0 or idx + 1 == n_regions:
+                _log(
+                    f"run: overlap {idx + 1}/{n_regions} done "
+                    f"({time.perf_counter() - t0:.1f}s elapsed)"
+                )
 
         ctx.overlap_separated = results
 
@@ -674,8 +714,6 @@ class SeparationStage(Stage):
         start_s: float,
         end_s: float,
         total_dur: float,
-        audio_16k: np.ndarray,
-        sr: int,
     ) -> _Window:
         mode = self.config.context_window_mode
         if mode == "none":
@@ -739,8 +777,15 @@ class SeparationStage(Stage):
         else:
             raise ValueError(f"Unknown seam_mode: {cfg.seam_mode!r}")
 
-        emit_start_s = (pad_lo + new_left) / sample_rate
-        emit_end_s = (pad_lo + new_right) / sample_rate
+        # Anchor on the FLOAT pad_start_s, not the truncated pad_lo:
+        # assembly's _slice_emit re-derives the sample offset from
+        # (emit_start_s - pad_start_s) * sr, so converting through the
+        # truncated integer here would shift the seam one sample off the
+        # chosen zero crossing whenever pad_start_s * sr is fractional.
+        # (_slice_emit rounds rather than truncates for the same reason —
+        # the pair of fixes makes the index→seconds→index round trip exact.)
+        emit_start_s = window.pad_start_s + new_left / sample_rate
+        emit_end_s = window.pad_start_s + new_right / sample_rate
         # Guard: never invert.
         if emit_end_s < emit_start_s:
             return overlap_start_s, overlap_end_s
@@ -750,20 +795,17 @@ class SeparationStage(Stage):
     # Spill
     # ------------------------------------------------------------------
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
+        # Policy: ran-but-found-nothing → no metadata file. An absent
+        # separation_metadata.json means "no overlaps survived 3b", not
+        # "3b didn't run".
         if not ctx.overlap_separated:
             return
         meta = {
-            "knobs": {
-                "context_window_mode": self.config.context_window_mode,
-                "context_pad_seconds": self.config.context_pad_seconds,
-                "min_fragment_length_s": self.config.min_fragment_length_s,
-                "training_chunk_length_s": self.config.training_chunk_length_s,
-                "seam_mode": self.config.seam_mode,
-                "seam_search_radius_s": self.config.seam_search_radius_s,
-                "overlap_add_threshold_s": self.config.overlap_add_threshold_s,
-                "volume_normalization": self.config.volume_normalization,
-                "vad_threshold": self.config.vad_threshold,
-            },
+            # The full stage config, not a hand-picked subset — a curated
+            # knob list silently drifts as knobs are added (it had already
+            # lost the VAD soft-threshold/dilation knobs the pilot sweep
+            # varied).
+            "knobs": asdict(self.config),
             "overlaps": [],
         }
         for entry in ctx.overlap_separated:

@@ -71,9 +71,45 @@ def _log(msg: str) -> None:
     dlog("assembly", msg)
 
 
+# ECAPA needs a minimum amount of audio for a usable speaker embedding.
+# Inputs shorter than this are zero-padded up to it (`_ecapa_embed`) or
+# skipped entirely (`_compute_anchors` leaves the anchor None).
+_ECAPA_MIN_DURATION_S = 0.25
+# Overlap separator streams shorter than this are too brief for a *stable*
+# ECAPA embedding, so `_assign_overlaps` falls back to fixed assignment
+# rather than trusting a noisy cosine on a fraction of a syllable.
+_ECAPA_OVERLAP_MIN_DURATION_S = 0.1
+
+
 # ---------------------------------------------------------------------------
 # Solo-interval derivation
 # ---------------------------------------------------------------------------
+
+
+def _coalesce(intervals: list[Interval]) -> list[Interval]:
+    """Merge overlapping intervals into disjoint ones, sorted by start.
+
+    pyannote can in principle emit two overlapping segments for the same
+    speaker; without coalescing, `_subtract` would process each independently
+    and the shared region would survive twice — duplicating that speech into
+    the assembled stream (and the transcript). Empirically pyannote-3.1's
+    binarised output is already disjoint per speaker (a scan of every CLARIN
+    diarization found zero same-speaker self-overlap), so this is
+    disjoint-by-construction insurance that keeps assembly consistent with the
+    rest of the pipeline — every other interval set is coalesced before use.
+    Touching intervals (`s == prev_end`) are left separate: they double-count
+    nothing.
+    """
+    if not intervals:
+        return []
+    ordered = sorted(intervals)
+    out: list[list[float]] = [list(ordered[0])]
+    for s, e in ordered[1:]:
+        if s < out[-1][1]:
+            out[-1][1] = max(out[-1][1], e)
+        else:
+            out.append([s, e])
+    return [(float(s), float(e)) for s, e in out]
 
 
 def _subtract(
@@ -107,7 +143,7 @@ def _speaker_solo_intervals(
         (float(r.start), float(r.end))
         for r in seg_df[seg_df["speaker"] == speaker].itertuples()
     ]
-    return _subtract(raw, overlap_regions)
+    return _subtract(_coalesce(raw), overlap_regions)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +156,7 @@ def _ecapa_embed(
     audio_16k: np.ndarray, ecapa, device: torch.device, sample_rate: int
 ) -> torch.Tensor:
     """Return a unit-norm ECAPA embedding for the audio (1-D float32)."""
-    min_len = sample_rate // 4   # 0.25 s — POC's lower bound
+    min_len = int(sample_rate * _ECAPA_MIN_DURATION_S)
     if len(audio_16k) < min_len:
         audio_16k = np.pad(audio_16k, (0, min_len - len(audio_16k)))
     audio = torch.from_numpy(audio_16k).unsqueeze(0).to(device)
@@ -175,9 +211,15 @@ def _slice_emit(
     emit_end_s: float,
     sample_rate: int,
 ) -> np.ndarray:
-    """Slice the gated padded separator output to the assembler emit region."""
-    offset = int((emit_start_s - pad_start_s) * sample_rate)
-    length = int((emit_end_s - emit_start_s) * sample_rate)
+    """Slice the gated padded separator output to the assembler emit region.
+
+    Round, don't truncate: the separation stage derives `emit_*` as
+    `pad_start_s + k/sr`, so the offset here is an integer number of samples
+    up to float error — truncation would turn a −ε rounding residue into a
+    full one-sample shift off the seam the separation stage chose.
+    """
+    offset = int(round((emit_start_s - pad_start_s) * sample_rate))
+    length = int(round((emit_end_s - emit_start_s) * sample_rate))
     if offset < 0:
         offset = 0
     if offset + length > len(gated_audio):
@@ -226,9 +268,9 @@ def _match_overlap_rms_to_solo(events_for_spk: list[dict]) -> None:
     of the speaker's `solo` events. Mutates in place.
     """
     solo_rms = [
-        _rms(e["audio"])
+        r
         for e in events_for_spk
-        if e["kind"] == "solo" and _rms(e["audio"]) > 1e-9
+        if e["kind"] == "solo" and (r := _rms(e["audio"])) > 1e-9
     ]
     if not solo_rms:
         return
@@ -336,7 +378,7 @@ def _compute_anchors(
             + (f", capped to {len(anchor_input)/sr:.1f}s" if capped else "")
             + " — calling ECAPA..."
         )
-        if len(anchor_input) >= sr // 4:
+        if len(anchor_input) >= int(sr * _ECAPA_MIN_DURATION_S):
             anchors[spk] = _ecapa_embed(anchor_input, ecapa, device, sr).cpu()
         else:
             anchors[spk] = None
@@ -402,6 +444,16 @@ def _assign_overlaps(
     """
     n = len(overlap_separated)
     _log(f"assigning {n} overlaps to speakers via ECAPA cosine...")
+    if len(speakers) > 2:
+        # Overlap attribution only ever assigns the two separator streams to
+        # speakers[:2]; speakers 3..n would silently get no overlap audio.
+        # num_speakers=2 is pinned end-to-end (diarization, SepFormer, CLARIN),
+        # so a third speaker is off-distribution — but warn rather than drop
+        # audio in silence.
+        _log(
+            f"WARNING: {len(speakers)} speakers but overlap assignment handles "
+            f"only 2 — speakers {speakers[2:]} get no overlap audio."
+        )
     t_start = time.perf_counter()
     assignments: list[dict] = []
     for i_ovl, ovl in enumerate(overlap_separated):
@@ -410,37 +462,49 @@ def _assign_overlaps(
                 "overlap_separated entries have no 's1_gated'/'s2_gated' — "
                 "run the post_separation_processing stage before assembly."
             )
-        too_short = len(ovl["s1_gated"]) < sr // 10
-        if too_short:
-            # Too short for a stable ECAPA embedding. Fall back to fixed
-            # assignment instead of dropping the region — a drop would lose
-            # the audio for BOTH speakers, because the emit region has
-            # already been subtracted from the solo intervals.
-            _log(
-                f"  overlap {ovl['idx']}: too short for ECAPA "
-                f"({len(ovl['s1_gated'])/sr:.3f}s) — fixed assignment"
-            )
-        else:
-            emb1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr).cpu()
-            emb2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr).cpu()
+        too_short = len(ovl["s1_gated"]) < int(sr * _ECAPA_OVERLAP_MIN_DURATION_S)
         have_both_anchors = (
-            not too_short
-            and len(speakers) >= 2
+            len(speakers) >= 2
             and all(anchors.get(s) is not None for s in speakers[:2])
         )
-        if have_both_anchors:
+        if not too_short and have_both_anchors:
+            # ECAPA path: embed both streams and pick the pairing with the
+            # higher *summed* cosine similarity to the two anchors. (Embedding
+            # is deferred to here so a too-short / anchor-missing overlap pays
+            # no ECAPA forward.)
             a, b = speakers[0], speakers[1]
+            emb1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr).cpu()
+            emb2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr).cpu()
             straight = _cos(emb1, anchors[a]) + _cos(emb2, anchors[b])
             swapped = _cos(emb1, anchors[b]) + _cos(emb2, anchors[a])
-            if straight >= swapped:
+            if not (np.isfinite(straight) and np.isfinite(swapped)):
+                # ECAPA is an external model fed degenerate gated input; a
+                # non-finite cosine (e.g. a NaN embedding) would make
+                # `straight >= swapped` evaluate False and silently pick
+                # "swapped" as if it were a real decision. Drop to the fixed
+                # fallback instead — the one system-boundary check here.
+                _log(
+                    f"  overlap {ovl['idx']}: non-finite ECAPA cosine "
+                    f"(straight={straight}, swapped={swapped}) — fixed assignment"
+                )
+                stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
+                pairing = "arbitrary (non-finite cosine)"
+            elif straight >= swapped:
                 stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
                 pairing = "straight"
             else:
                 stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
                 pairing = "swapped"
         else:
-            # Fallback: fixed assignment when the streams are too short to
-            # embed or when an anchor is missing.
+            # Fixed assignment when the streams are too short to embed or an
+            # anchor is missing. Never drop the region — a drop would lose the
+            # audio for BOTH speakers, because the emit region has already
+            # been subtracted from the solo intervals.
+            if too_short:
+                _log(
+                    f"  overlap {ovl['idx']}: too short for ECAPA "
+                    f"({len(ovl['s1_gated'])/sr:.3f}s) — fixed assignment"
+                )
             stream_for = {}
             if len(speakers) >= 1:
                 stream_for[speakers[0]] = ovl["s1_gated"]
@@ -590,8 +654,16 @@ def _concat_full_length(
         start_idx = int(ev["orig_start"] * sr)
         if start_idx >= total_samples:
             continue
-        end_idx = min(total_samples, start_idx + len(ev["audio"]))
-        audio = ev["audio"][: end_idx - start_idx]
+        audio = ev["audio"]
+        if start_idx < 0:
+            # Mirror `_slice_emit`'s lower clamp: a negative orig_start would
+            # otherwise index from the array end and leave a 0-length
+            # destination slice against a positive-length source — a hard
+            # broadcast ValueError. Trim the audio head so shapes stay aligned.
+            audio = audio[-start_idx:]
+            start_idx = 0
+        end_idx = min(total_samples, start_idx + len(audio))
+        audio = audio[: end_idx - start_idx]
         stream[start_idx:end_idx] = audio
         tmap.append(TimestampMapEntry(
             concat_start=ev["orig_start"],
@@ -668,7 +740,7 @@ class AssemblyStage(Stage):
             )
         if not ctx.speakers:
             # Nothing to assemble — keep ctx fields at their defaults.
-            ctx.timestamp_map = TimestampMap(weak_anchor=False, per_speaker={})
+            ctx.timestamp_map = TimestampMap(per_speaker={})
             return
 
         cfg = self.config
@@ -747,7 +819,7 @@ class AssemblyStage(Stage):
         _log(f"concatenating per-speaker streams (mode={cfg.output_mode})...")
         total_dur = ctx.diarization.total_duration_s if ctx.diarization else 0.0
         assembled: dict[str, np.ndarray] = {}
-        timestamp_map = TimestampMap(weak_anchor=weak_anchor, per_speaker={})
+        timestamp_map = TimestampMap(per_speaker={})
         for spk in speakers:
             if cfg.output_mode == "shortened":
                 stream, tmap = _concat_shortened(events[spk], cfg, sr)
@@ -786,7 +858,7 @@ class AssemblyStage(Stage):
             )
         if ctx.timestamp_map is not None:
             payload = {
-                "weak_anchor": ctx.timestamp_map.weak_anchor,
+                "weak_anchor": ctx.weak_anchor,
                 "spk_to_label": ctx.spk_to_label,
                 "output_mode": self.config.output_mode,
                 "per_speaker": {

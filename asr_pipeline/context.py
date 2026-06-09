@@ -79,9 +79,13 @@ class TimestampMapEntry:
 
 @dataclass
 class TimestampMap:
-    """Per-speaker mapping from assembled-stream time to original-recording time."""
+    """Per-speaker mapping from assembled-stream time to original-recording time.
 
-    weak_anchor: bool
+    The weak-anchor diagnostic lives on `PipelineContext.weak_anchor` (the
+    single source of truth read by `io.py` and the notebooks); it is not
+    duplicated here.
+    """
+
     per_speaker: Dict[str, List[TimestampMapEntry]] = field(default_factory=dict)
 
 

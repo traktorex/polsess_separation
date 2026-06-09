@@ -14,7 +14,7 @@ from asr_pipeline.stages.separation import (
     _extend_start_to_silence,
     _pick_seam_zero_crossing,
     _pit_swap_if_needed,
-    _signal_aware_pad,
+    _boundary_aware_pad,
     _soft_threshold_mask,
     _volume_normalise,
     _window_expand_to_chunk,
@@ -94,34 +94,34 @@ def test_dilate_separate_runs():
 
 
 # ---------------------------------------------------------------------------
-# _signal_aware_pad + context-window helpers
+# _boundary_aware_pad + context-window helpers
 # ---------------------------------------------------------------------------
 
 
 def test_pad_target_smaller_than_overlap_is_noop():
-    assert _signal_aware_pad(10.0, 12.0, 100.0, 1.0) == (10.0, 12.0)
+    assert _boundary_aware_pad(10.0, 12.0, 100.0, 1.0) == (10.0, 12.0)
 
 
 def test_pad_symmetric_when_room_on_both_sides():
-    lo, hi = _signal_aware_pad(10.0, 12.0, 100.0, 4.0)
+    lo, hi = _boundary_aware_pad(10.0, 12.0, 100.0, 4.0)
     assert lo == pytest.approx(9.0)
     assert hi == pytest.approx(13.0)
 
 
 def test_pad_spills_right_when_left_saturated():
-    lo, hi = _signal_aware_pad(0.5, 2.5, 100.0, 6.0)
+    lo, hi = _boundary_aware_pad(0.5, 2.5, 100.0, 6.0)
     assert lo == pytest.approx(0.0)
     assert hi == pytest.approx(6.0)
 
 
 def test_pad_spills_left_when_right_saturated():
-    lo, hi = _signal_aware_pad(97.5, 99.5, 100.0, 6.0)
+    lo, hi = _boundary_aware_pad(97.5, 99.5, 100.0, 6.0)
     assert lo == pytest.approx(94.0)
     assert hi == pytest.approx(100.0)
 
 
 def test_pad_both_sides_saturated_gives_whole_recording():
-    lo, hi = _signal_aware_pad(1.0, 2.0, 3.0, 10.0)
+    lo, hi = _boundary_aware_pad(1.0, 2.0, 3.0, 10.0)
     assert (lo, hi) == (0.0, 3.0)  # narrower than target — recording too short
 
 
@@ -179,15 +179,36 @@ def test_zero_crossing_degenerate_window_falls_back():
     assert _pick_seam_zero_crossing(audio, target_idx=0, search_radius_samples=0) == 0
 
 
+def test_zero_crossing_search_is_symmetric():
+    """A transition exactly at target+r must be found (the scan used to stop
+    at target+r−1, contradicting the ±radius docstring)."""
+    audio = np.array([1.0, 1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0])
+    # Only transition is between indices 4 and 5 → reported at 5 = target+r.
+    assert _pick_seam_zero_crossing(audio, target_idx=3, search_radius_samples=2) == 5
+    # Mirror case on the lower side: transition at target−r.
+    audio_lo = np.array([-1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    assert _pick_seam_zero_crossing(audio_lo, target_idx=3, search_radius_samples=2) == 1
+
+
 def test_extend_start_finds_latest_silence():
     vad = np.array([0.0, 0.0, 1.0, 1.0, 1.0])
     assert _extend_start_to_silence(vad, zc_start_idx=4, max_extend_n=4) == 1
 
 
 def test_extend_start_never_widens_past_budget_and_never_narrows():
+    # No silence at all → no extension (never narrows either).
     vad = np.ones(5)
     assert _extend_start_to_silence(vad, zc_start_idx=4, max_extend_n=4) == 4
     assert _extend_start_to_silence(vad, zc_start_idx=4, max_extend_n=0) == 4
+    # Silence exists but only OUTSIDE the budget → must not be reached.
+    vad = np.array([0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+    assert _extend_start_to_silence(vad, zc_start_idx=7, max_extend_n=3) == 7
+
+
+def test_extend_end_never_widens_past_budget():
+    # Silence exists but only past the budget → must not be reached.
+    vad = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
+    assert _extend_end_to_silence(vad, zc_end_idx=0, max_extend_n=3) == 0
 
 
 def test_extend_end_finds_first_silence():
@@ -226,6 +247,9 @@ def test_volume_zero_combined_guard():
     z = np.zeros(100)
     o1, o2, scale = _volume_normalise(z, z, np.ones(100), "sum_equals_mix")
     assert scale == 1.0
+    # Streams must pass through untouched, not just report scale 1.
+    assert np.array_equal(o1, z)
+    assert np.array_equal(o2, z)
 
 
 def test_volume_bad_mode_raises():
