@@ -49,13 +49,28 @@ from asr_pipeline.vendor.mpsenet import MPNet
 
 
 class _AttrDict(dict):
-    """Dict that supports attribute access (needed by MPNet.__init__)."""
+    """Dict that supports attribute access (needed by MPNet.__init__).
+
+    Mirrors upstream MP-SENet's own ``env.AttrDict``; kept local so the
+    vendored package stays self-contained (no cross-import from sibling
+    vendor packages).
+    """
 
     def __getattr__(self, name):
         try:
             return self[name]
         except KeyError as e:
             raise AttributeError(name) from e
+
+
+# Inputs shorter than this (samples) are passed through unenhanced — too short
+# for the STFT window / a meaningful forward. Shared by both backends. (Not the
+# same threshold as separation's like-valued _MIN_OVERLAP_SAMPLES; kept separate.)
+_MIN_ENHANCE_SAMPLES = 256
+
+# Fraction of a ClearVoice backend's one_time_decode_length we actually fill per
+# forward, leaving headroom so we never trip its internal (bugged) segmenter.
+_DECODE_WINDOW_SAFETY = 0.8
 
 
 # ---------------------------------------------------------------------------
@@ -95,15 +110,16 @@ def _hann_overlap_add(
         if end == n:
             break
         start += hop
-    weights = np.maximum(weights, 1e-8)
+    weights = np.maximum(weights, 1e-8)  # inaudible floor; only guards div-by-0 at uncovered edges
     return (out / weights).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
 # MP-SENet backend
 # ---------------------------------------------------------------------------
-# STFT helpers — exact port of upstream MP-SENet `mag_pha_stft` /
-# `mag_pha_istft` (compressed-magnitude + raw phase representation).
+# STFT helpers — port of upstream MP-SENet `mag_pha_stft` / `mag_pha_istft`
+# (compressed-magnitude + raw phase representation). Deviates from an "exact"
+# port in one inaudible way — see the phase note in `_mpsenet_stft`.
 
 
 def _mpsenet_stft(audio_t: torch.Tensor, h: dict) -> tuple[torch.Tensor, torch.Tensor]:
@@ -120,6 +136,8 @@ def _mpsenet_stft(audio_t: torch.Tensor, h: dict) -> tuple[torch.Tensor, torch.T
         return_complex=True,
     )
     mag = spec.abs().pow(h["compress_factor"])
+    # Upstream computes atan2(imag + 1e-10, real + 1e-5); we use plain atan2.
+    # The real-axis bias is a negligible, inaudible train/infer mismatch.
     pha = spec.angle()
     return mag, pha
 
@@ -193,11 +211,9 @@ class _MPSENetBackend:
         norm = torch.sqrt(audio.numel() / (audio.pow(2).sum() + 1e-12))
         audio_n = (audio * norm).unsqueeze(0)
         mag, pha = _mpsenet_stft(audio_n, self._h)
-        out = self._model(mag, pha)
-        if isinstance(out, (tuple, list)):
-            amp_out, pha_out = out[0], out[1]
-        else:
-            amp_out, pha_out = out, pha
+        # MPNet.forward returns (amp, pha, denoised_com); the third (complex
+        # spectrogram) is unused — the seam rebuilds it in _mpsenet_istft.
+        amp_out, pha_out, _ = self._model(mag, pha)
         audio_out = _mpsenet_istft(amp_out, pha_out, self._h).squeeze(0)
         audio_out = (audio_out / (norm + 1e-12)).cpu().numpy().astype(np.float32)
         if len(audio_out) < len(audio_np):
@@ -207,8 +223,8 @@ class _MPSENetBackend:
         return audio_out
 
     def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        if len(audio_np) < 256:
-            return audio_np
+        if len(audio_np) < _MIN_ENHANCE_SAMPLES:
+            return audio_np.astype(np.float32)
         chunk_n = int(self.config.max_segment_length_s * sample_rate)
         if len(audio_np) <= chunk_n:
             # Short input: single forward at exact length (no chunk padding).
@@ -252,11 +268,10 @@ class _ClearVoiceBackend:
         # ClearVoice's `one_time_decode_length` (seconds): audio longer than
         # this triggers its internal segmented decode — which has an upstream
         # bug (`np.zeros(b, t)` instead of `np.zeros((b, t))` in
-        # decode_batch.py, crashes on long input). We keep every forward
-        # below this threshold and overlap-add ourselves. Read per-model in
-        # load(); 15 s is a safe floor across the SE models (FRCRN 120,
-        # MossFormer2 20, …).
-        self._otdl_s: float = 15.0
+        # decode_batch.py, crashes on long input). We keep every forward below
+        # this threshold and overlap-add ourselves. Set per-model in load()
+        # (FRCRN 120 s, MossFormerGAN 10 s, MossFormer2 20 s); None until then.
+        self._decode_window_s: float | None = None
 
     def load(self, device: torch.device) -> None:
         from clearvoice import ClearVoice
@@ -280,9 +295,10 @@ class _ClearVoiceBackend:
         self._cv = cv
         self._device = device
         # Respect each backend's one-pass window so we chunk just under it.
-        otdl = getattr(getattr(sm, "args", None), "one_time_decode_length", None)
-        if otdl:
-            self._otdl_s = float(otdl)
+        # Direct attribute access (not getattr-with-default) so a renamed/moved
+        # upstream field fails loud at load rather than silently using a window
+        # that may exceed the real decode limit.
+        self._decode_window_s = float(sm.args.one_time_decode_length)
 
     def unload(self) -> None:
         self._cv = None
@@ -292,11 +308,16 @@ class _ClearVoiceBackend:
     def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
         if self._cv is None:
             raise RuntimeError("ClearVoiceBackend.enhance called before load().")
-        if len(audio_np) < 256:
-            return audio_np
+        if len(audio_np) < _MIN_ENHANCE_SAMPLES:
+            return audio_np.astype(np.float32)
 
         orig_len = len(audio_np)
         x = audio_np.astype(np.float32)
+        # soxr_hq (librosa) is inherited from the batch-script lineage
+        # (scripts/enhance_clarin_debleed.py) the 48 kHz checkpoint was
+        # characterised against; deliberately NOT unified with the separator's
+        # torchaudio resampler — the two are not bit-identical and swapping
+        # would perturb the 48 kHz numbers.
         if sample_rate != self.native_sample_rate:
             x = librosa.resample(
                 x,
@@ -325,6 +346,7 @@ class _ClearVoiceBackend:
         """One ClearVoice forward on native-rate mono audio → mono output."""
         batched = x_native[np.newaxis, :].astype(np.float32)  # (1, T)
         out = self._cv(batched)
+        # ClearVoice returns (1, T) for these single-output SE models; squeeze → (T,).
         return np.asarray(out, dtype=np.float32).squeeze()
 
     def _enhance_native(self, x: np.ndarray) -> np.ndarray:
@@ -337,7 +359,8 @@ class _ClearVoiceBackend:
         MP-SENet backend uses. Short input reduces to a single forward.
         """
         sr = self.native_sample_rate
-        window = max(int(self._otdl_s * 0.8 * sr), sr)   # stay under threshold; ≥ 1 s
+        # stay under the decode threshold; ≥ 1 s
+        window = max(int(self._decode_window_s * _DECODE_WINDOW_SAFETY * sr), sr)
         return _hann_overlap_add(x, window, self._cv_call)
 
 
@@ -346,6 +369,8 @@ class _ClearVoiceBackend:
 # ---------------------------------------------------------------------------
 
 
+# Also imported by helper scripts (scripts/enhance_clarin_debleed.py,
+# scripts/transcribe_clarin_2speakers.py) — keep the keys stable.
 _CLEARVOICE_BACKENDS = {
     "frcrn_se_16k": ("FRCRN_SE_16K", 16_000),
     "mossformer_gan_se_16k": ("MossFormerGAN_SE_16K", 16_000),
