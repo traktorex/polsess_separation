@@ -3,9 +3,10 @@
 Two complementary halves, both run on the pipeline's per-speaker streams:
 
 - **Intrusive** (requires oracle audio): SI-SDR (closed-form on the whole
-  stream) + PESQ-WB / STOI (chunked over 8-second windows, median
-  aggregate, with a speech-presence filter so silence-vs-silence frames
-  don't inflate the score).
+  stream, NaN-skipped when the oracle target is essentially silent) +
+  PESQ-WB / STOI (chunked over 8-second windows, median aggregate, with a
+  speech-presence filter so silence-vs-silence frames don't inflate the
+  score).
 - **Non-intrusive** (no reference needed): SQUIM_OBJECTIVE on 30-second
   windows, mean aggregate. Always available — used on the mixture and
   on each pipeline stream.
@@ -16,8 +17,9 @@ in one shot OOMs the GPU. The notebook's previous version of this code
 hit both walls on real CLARIN recordings.
 
 Alignment between pipeline streams and oracle audio is the caller's
-problem. The intrusive metrics assume the two arrays are time-aligned and
-of comparable length; we pad/truncate to the shorter one.
+problem. The intrusive metrics assume the arrays are time-aligned; the
+est-vs-target arm truncates to the shorter of estimate/target, and the
+mixture-baseline arm additionally truncates to the mix length.
 """
 
 from __future__ import annotations
@@ -38,6 +40,28 @@ from torchmetrics.functional.audio import (
 from asr_pipeline.eval.recordings import Recording
 
 
+# |sample| at/below this counts as silence — the one FLOOR shared by every
+# silence check here (the per-chunk speech-presence filters and the whole-stream
+# SI-SDR guard). The fraction THRESHOLDS below differ; the floor is one value.
+_SILENCE_FLOOR = 1e-4
+
+# Per-chunk speech-presence fraction: a PESQ/STOI/SQUIM chunk is scored only if
+# at least this fraction of its samples exceed _SILENCE_FLOOR, so a
+# silence-vs-silence window doesn't drag the median.
+_MIN_SPEECH_FRAC = 0.30
+
+# Whole-stream SI-SDR guard: an oracle TARGET with fewer than this fraction of
+# non-silent samples is unusable as a reference, so SI-SDR is NaN-skipped rather
+# than reported as a fabricated floor value. Deliberately far below
+# _MIN_SPEECH_FRAC (see _target_essentially_silent for the rationale).
+_ESSENTIALLY_SILENT_FRAC = 0.01
+
+# Minimum chunk length to score. PESQ/STOI tolerate sub-second windows; SQUIM's
+# transformer needs >= 1 s to be defined.
+_MIN_INTRUSIVE_CHUNK_S = 0.5
+_MIN_SQUIM_CHUNK_S = 1.0
+
+
 # ---------------------------------------------------------------------------
 # Chunked intrusive metrics
 # ---------------------------------------------------------------------------
@@ -48,7 +72,7 @@ def pesq_wb_chunked(
     ref_t: torch.Tensor,
     sr: int,
     chunk_s: float = 8.0,
-    min_speech_frac: float = 0.30,
+    min_speech_frac: float = _MIN_SPEECH_FRAC,
 ) -> dict:
     """PESQ-WB on `chunk_s` windows where the ref is ≥ `min_speech_frac` non-silent.
 
@@ -56,7 +80,7 @@ def pesq_wb_chunked(
     n_skipped_short, n_errored}`.
     """
     chunk_n = int(chunk_s * sr)
-    min_n = max(int(0.5 * sr), 1)
+    min_n = max(int(_MIN_INTRUSIVE_CHUNK_S * sr), 1)
     vals: list[float] = []
     skipped_silent = skipped_short = errored = 0
     for i in range(0, len(ref_t), chunk_n):
@@ -65,7 +89,7 @@ def pesq_wb_chunked(
         if len(r_c) < min_n:
             skipped_short += 1
             continue
-        if (r_c.abs() > 1e-4).float().mean().item() < min_speech_frac:
+        if (r_c.abs() > _SILENCE_FLOOR).float().mean().item() < min_speech_frac:
             skipped_silent += 1
             continue
         try:
@@ -88,20 +112,20 @@ def stoi_chunked(
     ref_t: torch.Tensor,
     sr: int,
     chunk_s: float = 8.0,
-    min_speech_frac: float = 0.30,
+    min_speech_frac: float = _MIN_SPEECH_FRAC,
 ) -> float:
     """STOI on `chunk_s` windows. Same speech-presence filter as PESQ so the
     two metrics are scored over the same regions. Aggregates by median.
     """
     chunk_n = int(chunk_s * sr)
-    min_n = max(int(0.5 * sr), 1)
+    min_n = max(int(_MIN_INTRUSIVE_CHUNK_S * sr), 1)
     vals: list[float] = []
     for i in range(0, len(ref_t), chunk_n):
         e_c = est_t[i:i + chunk_n]
         r_c = ref_t[i:i + chunk_n]
         if len(r_c) < min_n:
             continue
-        if (r_c.abs() > 1e-4).float().mean().item() < min_speech_frac:
+        if (r_c.abs() > _SILENCE_FLOOR).float().mean().item() < min_speech_frac:
             continue
         try:
             vals.append(short_time_objective_intelligibility(e_c, r_c, sr).item())
@@ -115,27 +139,55 @@ def _align_lengths(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return a[:n], b[:n]
 
 
+def _target_essentially_silent(t: torch.Tensor) -> bool:
+    """True when the oracle target is unusable as an SI-SDR reference: empty, or
+    with fewer than `_ESSENTIALLY_SILENT_FRAC` of its samples above
+    `_SILENCE_FLOOR` (a near-silent debleed channel for a speaker who barely
+    talks). Deliberately far below the per-chunk `_MIN_SPEECH_FRAC`: this catches
+    the degenerate ~all-silent reference, not a legitimately low-talk speaker
+    (who is still scored on the chunks they speak).
+    """
+    if len(t) == 0:
+        return True
+    return float((t.abs() > _SILENCE_FLOOR).float().mean()) < _ESSENTIALLY_SILENT_FRAC
+
+
 def compute_intrusive(
     estimate: np.ndarray, target: np.ndarray, mix: np.ndarray, sr: int,
 ) -> dict:
     """SI-SDR (whole stream) + PESQ-WB / STOI (chunked) + improvement vs
     the mono-mix baseline.
 
-    Caller is responsible for ensuring `estimate`, `target`, `mix` are
-    1-D float32 numpy arrays at the same sample rate; we truncate to the
-    shortest before scoring.
-    """
-    n = min(len(estimate), len(target), len(mix))
-    e = torch.from_numpy(estimate[:n].astype(np.float32))
-    t = torch.from_numpy(target[:n].astype(np.float32))
-    m = torch.from_numpy(mix[:n].astype(np.float32))
+    Caller is responsible for ensuring `estimate`, `target`, `mix` are 1-D
+    float32 numpy arrays at the same sample rate. The est-vs-target arm
+    truncates to the shorter of estimate/target; the mixture-baseline arm
+    additionally truncates to the mix length (the mix is irrelevant to the
+    est-vs-target metric, so its length must not clip it).
 
-    si = scale_invariant_signal_distortion_ratio(e, t).item()
-    si0 = scale_invariant_signal_distortion_ratio(m, t).item()
+    When the oracle target is essentially silent, the SI-SDR fields are NaN
+    (not a fabricated floor value) so nan-aware aggregation skips the row.
+    """
+    # Est-vs-target arm: mixture-independent — do NOT truncate to the mix.
+    n_et = min(len(estimate), len(target))
+    e = torch.from_numpy(estimate[:n_et].astype(np.float32))
+    t = torch.from_numpy(target[:n_et].astype(np.float32))
+    # Baseline arm: mono mix vs target, truncated to the mix length here only.
+    n_base = min(n_et, len(mix))
+    t_base = t[:n_base]
+    m = torch.from_numpy(mix[:n_base].astype(np.float32))
+
+    if _target_essentially_silent(t):
+        # A near-silent target sends both SI-SDR arms to the EPS floor; their
+        # difference is a fabricated, stable, positive si_sdri (~+15 dB) that
+        # would inflate the reported mean. NaN-skip, matching the chunked arms.
+        si = si0 = float("nan")
+    else:
+        si = scale_invariant_signal_distortion_ratio(e, t).item()
+        si0 = scale_invariant_signal_distortion_ratio(m, t_base).item()
     pq = pesq_wb_chunked(e, t, sr)
-    pq0 = pesq_wb_chunked(m, t, sr)
+    pq0 = pesq_wb_chunked(m, t_base, sr)
     st = stoi_chunked(e, t, sr)
-    st0 = stoi_chunked(m, t, sr)
+    st0 = stoi_chunked(m, t_base, sr)
 
     return {
         "si_sdr": si, "si_sdr_baseline": si0, "si_sdri": si - si0,
@@ -159,7 +211,7 @@ def squim_chunked(
     squim_model,
     device,
     chunk_s: float = 30.0,
-    min_speech_frac: float = 0.30,
+    min_speech_frac: float = _MIN_SPEECH_FRAC,
 ) -> dict:
     """SQUIM_OBJECTIVE on `chunk_s` windows, mean aggregate.
 
@@ -169,7 +221,7 @@ def squim_chunked(
     on silence.
     """
     chunk_n = int(chunk_s * sr)
-    min_n = max(sr, 1)   # need at least 1 s
+    min_n = max(int(_MIN_SQUIM_CHUNK_S * sr), 1)   # SQUIM needs >= 1 s
     stoi_vals: list[float] = []
     pesq_vals: list[float] = []
     sisdr_vals: list[float] = []
@@ -178,7 +230,7 @@ def squim_chunked(
             c = audio[i:i + chunk_n]
             if len(c) < min_n:
                 continue
-            if (np.abs(c) > 1e-4).mean() < min_speech_frac:
+            if (np.abs(c) > _SILENCE_FLOOR).mean() < min_speech_frac:
                 continue
             x = torch.from_numpy(c.astype(np.float32)).unsqueeze(0).to(device)
             stoi_p, pesq_p, sisdr_p = squim_model(x)
