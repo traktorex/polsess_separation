@@ -22,6 +22,7 @@ from asr_pipeline.stages.transcription import (
     _WhisperXBackend,
     _empty_result,
     _ensure_ct2_model,
+    _finite_or_zero,
     _normalise_result,
 )
 
@@ -120,6 +121,36 @@ def test_normalise_does_not_mutate_input_segments():
     _normalise_result(src, "pl")
     # Segment dicts are copied, not mutated in place.
     assert src["segments"][0]["start"] != src["segments"][0]["start"]   # still NaN
+
+
+# ---------------------------------------------------------------------------
+# _finite_or_zero — the time-sanitisation contract (single owner)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [None, float("nan"), float("inf"), float("-inf")])
+def test_finite_or_zero_coerces_nonfinite_to_zero(bad):
+    assert _finite_or_zero(bad) == 0.0
+
+
+def test_finite_or_zero_clamps_negative_to_zero():
+    # WhisperX align() emits small negatives; written as `[ -0.30 → ...]` they
+    # are silently dropped by the eval reader. Clamp here, the single owner.
+    assert _finite_or_zero(-0.30) == 0.0
+    assert _finite_or_zero(-1e-9) == 0.0
+
+
+def test_finite_or_zero_passes_through_nonnegative():
+    assert _finite_or_zero(0.0) == 0.0
+    assert _finite_or_zero(2.5) == 2.5
+
+
+def test_normalise_clamps_negative_segment_start():
+    out = _normalise_result(
+        {"segments": [{"start": -0.30, "end": 1.5, "text": "a"}]}, "pl"
+    )
+    assert out["segments"][0]["start"] == 0.0
+    assert out["segments"][0]["end"] == 1.5
 
 
 # ---------------------------------------------------------------------------

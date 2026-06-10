@@ -25,6 +25,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Iterable, NamedTuple
 
+from asr_pipeline.debug_log import dlog
+
 
 class Utterance(NamedTuple):
     """One timestamped utterance."""
@@ -88,12 +90,22 @@ def parse_gt_txt(path: str | Path) -> list[Utterance]:
 
     Accepts either timestamp format (`[HH:MM:SS.cc → ...]` or `[s.cc → s.cc]`);
     blank / non-matching lines (sub-headers, comments) are skipped.
+
+    A `[`-bracketed line that matches neither timestamp grammar is warned
+    about visibly (SCOPE §4.1, no-silent-substitution): the most likely cause
+    is a negative timestamp from an older writer (`[ -0.30 → ...]`), which the
+    non-negative-only seconds grammar drops — that utterance must not vanish
+    without a trace. Plain comments (`# ...`) and blank lines still skip silently.
     """
     path = Path(path)
     utts: list[Utterance] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         parsed = _parse_timed_line(raw)
         if parsed is None:
+            if raw.lstrip().startswith("["):
+                dlog("transcript_parser",
+                     f"parse_gt_txt: skipped unparseable bracketed line in "
+                     f"{path}: {raw.strip()!r}")
             continue
         start, end, text = parsed
         if text:
@@ -142,8 +154,9 @@ def parse_eaf(path: str | Path) -> dict[str, list[Utterance]]:
     slots: dict[str, float] = {}
     for ts in root.iter("TIME_SLOT"):
         v = ts.get("TIME_VALUE")
-        if v is not None:
-            slots[ts.get("TIME_SLOT_ID")] = int(v) / 1000.0
+        sid = ts.get("TIME_SLOT_ID")
+        if v is not None and sid is not None:
+            slots[sid] = float(v) / 1000.0
 
     out: dict[str, list[Utterance]] = {}
     for tier in root.iter("TIER"):

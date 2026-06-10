@@ -39,7 +39,7 @@ from asr_pipeline.eval.recordings import Recording, load_reference_utterances
 from asr_pipeline.eval.transcript_parser import parse_gt_txt
 
 
-def _read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
+def read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
     """Read whichever of ``transcript_{A,B}.txt`` exist; None when neither does.
 
     A one-speaker pipeline collapse (assembly yielding a single stream, or
@@ -48,6 +48,10 @@ def _read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
     absent speaker as deletions — the right penalty for a separation failure
     L3 exists to quantify. Requiring both files instead would silently drop the
     mode from the table and bias it optimistically.
+
+    Public: shared with the script drivers (``scripts/sweep_pipeline.py``) so
+    this "read whichever speaker exists" policy has exactly one implementation.
+    Script→package imports are the allowed direction (SCOPE §7).
     """
     paths = {"A": pipeline_dir / "transcript_A.txt",
              "B": pipeline_dir / "transcript_B.txt"}
@@ -55,8 +59,8 @@ def _read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
     return hyp or None
 
 
-def _read_mixture(pipeline_dir: Path) -> Optional[list]:
-    """Read ``transcript_mixture.txt`` if present."""
+def read_mixture(pipeline_dir: Path) -> Optional[list]:
+    """Read ``transcript_mixture.txt`` if present. Public (see ``read_per_speaker``)."""
     path = pipeline_dir / "transcript_mixture.txt"
     if not path.exists():
         return None
@@ -99,7 +103,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
         if dir_ is None:
             modes_out[mode] = None
             continue
-        hyp = _read_per_speaker(dir_)
+        hyp = read_per_speaker(dir_)
         if hyp is None:
             modes_out[mode] = None
             continue
@@ -115,7 +119,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
               rec.pipeline_minimal_dir):
         if d is None:
             continue
-        mixture_utts = _read_mixture(d)
+        mixture_utts = read_mixture(d)
         if mixture_utts is not None:
             break
     # Mixture floor scored two ways: ORC (time-fixed reference merge) and

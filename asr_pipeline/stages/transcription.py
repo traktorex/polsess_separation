@@ -88,15 +88,24 @@ def _normalise_result(result: dict, language: str) -> dict:
 
 
 def _finite_or_zero(value) -> float:
-    """Coerce ``None`` / NaN / inf to ``0.0``; otherwise to ``float``.
+    """Coerce ``None`` / NaN / inf to ``0.0`` and clamp negatives to ``0.0``.
 
     ``or 0.0`` does not work here: ``float('nan')`` is truthy, so it would pass
     a NaN straight through.
+
+    The non-negative clamp is the time-sanitisation contract's single owner.
+    WhisperX's ``align()`` routinely emits small negative starts; written as
+    ``[ -0.30 → ...]`` they are silently dropped by the eval reader's
+    non-negative-only seconds grammar (``eval/transcript_parser`` deliberately
+    does **not** accept a leading ``-``), so the whole utterance vanishes from
+    the hypothesis. Clamp here, at the one boundary both backends pass through.
     """
     if value is None:
         return 0.0
     f = float(value)
-    return f if math.isfinite(f) else 0.0
+    if not math.isfinite(f):
+        return 0.0
+    return max(0.0, f)
 
 
 def _sanitise_segment_times(seg: dict) -> dict:

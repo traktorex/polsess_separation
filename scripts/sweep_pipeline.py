@@ -50,11 +50,11 @@ from asr_pipeline.eval.metrics import (                             # noqa: E402
     orc_wer_meeteval,
     orc_wer_multistream,
 )
+from asr_pipeline.eval.layer3 import read_mixture, read_per_speaker  # noqa: E402
 from asr_pipeline.eval.recordings import (                          # noqa: E402
     load_recording,
     load_reference_utterances,
 )
-from asr_pipeline.eval.transcript_parser import parse_gt_txt        # noqa: E402
 from scripts.run_pipeline_on_recording import _fresh_cfg            # noqa: E402
 
 
@@ -163,12 +163,19 @@ GROUPS: dict[str, list[str]] = {
 
 
 def _apply(cfg, overrides: dict):
-    """Apply dotted-path overrides onto a config, then re-validate."""
+    """Apply dotted-path overrides onto a config, then re-validate.
+
+    A typo'd path must fail loud (SCOPE §4.2): bare ``setattr`` would create a
+    junk attribute, leave the intended knob at its default, and silently run
+    the baseline under the typo'd name — a fabricated sweep row with no signal.
+    """
     for path, val in overrides.items():
         obj = cfg
         *parents, leaf = path.split(".")
         for p in parents:
             obj = getattr(obj, p)
+        if not hasattr(obj, leaf):
+            raise AttributeError(f"unknown override path: {path!r}")
         setattr(obj, leaf, val)
     cfg.__post_init__()
     return cfg
@@ -213,13 +220,6 @@ def run_config(name, overrides, force, eval_root, recordings) -> None:
 # --- Score ----------------------------------------------------------------
 
 
-def _read_hyp(d: Path):
-    a, b = d / "transcript_A.txt", d / "transcript_B.txt"
-    if not a.exists() or not b.exists():
-        return None
-    return {"A": parse_gt_txt(a), "B": parse_gt_txt(b)}
-
-
 def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
     """cpWER / tcpWER / ORC per (config, recording), micro-averaged.
 
@@ -245,7 +245,7 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
         n_done = 0
         for fid in recordings:
             d = eval_root / fid / "sweep" / name
-            hyp = _read_hyp(d)
+            hyp = read_per_speaker(d)
             if hyp is None:
                 continue
             ref = {k: v for k, v in gt[fid].items() if v}
@@ -258,9 +258,8 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
             orc_err += o["errors"]; orc_len += o["length"]
             cc = cp_cer_meeteval(ref, hyp, session_id=fid)
             cer_err += cc["errors"]; cer_len += cc["length"]
-            mix_txt = d / "transcript_mixture.txt"
-            if mix_txt.exists():
-                mix_utts = parse_gt_txt(mix_txt)
+            mix_utts = read_mixture(d)
+            if mix_utts is not None:
                 m = orc_wer_meeteval(ref, mix_utts, session_id=fid)
                 mix_err += m["errors"]; mix_len += m["length"]
                 mm = mimo_wer_meeteval(ref, mix_utts, session_id=fid)
