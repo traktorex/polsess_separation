@@ -128,6 +128,20 @@ CONFIGS: dict[str, dict] = {
                              "separation.vad_soft_threshold": 0.2,
                              "separation.vad_attack_frames": 2,
                              "separation.vad_release_frames": 2},
+    # --- BWE decision (SCOPE open question 4): flowhigh vs ap_bwe on the
+    # round-2/3 winner, not the mpsenet baseline (where round-1's bwe_*
+    # configs were swamped by enhancement errors) ---
+    "frcrn_vad_strict_flowhigh": {"enhancement.backend": "frcrn_se_16k",
+                                  "separation.vad_threshold": 0.5,
+                                  "separation.vad_soft_threshold": 0.2,
+                                  "post_separation_processing.backend": "flowhigh"},
+    # input_sr A/B: default.yaml ships flowhigh_input_sr=8000 (matches the
+    # separator's spectral content); this arm feeds 16 kHz instead.
+    "frcrn_vad_strict_flowhigh16": {"enhancement.backend": "frcrn_se_16k",
+                                    "separation.vad_threshold": 0.5,
+                                    "separation.vad_soft_threshold": 0.2,
+                                    "post_separation_processing.backend": "flowhigh",
+                                    "post_separation_processing.flowhigh_input_sr": 16_000},
 }
 
 # Named groups for --groups selection. "baseline" is always included.

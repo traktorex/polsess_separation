@@ -198,6 +198,16 @@ initiative — `UNDECIDED` means frozen until the author rules.
 3. Assembly straight-through fallback — keep, narrow, or remove?
 4. flowhigh vs ap_bwe — measure compute cost; if marginal, the quality winner
    takes the default.
+   *Data gathered 2026-06-10 (5 pilot fragments, deterministic,
+   frcrn_vad_strict base; `scripts/sweep_pipeline.py` configs
+   `frcrn_vad_strict_flowhigh{,16}`): compute — flowhigh ~10.8× realtime
+   (+7–9 s per 90 s fragment ≈ +15% pipeline wall time, 697 MB peak) vs
+   ap_bwe 76–599× realtime (sub-second, 244 MB). Quality (cpWER / CER) —
+   ap_bwe 16.92 / 11.65; flowhigh@16k-in 17.42 / 11.48; flowhigh@8k-in
+   18.81 / 12.70. Notes: default.yaml ships `flowhigh_input_sr: 8000`,
+   clearly the worse setting; at 16k-in flowhigh is ~tied (n=5, mixed
+   per-fragment direction) while costing more compute + an extra git dep.
+   The decision remains the author's.*
 5. Vanilla Whisper backend — keep as a thesis comparison or delete?
 6. ~~Missing (no-sep, no-enh) ablation arm — add to
    `run_pipeline_on_recording.py`?~~ **RESOLVED 2026-06-10 (author): yes.**
