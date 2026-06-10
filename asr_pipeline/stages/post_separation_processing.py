@@ -68,6 +68,18 @@ def _log(msg: str) -> None:
     dlog("post_separation_processing", msg)
 
 
+def _match_length(x: np.ndarray, n: int) -> np.ndarray:
+    """Right-trim or zero-pad ``x`` to exactly ``n`` samples (tail-aligned).
+
+    The neural backends emit audio that can drift by a handful of samples
+    (STFT/iSTFT framing, resample rounding), so both the gated output (matched
+    to the un-extended ``orig_len``) and the VAD mask (matched to the backend
+    output length before the multiply) are reconciled through this one
+    primitive. Zero-padding the mask gates out any uncovered tail.
+    """
+    return x[:n] if len(x) >= n else np.pad(x, (0, n - len(x)))
+
+
 # ---------------------------------------------------------------------------
 # Naive (identity) backend
 # ---------------------------------------------------------------------------
@@ -187,8 +199,12 @@ class _APBWEBackend:
 
         if self._model is None or self._h is None:
             raise RuntimeError("APBWEBackend.extend called before load().")
-        if len(audio_np) < self._h["win_size"]:
-            # iSTFT would produce empty output below one frame; pass through.
+        if len(audio_np) < self._h["n_fft"]:
+            # amp_pha_stft runs torch.stft(center=True, pad_mode="reflect"),
+            # which reflect-pads by n_fft//2 and so REQUIRES input length
+            # > n_fft//2 — anything shorter crashes inside the STFT, not just
+            # below one frame. Gate at the full n_fft (a safe superset that
+            # also skips the lossy 1-2-frame region just above n_fft//2).
             return audio_np.astype(np.float32)
 
         # Mirror the upstream `inference_16k.py` preprocessing exactly: the
@@ -225,11 +241,7 @@ class _APBWEBackend:
             out_t = AF.resample(out_t, _AP_BWE_HR_SR, sample_rate)
             out = out_t.squeeze(0).numpy().astype(np.float32)
 
-        if len(out) > orig_len:
-            out = out[:orig_len]
-        elif len(out) < orig_len:
-            out = np.pad(out, (0, orig_len - len(out)))
-        return out
+        return _match_length(out, orig_len)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +250,12 @@ class _APBWEBackend:
 
 
 _FLOWHIGH_TARGET_SR = 48_000  # FlowHigh always outputs at 48 kHz.
+# Shortest input FlowHigh can frame. generate() upsamples to 48 kHz — a fixed
+# 3× the pipeline-rate length, independent of flowhigh_input_sr — then runs
+# torch.stft(n_fft=2048, center=True, pad_mode="reflect"), whose reflect-pad
+# needs the 48 kHz length > n_fft//2 = 1024, i.e. pipeline-rate length > 341.
+# 512 clears that with margin and matches the silero VAD all-ones boundary.
+_FLOWHIGH_MIN_SAMPLES = 512
 
 
 class _FlowHighBackend:
@@ -253,6 +271,20 @@ class _FlowHighBackend:
     12 / 16 kHz; the model accepts "any rate < 48 kHz" but 8 kHz isn't
     listed. Surfacing the knob lets the user A/B 16 (no resample-in) vs.
     8 (matches the separator's actual spectral content) by ear.
+
+    Notes (foot-guns encoded in ``extend()``):
+    - Feed ``generate()`` numpy, not a tensor. Its signature declares
+      ``audio: np.ndarray`` and its scipy/librosa upsampling path operates
+      on numpy; the README example's ``torchaudio.load()`` tensor triggers
+      an implicit ``.numpy()`` on a CUDA tensor that fails.
+    - Restore the input level. FlowHigh peak-normalises internally and emits
+      output at a ~0.99 peak independent of the input, so we capture the
+      input RMS and rescale the output to it — keeping the level-preserving
+      "same level in, same level out" contract shared with naive / AP-BWE
+      (rather than relying on Stage 4's ``overlap_rms_match_solo``). The RMS
+      is measured on the *original* ``audio_np`` at ``sample_rate``, not the
+      resampled-for-model copy: a 16→8 kHz downsample drops 4-8 kHz energy
+      for full-band signals and would under-restore the level.
     """
 
     def __init__(self, input_sr: int) -> None:
@@ -297,17 +329,13 @@ class _FlowHighBackend:
     def extend(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
         if self._model is None:
             raise RuntimeError("FlowHighBackend.extend called before load().")
-        if len(audio_np) < 128:
-            # Too short for the model's framing — pass through unchanged.
+        if len(audio_np) < _FLOWHIGH_MIN_SAMPLES:
+            # Too short to frame at 48 kHz — pass through (see constant).
             return audio_np.astype(np.float32)
 
         orig_len = len(audio_np)
 
-        # FlowHigh's `generate()` signature declares `audio: np.ndarray`,
-        # and its scipy/librosa upsampling path operates on numpy. Don't
-        # be misled by the README example using `torchaudio.load()`'s
-        # tensor output — feeding a CUDA tensor here causes an implicit
-        # `.numpy()` call to fail. Feed numpy.
+        # Feed generate() numpy, not a tensor (see class docstring Notes).
         audio_for_model = audio_np.astype(np.float32)
         if sample_rate != self.input_sr:
             # Resample on CPU via torchaudio.functional (matches the rate
@@ -317,18 +345,9 @@ class _FlowHighBackend:
             x_t = AF.resample(x_t, sample_rate, self.input_sr)
             audio_for_model = x_t.squeeze(0).numpy().astype(np.float32)
 
-        # FlowHigh peak-normalises its input to 1.0 internally and emits
-        # output peak-normalised to ~0.99 — i.e. the absolute level of
-        # the output is independent of the input. To keep the backend's
-        # contract consistent with the level-preserving naive / AP-BWE
-        # backends, capture the input RMS and restore it on the output.
-        # (Stage 4's `overlap_rms_match_solo` would also fix this, but
-        # the backend contract is "same level in, same level out" — we
-        # don't want one backend to silently break that assumption.)
-        # Measured on the *original* audio_np at sample_rate, not on the
-        # resampled-for-model version — the 16→8 kHz downsample drops
-        # energy in the 4-8 kHz band for full-band signals, which would
-        # under-restore the level when the model output is at sample_rate.
+        # Input RMS to restore on the output (FlowHigh's output level is
+        # independent of the input). Measured on the original audio at
+        # sample_rate — see class docstring Notes for why not the resampled copy.
         in_rms = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
 
         wav_hr = self._model.generate(
@@ -342,15 +361,13 @@ class _FlowHighBackend:
             wav_hr = AF.resample(
                 wav_hr.unsqueeze(0), _FLOWHIGH_TARGET_SR, sample_rate
             ).squeeze(0)
-        out = wav_hr.detach().cpu().numpy().astype(np.float32)
+        out = _match_length(wav_hr.detach().cpu().numpy().astype(np.float32), orig_len)
 
-        if len(out) > orig_len:
-            out = out[:orig_len]
-        elif len(out) < orig_len:
-            out = np.pad(out, (0, orig_len - len(out)))
-
+        # Restore the input level. Guard only out_rms (divide-by-zero): a
+        # near-silent input (in_rms≈0) must map to a near-silent output, NOT be
+        # left at FlowHigh's ~0.99 internal peak — so in_rms is NOT in the guard.
         out_rms = float(np.sqrt(np.mean(out ** 2))) if len(out) else 0.0
-        if in_rms > 1e-8 and out_rms > 1e-8:
+        if out_rms > 1e-8:
             out = out * (in_rms / out_rms)
             # Defensive: peak-clip protection. If the rescale pushed past
             # ±1 (shouldn't happen if input RMS < 1, but pathological
@@ -470,11 +487,7 @@ class PostSeparationProcessingStage(Stage):
                 processed = self._backend.extend(raw, sr)
                 # Align mask length to backend output (STFT/iSTFT rounding
                 # can drift by a handful of samples).
-                n_out = len(processed)
-                if len(mask) >= n_out:
-                    mask_aligned = mask[:n_out]
-                else:
-                    mask_aligned = np.pad(mask, (0, n_out - len(mask)))
+                mask_aligned = _match_length(mask, len(processed))
                 entry[f"{src_key}_gated"] = (
                     processed * mask_aligned
                 ).astype(np.float32)

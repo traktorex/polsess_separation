@@ -215,3 +215,6 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 - `POLSESS_DATA_ROOT` — PolSESS dataset path (default in `config.py`)
 - `REALM_DATA_ROOT` — REAL-M dataset (default: `~/datasets/REAL-M-v0.1.0/`)
 - `LIBRIMIX_ASR_ROOT` — LibriSpeechMixASR (default: `~/datasets/LibriSpeechMixASR/`)
+- `HF_TOKEN` — HuggingFace token for the ASR pipeline's pyannote diarization stage
+- `MPSENET_CHECKPOINT` / `MPSENET_CONFIG` — ASR pipeline enhancement stage (defaults: `~/MP-SENet/best_ckpt/g_best_vb`, `~/MP-SENet/config.json`)
+- `AP_BWE_CHECKPOINT` — ASR pipeline post-separation AP-BWE backend (default: `~/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip`). FlowHigh needs no env var (auto-downloads).
