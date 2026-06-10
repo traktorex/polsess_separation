@@ -16,7 +16,15 @@ import torch
 
 from asr_pipeline.config import DiarizationConfig
 from asr_pipeline.context import DiarizationResult, PipelineContext
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
+
+
+def _log(msg: str) -> None:
+    """Progress message — stdout + the durable debug log. Matters here because
+    pyannote's load and forward are multi-minute and the WSL stdout bridge can
+    drop; every other model-bearing stage logs the same way."""
+    dlog("diarization", msg)
 
 
 class DiarizationStage(Stage):
@@ -36,9 +44,11 @@ class DiarizationStage(Stage):
                 "DiarizationConfig.hf_token is empty — set HF_TOKEN in the "
                 "environment or put a literal value in the YAML config."
             )
+        _log(f"load: instantiating {self.config.model_id} on {device}...")
         self._pipeline = Pipeline.from_pretrained(
             self.config.model_id, token=token
         ).to(device)
+        _log(f"load: ready (num_speakers={self.config.num_speakers})")
 
     def load_signature(self) -> tuple:
         # `num_speakers` is a runtime knob passed at call time, not a model
@@ -51,11 +61,17 @@ class DiarizationStage(Stage):
         if ctx.audio is None:
             raise RuntimeError("PipelineContext.audio is None — no input loaded.")
 
+        _log(
+            f"run: diarizing {len(ctx.audio)/ctx.sample_rate:.1f}s "
+            f"(num_speakers={self.config.num_speakers})..."
+        )
         waveform = torch.from_numpy(ctx.audio).unsqueeze(0)
         result = self._pipeline(
             {"waveform": waveform, "sample_rate": ctx.sample_rate},
             num_speakers=self.config.num_speakers,
         )
+        # pyannote 4.x returns a DiarizeOutput wrapper (.speaker_diarization);
+        # 3.x returns the Annotation directly. Support both.
         diar = (
             result.speaker_diarization
             if hasattr(result, "speaker_diarization")
@@ -86,17 +102,19 @@ class DiarizationStage(Stage):
             }
             for s in diar.get_overlap()
         ]
-        ovl_df = (
-            pd.DataFrame(ovl_records)
-            if ovl_records
-            else pd.DataFrame(columns=["start", "end", "duration"])
-        )
+        # Explicit columns (same idiom as seg_df) so an empty overlap timeline
+        # still yields the 3 expected columns rather than a column-less frame.
+        ovl_df = pd.DataFrame(ovl_records, columns=["start", "end", "duration"])
 
         total_dur = len(ctx.audio) / ctx.sample_rate
         ctx.diarization = DiarizationResult(
             segments_df=seg_df,
             overlaps_df=ovl_df,
             total_duration_s=total_dur,
+        )
+        _log(
+            f"run: {len(seg_df)} segment(s), {len(ovl_df)} overlap region(s) "
+            f"over {total_dur:.1f}s"
         )
 
     def unload(self) -> None:
@@ -106,6 +124,12 @@ class DiarizationStage(Stage):
             torch.cuda.empty_cache()
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
+        # Diagnostic spill (only when spill_intermediate=True). This is the
+        # {segments, overlaps} schema shared with scripts/diarize_clarin_2speakers
+        # and read by scripts/clarin_fragment_finder — DELIBERATELY distinct from
+        # the eval-facing {turns} schema io.write_pipeline_outputs writes to
+        # pipeline/diarization.json (see io.py module docstring). Don't unify:
+        # the fragment finder needs the `overlaps` array that {turns} omits.
         if ctx.diarization is None:
             return
         payload = {
