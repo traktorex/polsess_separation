@@ -108,3 +108,69 @@ def test_routing_stage_handles_empty_diarization():
     RoutingStage(RoutingConfig()).run(ctx)
     assert ctx.overlap_regions == []
     assert ctx.speakers == []
+
+
+def _ctx_with_diarization(speaker_rows, overlap_rows):
+    """Build a PipelineContext with a populated DiarizationResult."""
+    from asr_pipeline.context import DiarizationResult, PipelineContext
+
+    seg_df = pd.DataFrame(
+        [{"start": s, "end": e, "duration": e - s, "speaker": spk}
+         for s, e, spk in speaker_rows]
+    )
+    ovl_df = _ovl_df(overlap_rows)
+    ctx = PipelineContext()
+    ctx.diarization = DiarizationResult(
+        segments_df=seg_df, overlaps_df=ovl_df, total_duration_s=0.0
+    )
+    return ctx
+
+
+def test_routing_stage_populates_regions_and_speakers():
+    from asr_pipeline.config import RoutingConfig
+    from asr_pipeline.stages.routing import RoutingStage
+
+    # Rows deliberately out of order + a duplicated speaker so the sorted-unique
+    # speaker derivation and the overlap selection/merge both get exercised.
+    speaker_rows = [
+        (5.0, 6.0, "SPEAKER_01"),
+        (0.0, 2.0, "SPEAKER_00"),
+        (2.5, 3.0, "SPEAKER_00"),
+    ]
+    # Two overlaps within merge_gap (default 0.5) → merged; one short → dropped.
+    overlap_rows = [(1.0, 1.5), (1.7, 2.0), (3.0, 3.05)]
+    ctx = _ctx_with_diarization(speaker_rows, overlap_rows)
+    RoutingStage(RoutingConfig()).run(ctx)
+    assert ctx.overlap_regions == [(1.0, 2.0)]
+    assert ctx.speakers == ["SPEAKER_00", "SPEAKER_01"]
+
+
+def test_routing_spill_writes_overlap_regions_json(tmp_path):
+    import json
+
+    from asr_pipeline.config import RoutingConfig
+    from asr_pipeline.stages.routing import RoutingStage
+
+    ctx = _ctx_with_diarization(
+        [(0.0, 2.0, "SPEAKER_00"), (1.0, 3.0, "SPEAKER_01")],
+        [(1.0, 1.5), (1.7, 2.0)],
+    )
+    stage = RoutingStage(RoutingConfig())
+    stage.run(ctx)
+    stage.spill(ctx, tmp_path)
+
+    payload = json.loads((tmp_path / "overlap_regions.json").read_text())
+    # The spill's superset schema: speakers + {start, end, duration}.
+    assert payload["speakers"] == ["SPEAKER_00", "SPEAKER_01"]
+    assert payload["overlap_regions"] == [
+        {"start": 1.0, "end": 2.0, "duration": 1.0}     # duration = e - s recompute
+    ]
+
+
+def test_routing_spill_noops_when_unrun(tmp_path):
+    from asr_pipeline.config import RoutingConfig
+    from asr_pipeline.context import PipelineContext
+    from asr_pipeline.stages.routing import RoutingStage
+
+    RoutingStage(RoutingConfig()).spill(PipelineContext(), tmp_path)
+    assert list(tmp_path.iterdir()) == []

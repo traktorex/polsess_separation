@@ -82,6 +82,10 @@ class RoutingStage(Stage):
         ctx.speakers = sorted(ctx.diarization.segments_df["speaker"].unique())
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
+        # Debug-only spill (flat `artifact_dir`). The eval-facing emitter is
+        # `io.write_pipeline_outputs` → `routing.json`, intentionally a leaner
+        # `{start, end}` schema not kept in lockstep with this `duration`+
+        # `speakers` superset — see the io.py legacy-spill note.
         if ctx.overlap_regions is None:
             return
         payload = {

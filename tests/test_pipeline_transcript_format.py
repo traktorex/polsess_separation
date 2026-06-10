@@ -13,6 +13,7 @@ import torch
 
 from asr_pipeline.eval.transcript_parser import parse_eaf, parse_gt_txt
 from asr_pipeline.transcript_format import (
+    _whisper_segments_to_tuples,
     format_transcript,
     to_jsonable,
     write_eaf,
@@ -49,6 +50,29 @@ def test_format_transcript_falls_back_to_text_without_segments():
 
 def test_format_transcript_non_dict_is_empty():
     assert format_transcript(None) == ""
+
+
+def test_format_transcript_tolerates_nonfinite_timestamps():
+    # NaN / None per-segment boundaries (WhisperX's interpolate_nans can emit an
+    # all-NaN segment) must not raise or leak literal `nan` into the .txt.
+    result = {
+        "segments": [
+            {"start": None, "end": 1.0, "text": "a"},
+            {"start": float("nan"), "end": float("nan"), "text": "b"},
+        ],
+    }
+    out = format_transcript(result)
+    assert "nan" not in out.lower()
+    assert "[  0.00" in out          # coerced to 0.0
+
+
+def test_format_transcript_collapses_embedded_newline():
+    # A segment carrying an embedded newline must stay on one physical line, or
+    # parse_gt_txt would split it into a malformed second utterance.
+    result = {"segments": [{"start": 0.0, "end": 1.0, "text": "ala\nma kota"}]}
+    out = format_transcript(result)
+    assert out.count("\n") == 0
+    assert "ala ma kota" in out
 
 
 # ---------------------------------------------------------------------------
@@ -136,3 +160,52 @@ def test_write_eaf_from_whisper_results_all_empty_writes_nothing(tmp_path):
     )
     assert n == 0
     assert not eaf_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Non-finite timestamp tolerance at the leaf functions
+# ---------------------------------------------------------------------------
+
+
+def test_whisper_segments_to_tuples_tolerates_nonfinite_timestamps():
+    result = {
+        "segments": [
+            {"start": None, "end": 1.0, "text": "a"},
+            {"start": float("nan"), "end": float("nan"), "text": "b"},
+        ],
+    }
+    out = _whisper_segments_to_tuples(result)
+    assert [t for _, _, t in out] == ["a", "b"]
+    # No NaN / None survives — every boundary is a finite float.
+    for start, end, _ in out:
+        assert isinstance(start, float) and isinstance(end, float)
+        assert start == start and end == end          # not NaN
+    assert out[0][0] == 0.0 and out[1][0] == 0.0 and out[1][1] == 0.0
+
+
+def test_write_eaf_from_whisper_results_tolerates_nonfinite_timestamps(tmp_path):
+    # A NaN boundary used to raise `ValueError: cannot convert float NaN to
+    # integer` in write_eaf, losing the whole recording's output.
+    results = {
+        "A": {"segments": [
+            {"start": None, "end": 1.0, "text": "cześć"},
+            {"start": float("nan"), "end": float("nan"), "text": "świat"},
+        ]},
+    }
+    eaf_path = tmp_path / "nonfinite.eaf"
+    n = write_eaf_from_whisper_results(
+        results, media_path=tmp_path / "rec.wav", eaf_path=eaf_path
+    )
+    assert n == 2
+    tiers = parse_eaf(eaf_path)                        # round-trips, no raise
+    assert {u.text for u in tiers["A"]} == {"cześć", "świat"}
+
+
+def test_write_eaf_nudges_zero_width_annotation(tmp_path):
+    # start == end must still produce REF1 < REF2 (ELAN rejects coincident
+    # boundaries); the writer nudges end to span ≥1 ms.
+    utts = {"A": [(1.0, 1.0, "punkt")]}
+    eaf_path = tmp_path / "zerowidth.eaf"
+    write_eaf(utts, media_path=tmp_path / "rec.wav", eaf_path=eaf_path)
+    tiers = parse_eaf(eaf_path)
+    assert tiers["A"][0].end > tiers["A"][0].start

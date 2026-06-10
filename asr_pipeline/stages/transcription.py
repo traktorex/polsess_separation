@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import gc
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -66,13 +67,43 @@ def _empty_result(language: str) -> dict:
 
 
 def _normalise_result(result: dict, language: str) -> dict:
-    """Ensure both backends emit ``text`` and ``language`` at the top level."""
+    """Ensure both backends emit ``text`` and ``language`` at the top level.
+
+    Also sanitises per-segment ``start`` / ``end`` timestamps: WhisperX's
+    ``align()`` runs ``interpolate_nans`` over them, and an all-unalignable
+    segment ffill/bfills to all-NaN that survives to output. A NaN (or ``None``)
+    timestamp later crashes the EAF writer and emits literal ``nan`` into the
+    ``.txt`` — silent data loss for a recording that transcribed fine. Coerce
+    any non-finite/missing boundary to ``0.0`` here, at the single boundary both
+    backends pass through, so every downstream writer receives clean timestamps.
+    """
     out = dict(result)
     segments = out.get("segments") or []
+    out["segments"] = [_sanitise_segment_times(s) for s in segments]
     if "text" not in out:
         out["text"] = " ".join((s.get("text") or "").strip() for s in segments).strip()
     if "language" not in out:
         out["language"] = language
+    return out
+
+
+def _finite_or_zero(value) -> float:
+    """Coerce ``None`` / NaN / inf to ``0.0``; otherwise to ``float``.
+
+    ``or 0.0`` does not work here: ``float('nan')`` is truthy, so it would pass
+    a NaN straight through.
+    """
+    if value is None:
+        return 0.0
+    f = float(value)
+    return f if math.isfinite(f) else 0.0
+
+
+def _sanitise_segment_times(seg: dict) -> dict:
+    """Return a copy of ``seg`` with finite ``start`` / ``end`` boundaries."""
+    out = dict(seg)
+    out["start"] = _finite_or_zero(seg.get("start", 0.0))
+    out["end"] = _finite_or_zero(seg.get("end", 0.0))
     return out
 
 

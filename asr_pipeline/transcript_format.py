@@ -18,6 +18,7 @@ Three output flavours:
 
 from __future__ import annotations
 
+import math
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -31,6 +32,21 @@ import torch
 from asr_pipeline.debug_log import dlog
 
 
+def _finite_time(value) -> float:
+    """Coerce a segment timestamp to a finite ``float``.
+
+    Whisper-result timestamps are normally sanitised upstream in
+    ``stages/transcription.py:_normalise_result``, but the writers below are
+    also reachable directly (``transcription.spill``, ``scripts/`` callers) with
+    un-normalised dicts, so they guard at the leaf too. ``or 0.0`` is wrong here:
+    ``float('nan')`` is truthy and would slip through — hence ``math.isfinite``.
+    """
+    if value is None:
+        return 0.0
+    f = float(value)
+    return f if math.isfinite(f) else 0.0
+
+
 def format_transcript(whisper_result: dict) -> str:
     """Render a Whisper result dict to the per-segment text format.
 
@@ -39,7 +55,10 @@ def format_transcript(whisper_result: dict) -> str:
     which encodes the speaker).
 
     Returns an empty string when ``whisper_result`` is None or empty. When the
-    result has no segments, falls back to the top-level ``text`` field.
+    result has no segments, falls back to the top-level ``text`` field. Non-finite
+    / missing per-segment timestamps are coerced to ``0.0`` via :func:`_finite_time`
+    (the same guard the EAF writers use; the upstream sanitiser is
+    ``stages/transcription.py:_normalise_result``).
     """
     if not isinstance(whisper_result, dict):
         return ""
@@ -48,9 +67,9 @@ def format_transcript(whisper_result: dict) -> str:
         return (whisper_result.get("text") or "").strip()
     lines = []
     for seg in segments:
-        start = float(seg.get("start", 0.0))
-        end = float(seg.get("end", 0.0))
-        text = (seg.get("text") or "").strip()
+        start = _finite_time(seg.get("start", 0.0))
+        end = _finite_time(seg.get("end", 0.0))
+        text = " ".join((seg.get("text") or "").split())
         lines.append(f"[{start:6.2f} → {end:6.2f}]  {text}")
     return "\n".join(lines)
 
@@ -107,8 +126,8 @@ def _whisper_segments_to_tuples(result: dict) -> list[tuple[float, float, str]]:
         if not text:
             continue
         out.append((
-            float(seg.get("start", 0.0)),
-            float(seg.get("end", 0.0)),
+            _finite_time(seg.get("start", 0.0)),
+            _finite_time(seg.get("end", 0.0)),
             text,
         ))
     return out
@@ -147,12 +166,23 @@ def write_eaf(
     media_path = Path(media_path)
     eaf_path = Path(eaf_path)
 
-    # --- Unique time slots --------------------------------------------------
+    # --- Per-utterance ms boundaries ---------------------------------------
+    # `int(round(...))` raises on a NaN boundary; guard at the leaf since this
+    # writer is reachable directly (scripts/) without the upstream sanitiser.
+    # Nudge zero-width / inverted spans to span ≥1 ms so every ALIGNABLE_ANNOTATION
+    # has REF1 < REF2 (ELAN rejects coincident boundaries).
+    bounds_ms: dict[str, list[tuple[int, int]]] = {}
     times_ms: set[int] = set()
-    for utts in utts_by_speaker.values():
+    for spk_label, utts in utts_by_speaker.items():
+        per_utt: list[tuple[int, int]] = []
         for start, end, _ in utts:
-            times_ms.add(int(round(start * 1000)))
-            times_ms.add(int(round(end * 1000)))
+            start_ms = int(round(_finite_time(start) * 1000))
+            end_ms = int(round(_finite_time(end) * 1000))
+            end_ms = max(end_ms, start_ms + 1)
+            per_utt.append((start_ms, end_ms))
+            times_ms.add(start_ms)
+            times_ms.add(end_ms)
+        bounds_ms[spk_label] = per_utt
     sorted_times = sorted(times_ms)
     ts_id_by_ms = {ms: f"ts{i+1}" for i, ms in enumerate(sorted_times)}
 
@@ -198,15 +228,15 @@ def write_eaf(
             "LINGUISTIC_TYPE_REF": "default-lt",
             "TIER_ID": f"Speaker_{spk_label}",
         })
-        for start, end, text in utts:
+        for (_start, _end, text), (start_ms, end_ms) in zip(utts, bounds_ms[spk_label]):
             if not text.strip():
                 continue
             ann_counter += 1
             ann = ET.SubElement(tier, "ANNOTATION")
             aa = ET.SubElement(ann, "ALIGNABLE_ANNOTATION", {
                 "ANNOTATION_ID": f"a{ann_counter}",
-                "TIME_SLOT_REF1": ts_id_by_ms[int(round(start * 1000))],
-                "TIME_SLOT_REF2": ts_id_by_ms[int(round(end * 1000))],
+                "TIME_SLOT_REF1": ts_id_by_ms[start_ms],
+                "TIME_SLOT_REF2": ts_id_by_ms[end_ms],
             })
             v = ET.SubElement(aa, "ANNOTATION_VALUE")
             v.text = text.strip()

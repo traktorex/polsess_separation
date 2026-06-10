@@ -100,6 +100,28 @@ def test_normalise_does_not_mutate_input_top_level():
     assert "language" not in src
 
 
+def test_normalise_sanitises_nonfinite_segment_timestamps():
+    # WhisperX's interpolate_nans can ffill/bfill an unalignable segment to
+    # all-NaN; the boundary must coerce None/NaN/inf to 0.0 before any writer.
+    out = _normalise_result(
+        {"segments": [
+            {"start": None, "end": float("nan"), "text": "a"},
+            {"start": float("inf"), "end": 2.0, "text": "b"},
+        ]},
+        "pl",
+    )
+    s0, s1 = out["segments"]
+    assert s0["start"] == 0.0 and s0["end"] == 0.0
+    assert s1["start"] == 0.0 and s1["end"] == 2.0
+
+
+def test_normalise_does_not_mutate_input_segments():
+    src = {"segments": [{"start": float("nan"), "end": 1.0, "text": "a"}]}
+    _normalise_result(src, "pl")
+    # Segment dicts are copied, not mutated in place.
+    assert src["segments"][0]["start"] != src["segments"][0]["start"]   # still NaN
+
+
 # ---------------------------------------------------------------------------
 # The silence / short-stream gate in run()
 # ---------------------------------------------------------------------------
