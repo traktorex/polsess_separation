@@ -4,6 +4,12 @@
 sample_rate: 16000
 device: cuda
 
+# Force deterministic cuDNN algorithms so runs are reproducible. The enhancement
+# stage is otherwise the pipeline's sole source of run-to-run float
+# nondeterminism (which WhisperX can amplify into a flipped token). Set false to
+# restore cuDNN autotuning (slightly faster, non-reproducible).
+deterministic: true
+
 # Disable to keep the run purely in-memory (interactive use).
 spill_intermediate: false
 artifact_dir: null

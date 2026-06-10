@@ -122,6 +122,42 @@ def test_unknown_stage_raises_with_valid_names(pipeline):
         p.get_stage("nonexistent")
 
 
+def test_deterministic_config_sets_cudnn_flags(monkeypatch):
+    # deterministic=True (default) forces deterministic cuDNN algorithms — the
+    # enhancement stage is otherwise the pipeline's only nondeterminism source.
+    import torch
+    prev = (torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark)
+    try:
+        monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+        cfg = PipelineConfig()
+        cfg.device = "cpu"
+        cfg.deterministic = True
+        Pipeline(cfg)
+        assert torch.backends.cudnn.deterministic is True
+        assert torch.backends.cudnn.benchmark is False
+    finally:
+        torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = prev
+
+
+def test_deterministic_false_leaves_cudnn_untouched(monkeypatch):
+    import torch
+    prev = (torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark)
+    try:
+        monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+        cfg = PipelineConfig()
+        cfg.device = "cpu"
+        cfg.deterministic = False
+        Pipeline(cfg)
+        assert torch.backends.cudnn.deterministic is False
+        assert torch.backends.cudnn.benchmark is True
+    finally:
+        torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = prev
+
+
 def test_stage_failure_unloads_model(pipeline):
     # A stage raising in run() must release its model (one-model-at-a-time GPU
     # budget) and reset bookkeeping, then re-raise — never strand the model.

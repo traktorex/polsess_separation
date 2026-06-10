@@ -377,6 +377,17 @@ class PipelineConfig:
     sample_rate: int = 16_000
     device: str = "cuda"
 
+    # Force deterministic cuDNN algorithms so runs are reproducible. The
+    # enhancement conv stack (e.g. FRCRN / MP-SENet) is otherwise the pipeline's
+    # sole source of run-to-run nondeterminism — it picks nondeterministic cuDNN
+    # algorithms that inject ~1e-7 float noise into `enhanced_full`, which
+    # WhisperX occasionally amplifies into a flipped token (per-speaker WER
+    # swings; the mixture floor is unaffected). Every other stage is
+    # deterministic given fixed input, so this one flag makes the whole pipeline
+    # reproducible. Costs a modest enhancement-stage slowdown (no conv
+    # autotuning); set False to restore cuDNN's default autotuning.
+    deterministic: bool = True
+
     # If True, after each stage runs, its outputs are spilled to
     # `artifact_dir`. Models are still freed at unload time regardless.
     spill_intermediate: bool = False

@@ -56,6 +56,13 @@ class Pipeline:
     def __init__(self, config: PipelineConfig) -> None:
         self.config = config
         self.device = torch.device(config.device)
+        if config.deterministic:
+            # The enhancement conv stack is the pipeline's only nondeterministic
+            # stage (nondeterministic cuDNN algorithms → ~1e-7 noise in
+            # enhanced_full that WhisperX can amplify into a token flip). Forcing
+            # deterministic algorithms makes the whole pipeline reproducible.
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
         self.stages: List[Stage] = [
             DiarizationStage(config.diarization),
             RoutingStage(config.routing),

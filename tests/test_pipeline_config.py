@@ -92,6 +92,12 @@ def test_redact_does_not_mutate_input():
     assert out["diarization"]["hf_token"] == "REDACTED"
 
 
+def test_deterministic_defaults_true():
+    """Reproducible-by-default: both the dataclass and shipped YAML enable it."""
+    assert PipelineConfig().deterministic is True
+    assert load_pipeline_config_from_yaml(str(DEFAULT_YAML)).deterministic is True
+
+
 def test_dict_roundtrip():
     """asdict -> from_dict round-trips."""
     cfg = PipelineConfig()
