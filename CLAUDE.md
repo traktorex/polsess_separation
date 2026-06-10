@@ -100,7 +100,7 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 - `explore_pipeline.ipynb`: interactive frontend for the productionised `asr_pipeline/` package — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
 - `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
 
-**`asr_pipeline/` package** — productionised pipeline. `Pipeline` orchestrator runs seven stages in fixed order:
+**`asr_pipeline/` package** — productionised pipeline. **Before changing code here, read `asr_pipeline/SCOPE.md`** — the scope contract (purpose, error philosophy, fallback ledger, rules for agents); it overrides reviewer instincts, and its `UNDECIDED` items are reserved for the author. `Pipeline` orchestrator runs seven stages in fixed order:
 1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
 2. **routing** — split overlap vs solo regions.
 3. **enhancement** — `mpsenet` default; ClearerVoice backends (`frcrn_se_16k`, `mossformer_gan_se_16k`, `mossformer2_se_48k`) available.

@@ -304,6 +304,11 @@ class TranscriptionStage(Stage):
         results: dict[str, dict] = {}
         for spk, audio in (ctx.assembled or {}).items():
             if self._skip_transcription(audio, min_samples):
+                _log(
+                    f"run: {spk} stream short/silent "
+                    f"({len(audio) / ctx.sample_rate:.2f}s) — empty transcript, "
+                    f"Whisper not called"
+                )
                 results[spk] = _empty_result(self.config.language)
                 continue
             results[spk] = self._backend.transcribe(audio)
@@ -314,6 +319,10 @@ class TranscriptionStage(Stage):
         # per-speaker pass, so the comparison is fair.
         if self.config.transcribe_mixture and ctx.audio is not None:
             if self._skip_transcription(ctx.audio, min_samples):
+                _log(
+                    "run: mixture short/silent — empty transcript, "
+                    "Whisper not called"
+                )
                 ctx.mixture_transcript = _empty_result(self.config.language)
             else:
                 ctx.mixture_transcript = self._backend.transcribe(ctx.audio)
