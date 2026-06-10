@@ -10,9 +10,18 @@
   non-intrusive estimates. Both libraries are already used elsewhere
   in the project (e.g. evaluate.py), so we stay
   consistent with them rather than rolling our own.
-- **Layer 3 (cpWER / tcpWER)** — `cpwer_meeteval`, wraps the MeetEval
-  package's cpWER + tcpWER. Permutation, alignment, and time-constrained
-  scoring all live inside MeetEval — the CHiME-7/8 evaluation toolkit.
+- **Layer 3 (ASR error rates)** — the cpWER / ORC / MIMO WER & CER family,
+  all wrapping the MeetEval package (the CHiME-7/8 evaluation toolkit), which
+  owns permutation, alignment, and time-constrained scoring:
+    - `cpwer_meeteval` — cpWER + tcpWER, speaker-attributed (charges
+      attribution errors); the main per-speaker score.
+    - `orc_wer_meeteval` / `mimo_wer_meeteval` — speaker-agnostic WER of the
+      single-stream mixture baseline (one Whisper pass over the raw mix);
+      MIMO additionally forgives the reference-interleaving order.
+    - `orc_wer_multistream` — attribution-blind WER of the multi-stream
+      (per-speaker) hypothesis; `cpWER - ORC` is the attribution penalty.
+    - `cp_cer_meeteval` / `mimo_cer_meeteval` — character-error-rate analogs
+      of cpWER and the MIMO mixture WER (same assignment, chars not words).
 
 We strip punctuation and lowercase before scoring (preserving Polish
 diacritics), since both Whisper and the pipeline emit casing /
@@ -135,15 +144,18 @@ _CANON = {"okej": "ok"}
 def _digits_to_words_pl(token: str) -> str:
     """`'2024'` → `'dwa tysiące dwadzieścia cztery'` (cardinal, Polish).
 
-    Returns the token unchanged when num2words is unavailable or the
-    integer is out of its range. Cached because the same small integers
-    recur across thousands of utterances.
+    Returns the token unchanged when num2words is unavailable, or when the
+    integer is outside num2words' supported range — including the absurdly
+    long digit runs Whisper sometimes hallucinates on silence/music, where
+    num2words raises `KeyError`/`IndexError` (not `ValueError`) from its
+    Polish magnitude table. Cached because the same small integers recur
+    across thousands of utterances.
     """
     if _num2words is None:
         return token
     try:
         return _num2words(int(token), lang="pl")
-    except (ValueError, OverflowError, NotImplementedError):
+    except (ValueError, OverflowError, NotImplementedError, KeyError, IndexError):
         return token
 
 
@@ -197,6 +209,25 @@ def _seglst_from_list(
     return _seglst_from_dict({speaker: utterances}, session_id)
 
 
+def _rate(obj) -> float:
+    """A meeteval result's error rate as a float, scoring a 0/0 session as a
+    perfect match.
+
+    meeteval sets ``error_rate = None`` when the reference length is zero —
+    i.e. every utterance normalized to empty on both sides, as in an
+    all-filler ``yyy / mhm`` backchannel exchange. Scoring that as 0.0 rather
+    than crashing on ``float(None)`` stops one such recording from aborting a
+    whole evaluation batch.
+    """
+    return float(obj.error_rate) if obj.error_rate is not None else 0.0
+
+
+def _wer_result(obj, key: str) -> Dict[str, object]:
+    """``{key: rate, "errors": ..., "length": ...}`` — the shared return shape
+    of the single-stream ORC/MIMO and multi-stream ORC wrappers."""
+    return {key: _rate(obj), "errors": int(obj.errors), "length": int(obj.length)}
+
+
 def cpwer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
@@ -234,11 +265,11 @@ def cpwer_meeteval(
     tcp = tcpwer(ref, hyp, collar=tcp_collar_s)[session_id]
 
     return {
-        "cpwer": float(cp.error_rate),
+        "cpwer": _rate(cp),
         "cp_assignment": tuple(cp.assignment),
         "cp_errors": int(cp.errors),
         "cp_length": int(cp.length),
-        "tcpwer": float(tcp.error_rate),
+        "tcpwer": _rate(tcp),
         "tcp_assignment": tuple(tcp.assignment),
         "tcp_errors": int(tcp.errors),
         "tcp_length": int(tcp.length),
@@ -266,18 +297,13 @@ def orc_wer_meeteval(
 
     Returns ``{"orc_wer", "errors", "length"}``.
     """
-    # meeteval renamed cpwer/tcpwer style but kept the WER variants joined.
     from meeteval.wer import orcwer
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id)
     # One pseudo-speaker for the mixture hypothesis.
     hyp = _seglst_from_list(hyp_utterances, session_id)
     orc = orcwer(ref, hyp)[session_id]
-    return {
-        "orc_wer": float(orc.error_rate),
-        "errors": int(orc.errors),
-        "length": int(orc.length),
-    }
+    return _wer_result(orc, "orc_wer")
 
 
 def mimo_wer_meeteval(
@@ -318,11 +344,7 @@ def mimo_wer_meeteval(
     ref = _seglst_from_dict(ref_utts_by_spk, session_id)
     hyp = _seglst_from_list(hyp_utterances, session_id)
     m = mimower(ref, hyp)[session_id]
-    return {
-        "mimo_wer": float(m.error_rate),
-        "errors": int(m.errors),
-        "length": int(m.length),
-    }
+    return _wer_result(m, "mimo_wer")
 
 
 def orc_wer_multistream(
@@ -346,11 +368,7 @@ def orc_wer_multistream(
         _seglst_from_dict(ref_utts_by_spk, session_id),
         _seglst_from_dict(hyp_utts_by_spk, session_id),
     )[session_id]
-    return {
-        "orc_wer": float(orc.error_rate),
-        "errors": int(orc.errors),
-        "length": int(orc.length),
-    }
+    return _wer_result(orc, "orc_wer")
 
 
 def cp_cer_meeteval(
