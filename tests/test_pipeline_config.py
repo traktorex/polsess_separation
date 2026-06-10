@@ -10,6 +10,7 @@ from asr_pipeline.config import (
     PipelineConfig,
     load_pipeline_config_from_dict,
     load_pipeline_config_from_yaml,
+    redact_config_snapshot,
     save_pipeline_config_to_yaml,
 )
 
@@ -45,17 +46,29 @@ def test_default_yaml_loads():
 
 
 def test_yaml_roundtrip(tmp_path):
-    """YAML -> PipelineConfig -> YAML -> PipelineConfig is identity, except
-    hf_token which the saver masks (it must never persist a live token)."""
+    """YAML -> PipelineConfig -> YAML -> PipelineConfig is identity. The saver
+    masks hf_token to the _REDACTED placeholder on disk; the loader drops that
+    placeholder and re-resolves $HF_TOKEN, so under the fixture's token the
+    round-trip is exact — never the literal string 'REDACTED'."""
     cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML))
 
     out_yaml = tmp_path / "roundtrip.yaml"
     save_pipeline_config_to_yaml(cfg, str(out_yaml))
 
     cfg_again = load_pipeline_config_from_yaml(str(out_yaml))
-    expected = asdict(cfg)
-    expected["diarization"]["hf_token"] = "REDACTED"
-    assert expected == asdict(cfg_again)
+    assert asdict(cfg) == asdict(cfg_again)
+    assert cfg_again.diarization.hf_token == "test-hf-token"
+
+
+def test_redacted_token_does_not_survive_reload_without_env(tmp_path, monkeypatch):
+    """The dangerous leg: a saved (redacted) config reloaded with no $HF_TOKEN
+    must fail loud, not silently hand pyannote the literal 'REDACTED'."""
+    cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML))
+    out_yaml = tmp_path / "roundtrip.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="hf_token"):
+        load_pipeline_config_from_yaml(str(out_yaml))
 
 
 def test_saved_yaml_never_contains_token(tmp_path):
@@ -69,6 +82,14 @@ def test_saved_yaml_never_contains_token(tmp_path):
     assert "REDACTED" in text
     # The in-memory config is untouched.
     assert cfg.diarization.hf_token == "hf_live_secret_value"
+
+
+def test_redact_does_not_mutate_input():
+    """The redactor deep-copies — a caller's live config must be untouched."""
+    src = {"diarization": {"hf_token": "LIVE", "num_speakers": 2}}
+    out = redact_config_snapshot(src)
+    assert src["diarization"]["hf_token"] == "LIVE"       # caller untouched
+    assert out["diarization"]["hf_token"] == "REDACTED"
 
 
 def test_dict_roundtrip():
@@ -128,4 +149,14 @@ def test_invalid_separation_numbers_raise(field, value):
     with pytest.raises(ValueError, match=field):
         cfg = PipelineConfig()
         setattr(cfg.separation, field, value)
+        cfg.__post_init__()
+
+
+def test_flowhigh_input_sr_must_be_positive():
+    """The fourth numeric guard (separate from the separation.* block above):
+    a non-positive FlowHigh input rate fails at config time, not deep inside
+    the post-separation backend."""
+    with pytest.raises(ValueError, match="flowhigh_input_sr"):
+        cfg = PipelineConfig()
+        cfg.post_separation_processing.flowhigh_input_sr = 0
         cfg.__post_init__()

@@ -133,11 +133,20 @@ class Pipeline:
                 f"Stage {stage_name!r} is disabled (config.{stage_name}.enabled = False)."
             )
         self._ensure_loaded(stage_name)
-        _log(f"run_stage({stage_name!r}): calling stage.run()")
-        stage.run(ctx)
-        _log(f"run_stage({stage_name!r}): stage.run() returned")
-        if self.artifact_dir is not None:
-            stage.spill(ctx, self.artifact_dir)
+        try:
+            _log(f"run_stage({stage_name!r}): calling stage.run()")
+            stage.run(ctx)
+            _log(f"run_stage({stage_name!r}): stage.run() returned")
+            if self.artifact_dir is not None:
+                stage.spill(ctx, self.artifact_dir)
+        except BaseException:
+            # A stage failure (OOM, bad checkpoint, KeyboardInterrupt) must not
+            # leave its heavyweight model resident — that breaks the
+            # one-model-at-a-time GPU budget for whatever runs next. Free it,
+            # then re-raise (fail loud; don't march the loop on a corrupt ctx).
+            _log(f"run_stage({stage_name!r}): FAILED — releasing model")
+            self._release_current()
+            raise
         _log(f"run_stage({stage_name!r}): complete")
 
     def unload(self) -> None:

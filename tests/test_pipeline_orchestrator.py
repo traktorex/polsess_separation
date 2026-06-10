@@ -36,6 +36,14 @@ class _DummyStage(Stage):
         return self.signature
 
 
+class _FailingStage(_DummyStage):
+    """A dummy stage whose run() logs then raises — exercises failure cleanup."""
+
+    def run(self, ctx) -> None:
+        self._logbook.append(("run", self.name))
+        raise RuntimeError("boom")
+
+
 @pytest.fixture
 def pipeline(monkeypatch):
     """CPU pipeline with two dummy stages 'a' and 'b' + their shared logbook."""
@@ -112,3 +120,32 @@ def test_unknown_stage_raises_with_valid_names(pipeline):
     p, _ = pipeline
     with pytest.raises(ValueError, match="nonexistent"):
         p.get_stage("nonexistent")
+
+
+def test_stage_failure_unloads_model(pipeline):
+    # A stage raising in run() must release its model (one-model-at-a-time GPU
+    # budget) and reset bookkeeping, then re-raise — never strand the model.
+    p, log = pipeline
+    p.stages = [_FailingStage("a", log)]
+    with pytest.raises(RuntimeError, match="boom"):
+        p.run_stage("a", _ctx())
+    assert log == [("load", "a"), ("run", "a"), ("unload", "a")]
+    assert p._current_stage_name is None
+
+
+def test_run_oneshot_failure_halts_loop_and_unloads(monkeypatch):
+    # The one-shot run() entry point: a mid-pipeline failure must HALT the
+    # loop (the later stage 'c' never runs) and leave no model resident —
+    # run() adds no failure handling of its own beyond run_stage's cleanup.
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    p = Pipeline(cfg)
+    log: list = []
+    p.stages = [_DummyStage("a", log), _FailingStage("b", log), _DummyStage("c", log)]
+    monkeypatch.setattr(p, "load_audio", lambda path: _ctx())
+    with pytest.raises(RuntimeError, match="boom"):
+        p.run("dummy.wav")
+    assert ("run", "c") not in log          # loop halted at the failure
+    assert ("unload", "b") in log           # failed stage's model freed
+    assert p._current_stage_name is None

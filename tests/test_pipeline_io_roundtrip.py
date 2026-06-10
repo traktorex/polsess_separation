@@ -133,6 +133,19 @@ def test_metadata_config_token_is_redacted(eval_recording):
     assert meta["config"]["diarization"]["model_id"] == "test"
 
 
+def test_writer_omits_config_when_snapshot_none(tmp_path):
+    """With config_snapshot=None, metadata.json omits the 'config' key — the
+    branch that runs when a run dies before a config is attached."""
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    write_pipeline_outputs(ctx, rec_dir, config_snapshot=None, subdir_name="pipeline")
+    meta = json.loads(
+        (rec_dir / "pipeline" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert "config" not in meta
+
+
 def test_layer1_der_is_zero_on_matching_diarization(eval_recording):
     l1 = compute_layer1(eval_recording)
     assert l1 is not None

@@ -17,6 +17,12 @@ from typing import Optional
 import yaml
 
 
+# Placeholder written in place of a live HF token in any serialised snapshot.
+# Shared by the redactor (write side) and the loader (read side) so they can't
+# drift — see `redact_config_snapshot` and `load_pipeline_config_from_dict`.
+_REDACTED = "REDACTED"
+
+
 def redact_config_snapshot(config_snapshot: dict) -> dict:
     """Deep-copy a config snapshot with ``diarization.hf_token`` masked.
 
@@ -30,7 +36,7 @@ def redact_config_snapshot(config_snapshot: dict) -> dict:
     snap = json.loads(json.dumps(config_snapshot))  # cheap deep copy (JSON-safe input)
     diar = snap.get("diarization")
     if isinstance(diar, dict) and diar.get("hf_token"):
-        diar["hf_token"] = "REDACTED"
+        diar["hf_token"] = _REDACTED
     return snap
 
 
@@ -70,8 +76,8 @@ class RoutingConfig:
     a single contiguous region rather than two back-to-back calls.
 
     Per-speaker solo regions are NOT computed here — the assembler in
-    Stage 4 derives them on the fly by subtracting `ctx.overlap_regions`
-    from `ctx.diarization.segments_df` per speaker.
+    Stage 4 derives them on the fly from `ctx.diarization.segments_df`,
+    subtracting each overlap's seam-adjusted emit region (see `assembly.py`).
 
     All thresholds in seconds.
     """
@@ -83,7 +89,8 @@ class RoutingConfig:
 
 @dataclass
 class EnhancementConfig:
-    """Stage 3a: speech enhancement on solo regions.
+    """Stage 3a: full-recording speech enhancement (single pass; sliced
+    per-speaker at assembly).
 
     Multiple backends are supported. The default is the vendored MP-SENet
     (VoiceBank+DEMAND training distribution, narrow). ClearerVoice-Studio
@@ -466,6 +473,12 @@ def load_pipeline_config_from_dict(config_dict: dict) -> PipelineConfig:
         ("transcription", TranscriptionConfig),
     ):
         sub_dict = config_dict.pop(key, None)
+        if key == "diarization" and sub_dict and sub_dict.get("hf_token") == _REDACTED:
+            # A saved config redacts the token to _REDACTED; drop the key (a new
+            # dict, never mutating the caller's) so DiarizationConfig's
+            # default_factory re-resolves $HF_TOKEN instead of handing pyannote
+            # the literal string "REDACTED".
+            sub_dict = {k: v for k, v in sub_dict.items() if k != "hf_token"}
         sub_configs[key] = cls(**sub_dict) if sub_dict else cls()
 
     return PipelineConfig(**config_dict, **sub_configs)
@@ -484,9 +497,11 @@ def load_pipeline_config_from_yaml(yaml_path: str) -> PipelineConfig:
 def save_pipeline_config_to_yaml(config: PipelineConfig, yaml_path: str) -> None:
     """Save a `PipelineConfig` to YAML, preserving the nested structure.
 
-    ``diarization.hf_token`` is masked as ``"REDACTED"`` so a live token
-    never lands in a saved config file (it's read from ``$HF_TOKEN`` at
-    load time anyway; the masked placeholder keeps validation passing).
+    ``diarization.hf_token`` is masked as ``_REDACTED`` so a live token never
+    lands in a saved config file. On reload the loader drops the placeholder
+    and re-resolves the token from ``$HF_TOKEN`` (see
+    ``load_pipeline_config_from_dict``); a redacted config therefore round-trips
+    to the env token, never to the literal string.
     """
     yaml_path = Path(yaml_path)
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
