@@ -151,6 +151,24 @@ def test_layer1_der_is_zero_on_matching_diarization(eval_recording):
     assert l1 is not None
     assert l1["reference_source"] == "rttm"
     assert l1["der_stage1"]["der"] == pytest.approx(0.0, abs=1e-6)
+    # confusion==0 specifically pins the SPEAKER_00/01 (hyp) → A/B (ref)
+    # Hungarian assignment — a non-trivial fact, not merely a cheap der==0.
+    assert l1["der_stage1"]["confusion"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_layer1_der_positive_when_diarization_is_wrong(eval_recording):
+    # Sibling to the above: replace the hyp with turns that don't match the
+    # reference at all → der > 0 (the metric isn't trivially zero).
+    pdir = eval_recording.pipeline_dir
+    (pdir / "diarization.json").write_text(json.dumps({
+        "turns": [
+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 0.3},
+            {"speaker": "SPEAKER_01", "start": 9.7, "end": 10.0},
+        ],
+        "total_duration_s": 10.0,
+    }))
+    l1 = compute_layer1(eval_recording)
+    assert l1["der_stage1"]["der"] > 0.0
 
 
 def test_layer3_wer_is_zero_on_matching_transcripts(eval_recording):

@@ -8,12 +8,6 @@ Reference: the per-recording diarization RTTM produced by
 ``scripts/prepare_eval_references.py``. For both CLARIN and LibriCSS the
 RTTM is derived from the hand-corrected GT transcripts (true GT — one
 turn per utterance, A/B labelled).
-
-We also optionally report ``der_post_pipeline`` — DER computed against
-post-pipeline diarization (running pyannote on the separated streams).
-That number measures something different ("can a fresh diarizer recover
-speaker structure from the separated output?") and isn't what the pipeline
-itself produced. We include it as a side number, not the headline.
 """
 
 from __future__ import annotations
@@ -38,8 +32,10 @@ def _load_pipeline_diarization(
         return None
     data = json.loads(path.read_text())
     hyp: dict[str, list[tuple[float, float]]] = {}
-    for t in data.get("turns", []):
-        hyp.setdefault(t["speaker"], []).append((float(t["start"]), float(t["end"])))
+    for turn in data.get("turns", []):
+        hyp.setdefault(turn["speaker"], []).append(
+            (float(turn["start"]), float(turn["end"]))
+        )
     return hyp
 
 
@@ -56,9 +52,9 @@ def _total_duration(
         path = pipeline_dir / "diarization.json"
         if path.exists():
             data = json.loads(path.read_text())
-            d = data.get("total_duration_s")
-            if d is not None:
-                return float(d)
+            recorded_duration = data.get("total_duration_s")
+            if recorded_duration is not None:
+                return float(recorded_duration)
     latest = 0.0
     for turns in ref_segments.values():
         for _, end in turns:
@@ -76,13 +72,17 @@ def _reference_turns(
     """
     if rec.reference_eaf is not None:
         utts = load_reference_utterances(rec)
-        return {
+        turns = {
             label: [(u.start, u.end) for u in u_list]
             for label, u_list in utts.items()
             if u_list
         }
+        # A present-but-empty reference (all tiers empty) must read as absent,
+        # not as a zero-turn reference: scoring against it would divide by
+        # compute_der's 1e-9 floor and emit a ~5e9 DER that poisons aggregates.
+        return turns or None
     if rec.reference_diarization is not None:
-        return parse_rttm(rec.reference_diarization)
+        return parse_rttm(rec.reference_diarization) or None
     return None
 
 
@@ -97,6 +97,9 @@ def compute_layer1(rec: Recording, collar: float = 0.0) -> Optional[dict]:
                            "total_ref_s": …, "collar": …, "skip_overlap": …},
             "reference_source": "eaf" | "rttm",
         }
+
+    ``skip_overlap`` is pinned ``False`` at the call site (overlap regions are
+    scored) — it is reported for provenance, not exposed as a knob.
     """
     ref = _reference_turns(rec)
     if ref is None:

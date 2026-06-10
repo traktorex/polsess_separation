@@ -39,12 +39,19 @@ from asr_pipeline.eval.transcript_parser import parse_gt_txt
 
 
 def _read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
-    """Read ``transcript_A.txt`` + ``transcript_B.txt`` if both exist."""
-    a = pipeline_dir / "transcript_A.txt"
-    b = pipeline_dir / "transcript_B.txt"
-    if not a.exists() or not b.exists():
-        return None
-    return {"A": parse_gt_txt(a), "B": parse_gt_txt(b)}
+    """Read whichever of ``transcript_{A,B}.txt`` exist; None when neither does.
+
+    A one-speaker pipeline collapse (assembly yielding a single stream, or
+    ECAPA merging both pieces to one identity) writes only ``transcript_A.txt``.
+    Reading just the present transcript lets ``cpwer_meeteval`` charge the
+    absent speaker as deletions — the right penalty for a separation failure
+    L3 exists to quantify. Requiring both files instead would silently drop the
+    mode from the table and bias it optimistically.
+    """
+    paths = {"A": pipeline_dir / "transcript_A.txt",
+             "B": pipeline_dir / "transcript_B.txt"}
+    hyp = {label: parse_gt_txt(p) for label, p in paths.items() if p.exists()}
+    return hyp or None
 
 
 def _read_mixture(pipeline_dir: Path) -> Optional[list]:
@@ -59,7 +66,9 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
     """ASR error rates per ablation mode + ORC-WER baseline.
 
     Returns None when the GT transcripts are missing — without them L3 is
-    meaningless. With at least one pipeline mode populated, returns::
+    meaningless. Requires reference tiers labelled exactly ``A`` and ``B``
+    (enforced corpus-wide by ``scripts/check_gt_eaf.py``); any other label set
+    returns None. With at least one pipeline mode populated, returns::
 
         {
             "ref_lengths": {"A": int, "B": int},
@@ -68,7 +77,8 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
                 "no_sep":   {…} or None,
                 "no_enh":   {…} or None,
             },
-            "mixture_orc": {"orc_wer": …, …} or None,
+            "mixture_orc":  {"orc_wer": …, …} or None,
+            "mixture_mimo": {"mimo_wer": …, …} or None,
             "tcp_collar_s": float,
         }
     """
