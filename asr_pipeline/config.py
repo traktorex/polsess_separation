@@ -344,9 +344,9 @@ class TranscriptionConfig:
     enabled: bool = True
     # Selector. See class docstring for trade-offs.
     backend: str = "whisper"           # whisper | whisperx
-    # OpenAI short names (``large-v3``, ``large-v2``) or any HF model id
-    # parseable by faster-whisper when backend == ``whisperx``. Ignored
-    # checkpoints for the ``whisper`` backend must be canonical OpenAI names.
+    # OpenAI short names (``large-v3``, ``large-v2``) or any HF Whisper model id
+    # parseable by faster-whisper — the latter only when backend == ``whisperx``.
+    # The ``whisper`` backend accepts canonical OpenAI names only.
     model_name: str = "large-v3"
     language: str = "pl"
     initial_prompt: str = "Rozmowa po polsku."

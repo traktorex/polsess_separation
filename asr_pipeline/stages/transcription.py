@@ -23,13 +23,46 @@ import torch
 
 from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
 from asr_pipeline.transcript_format import format_transcript, to_jsonable
+
+
+# Minimum stream length worth sending to Whisper. SR-relative so it tracks
+# ctx.sample_rate rather than baking in 16 kHz (POC's lower bound).
+_MIN_TRANSCRIBE_DURATION_S = 0.5
+# Peak-amplitude floor below which a stream is treated as silent and skipped.
+# The assembler emits all-zeros sentinels for no-event speakers (assembly.py:
+# _concat_shortened/_concat_full_length); those clear the duration gate above,
+# and Whisper hallucinates phantom Polish on pure silence — which would then be
+# spilled and scored as insertions in the L3 WER table. Value mirrors the
+# silence floor in eval/layer2.py (duplicated, not imported: stages must not
+# depend on eval).
+_SILENCE_FLOOR = 1e-4
+
+
+def _log(msg: str) -> None:
+    """Transcription debug log — visible in the notebook and durable on disk.
+
+    Routed through `dlog` (not `print`) so messages survive the WSL stdout
+    bridge dropping; matters for the multi-minute one-time CT2 conversion.
+    """
+    dlog("transcription", msg)
 
 
 # ---------------------------------------------------------------------------
 # Output formatting helpers (shared by both backends)
 # ---------------------------------------------------------------------------
+
+
+def _empty_result(language: str) -> dict:
+    """The stage's empty-transcript contract — a fresh dict every call.
+
+    Emitted for a speaker with no assembled audio, a stream shorter than the
+    duration floor, or a silent stream. Returned fresh (never a shared literal)
+    so the per-speaker / mixture branches can't alias one `segments` list.
+    """
+    return {"text": "", "segments": [], "language": language}
 
 
 def _normalise_result(result: dict, language: str) -> dict:
@@ -117,8 +150,8 @@ def _ensure_ct2_model(model_name: str) -> str:
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"hf-{safe_name}-") as tmp:
-        print(f"[transcription] Re-materialising {model_name} with fast tokenizer "
-              f"at {tmp} (one-time)...")
+        _log(f"Re-materialising {model_name} with fast tokenizer "
+             f"at {tmp} (one-time)...")
         model = WhisperForConditionalGeneration.from_pretrained(model_name)
         tok = WhisperTokenizerFast.from_pretrained(model_name)
         proc = WhisperProcessor.from_pretrained(model_name)
@@ -127,7 +160,7 @@ def _ensure_ct2_model(model_name: str) -> str:
         proc.save_pretrained(tmp)
         del model, tok, proc
 
-        print(f"[transcription] Converting → CTranslate2 at {cache_dir}...")
+        _log(f"Converting → CTranslate2 at {cache_dir}...")
         result = subprocess.run(
             ["ct2-transformers-converter",
              "--model", tmp,
@@ -262,15 +295,16 @@ class TranscriptionStage(Stage):
         if self._backend is None:
             raise RuntimeError("TranscriptionStage.run called before load().")
 
-        min_samples = ctx.sample_rate // 2  # 0.5 s — POC's lower bound
+        min_samples = int(ctx.sample_rate * _MIN_TRANSCRIBE_DURATION_S)
 
-        # Per-speaker assembled streams.
+        # Per-speaker assembled streams. Skip streams that are too short OR
+        # silent — the latter is the assembler's no-event sentinel (all-zeros,
+        # but longer than min_samples), which Whisper would otherwise turn into
+        # hallucinated text scored against a speaker who said nothing.
         results: dict[str, dict] = {}
         for spk, audio in (ctx.assembled or {}).items():
-            if len(audio) < min_samples:
-                results[spk] = {
-                    "text": "", "segments": [], "language": self.config.language,
-                }
+            if self._skip_transcription(audio, min_samples):
+                results[spk] = _empty_result(self.config.language)
                 continue
             results[spk] = self._backend.transcribe(audio)
         ctx.transcripts = results
@@ -279,12 +313,17 @@ class TranscriptionStage(Stage):
         # Used by the ablation table — same backend / prompt / args as the
         # per-speaker pass, so the comparison is fair.
         if self.config.transcribe_mixture and ctx.audio is not None:
-            if len(ctx.audio) < min_samples:
-                ctx.mixture_transcript = {
-                    "text": "", "segments": [], "language": self.config.language,
-                }
+            if self._skip_transcription(ctx.audio, min_samples):
+                ctx.mixture_transcript = _empty_result(self.config.language)
             else:
                 ctx.mixture_transcript = self._backend.transcribe(ctx.audio)
+
+    @staticmethod
+    def _skip_transcription(audio: np.ndarray, min_samples: int) -> bool:
+        """True if `audio` is too short or silent to be worth transcribing."""
+        if len(audio) < min_samples or len(audio) == 0:
+            return True
+        return float(np.max(np.abs(audio))) < _SILENCE_FLOOR
 
     # ------------------------------------------------------------------
     # Spill
