@@ -20,7 +20,8 @@ from asr_pipeline.transcript_format import write_eaf
 
 
 def _rec(tmp_path, *, reference_eaf=None, reference_transcripts=None,
-         reference_diarization=None, pipeline_dir=None, rec_id="rec1") -> Recording:
+         reference_diarization=None, pipeline_dir=None,
+         pipeline_minimal_dir=None, rec_id="rec1") -> Recording:
     return Recording(
         id=rec_id,
         dataset="clarin",
@@ -32,6 +33,7 @@ def _rec(tmp_path, *, reference_eaf=None, reference_transcripts=None,
         pipeline_dir=pipeline_dir,
         pipeline_nosep_dir=None,
         pipeline_noenh_dir=None,
+        pipeline_minimal_dir=pipeline_minimal_dir,
     )
 
 
@@ -153,7 +155,7 @@ def test_layer3_scores_one_speaker_collapse(tmp_path):
     assert l3["modes"]["no_sep"] is None    # that dir was never created
 
 
-def test_layer3_modes_dict_always_has_three_keys(tmp_path):
+def test_layer3_modes_dict_always_has_four_keys(tmp_path):
     eaf = tmp_path / "annotation.eaf"
     write_eaf({"A": [(1.0, 2.0, "ala ma kota")],
                "B": [(5.0, 6.0, "pies je obiad")]},
@@ -165,7 +167,45 @@ def test_layer3_modes_dict_always_has_three_keys(tmp_path):
 
     rec = _rec(tmp_path, reference_eaf=eaf, pipeline_dir=pdir)
     l3 = compute_layer3(rec)
-    assert set(l3["modes"]) == {"full", "no_sep", "no_enh"}
+    assert set(l3["modes"]) == {"full", "no_sep", "no_enh", "minimal"}
     assert l3["modes"]["full"]["cpwer"] == pytest.approx(0.0)   # exact match
     assert l3["modes"]["no_sep"] is None and l3["modes"]["no_enh"] is None
+    assert l3["modes"]["minimal"] is None   # that dir was never created
     assert l3["mixture_orc"] is None and l3["mixture_mimo"] is None  # no mixture txt
+
+
+def test_layer3_scores_minimal_mode(tmp_path):
+    # The (no-sep, no-enh) ablation arm — SCOPE §6 / open question 6: a
+    # populated pipeline_minimal/ dir must be scored as mode "minimal".
+    eaf = tmp_path / "annotation.eaf"
+    write_eaf({"A": [(1.0, 2.0, "ala ma kota")],
+               "B": [(5.0, 6.0, "pies je obiad")]},
+              tmp_path / "rec1.wav", eaf)
+    mdir = tmp_path / "pipeline_minimal"
+    mdir.mkdir()
+    _write_gt_txt(mdir / "transcript_A.txt", [(1.0, 2.0, "ala ma kota")])
+    _write_gt_txt(mdir / "transcript_B.txt", [(5.0, 6.0, "pies je kolacje")])
+
+    rec = _rec(tmp_path, reference_eaf=eaf, pipeline_minimal_dir=mdir)
+    l3 = compute_layer3(rec)
+    assert l3 is not None
+    minimal = l3["modes"]["minimal"]
+    assert minimal is not None
+    assert minimal["cpwer"] == pytest.approx(1 / 6)   # 1 sub in 6 ref words
+    assert l3["modes"]["full"] is None
+
+
+def test_load_recording_discovers_pipeline_minimal(tmp_path):
+    # Discovery side: load_recording must populate pipeline_minimal_dir from
+    # the on-disk pipeline_minimal/ subdir, same as the other three modes.
+    from asr_pipeline.eval.recordings import load_recording
+
+    rec_dir = tmp_path / "clarin" / "rec1"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "rec1.wav").touch()          # existence is all discovery checks
+    (rec_dir / "pipeline_minimal").mkdir()
+
+    rec = load_recording(rec_dir)
+    assert rec is not None
+    assert rec.pipeline_minimal_dir == rec_dir / "pipeline_minimal"
+    assert rec.pipeline_dir is None

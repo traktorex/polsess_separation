@@ -1,15 +1,17 @@
-"""Run the ASR pipeline against one recording in three ablation modes.
+"""Run the ASR pipeline against one recording in its ablation modes.
 
 Drives the WER-ablation table the eval module's Layer 3 reads:
 
-    pipeline/         full pipeline (default config + transcribe_mixture)
-    pipeline_nosep/   separation.enabled = false
-    pipeline_noenh/   enhancement.enabled = false
+    pipeline/          full pipeline (default config + transcribe_mixture)
+    pipeline_nosep/    separation.enabled = false
+    pipeline_noenh/    enhancement.enabled = false
+    pipeline_minimal/  both off — diarize + slice + transcribe only
 
-Phase-major: each mode runs as a fresh ``Pipeline``; the previous pipeline
-is dropped before the next mode starts so GPU memory is fully released
-between modes. The three modes write their outputs to per-mode subdirs
-under ``<eval_root>/<dataset>/<recording_id>/``.
+(plus the GT-bootstrap-only ``pipeline_nosep_mossformer``, which L3 does
+not score). Phase-major: each mode runs as a fresh ``Pipeline``; the
+previous pipeline is dropped before the next mode starts so GPU memory is
+fully released between modes. Modes write their outputs to per-mode
+subdirs under ``<eval_root>/<dataset>/<recording_id>/``.
 
 Usage::
 
@@ -158,7 +160,7 @@ def main() -> int:
     parser.add_argument(
         "--modes", nargs="+", default=[m[0] for m in MODES],
         choices=[m[0] for m in MODES],
-        help="Which ablation modes to run (default: all three).",
+        help="Which ablation modes to run (default: all).",
     )
     parser.add_argument(
         "--skip-existing", action="store_true",

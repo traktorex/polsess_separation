@@ -137,8 +137,9 @@ Resolved rows:
 
 **Ablation surface (fixed for the thesis):** full pipeline vs (no-sep, yes-enh)
 vs (yes-sep, no-enh) vs (no-sep, no-enh) vs whisper-on-raw-mixture (no
-splitting at all). Gap: the (no-sep, no-enh) arm is not currently among the
-three modes `run_pipeline_on_recording.py` produces.
+splitting at all). The (no-sep, no-enh) arm is `pipeline_minimal` in
+`run_pipeline_on_recording.py` and is scored by L3 as mode `minimal`
+(gap closed 2026-06-10, author-approved — see §10 q6).
 
 **Lifetime rule:** a knob lives as long as it serves a planned comparison.
 Once the thesis decision is made and written down, losing branches may be
@@ -198,6 +199,9 @@ initiative — `UNDECIDED` means frozen until the author rules.
 4. flowhigh vs ap_bwe — measure compute cost; if marginal, the quality winner
    takes the default.
 5. Vanilla Whisper backend — keep as a thesis comparison or delete?
-6. Missing (no-sep, no-enh) ablation arm — add to
-   `run_pipeline_on_recording.py`?
+6. ~~Missing (no-sep, no-enh) ablation arm — add to
+   `run_pipeline_on_recording.py`?~~ **RESOLVED 2026-06-10 (author): yes.**
+   The producer already existed (`pipeline_minimal`, both stages off); the
+   eval layer now discovers it (`Recording.pipeline_minimal_dir`), scores it
+   (L3 mode `minimal`), and surfaces it (`summarize_layer3.minimal_cpwer`).
 7. mpsenet removal + default-backend change after the sweep concludes.

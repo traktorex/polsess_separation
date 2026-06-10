@@ -98,13 +98,15 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
       - ``mixture_orc``     ORC-WER of single-stream Whisper on the raw mixture
       - ``mixture_mimo``    MIMO-WER of the same (optimised reference interleaving;
                             MIMO <= ORC, more robust to faulty GT timestamps)
+      - ``minimal_cpwer``   cpWER with both stages off (diarize + slice only)
       - ``no_enh_cpwer``    cpWER of pipeline run with enhancement disabled
       - ``no_sep_cpwer``    cpWER of pipeline run with separation disabled
       - ``full_cpwer``      cpWER of the full pipeline
       - ``full_tcpwer``     tcpWER (time-constrained variant) of the full pipeline
       - ``ref_n_utts``      total reference utterances (A + B)
 
-    The mixture → no_enh → no_sep → full progression is the ablation story.
+    The mixture → minimal → no_enh → no_sep → full progression is the
+    ablation story.
     """
     rows = []
     for s in scores:
@@ -126,6 +128,7 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
                 100.0 * l3["mixture_mimo"]["mimo_wer"]
                 if l3.get("mixture_mimo") is not None else None
             ),
+            "minimal_cpwer": _pct(modes.get("minimal"), "cpwer"),
             "no_enh_cpwer": _pct(modes.get("no_enh"), "cpwer"),
             "no_sep_cpwer": _pct(modes.get("no_sep"), "cpwer"),
             "full_cpwer":   _pct(modes.get("full"),   "cpwer"),
@@ -155,5 +158,6 @@ def inventory(scores: Iterable[ScoreCard]) -> pd.DataFrame:
             "pipe_full": rec.pipeline_dir is not None,
             "pipe_nosep": rec.pipeline_nosep_dir is not None,
             "pipe_noenh": rec.pipeline_noenh_dir is not None,
+            "pipe_minimal": rec.pipeline_minimal_dir is not None,
         })
     return pd.DataFrame(rows)

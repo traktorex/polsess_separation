@@ -22,8 +22,9 @@ from asr_pipeline.eval.transcript_parser import Utterance, parse_eaf, parse_gt_t
 class Recording:
     """One recording in the eval tree.
 
-    `pipeline_dir` / `pipeline_nosep_dir` / `pipeline_noenh_dir` correspond
-    to the three ablation modes — only populated when the pipeline has
+    `pipeline_dir` / `pipeline_nosep_dir` / `pipeline_noenh_dir` /
+    `pipeline_minimal_dir` correspond to the four ablation modes (full,
+    no-sep, no-enh, both-off) — only populated when the pipeline has
     actually been run for that mode (the writer creates the directory).
 
     `reference_eaf` is the hand-corrected GT (ELAN .eaf at the recording
@@ -42,6 +43,10 @@ class Recording:
     pipeline_dir: Optional[Path]                    # full pipeline
     pipeline_nosep_dir: Optional[Path]              # separation.enabled=false
     pipeline_noenh_dir: Optional[Path]              # enhancement.enabled=false
+    # Both stages off — diarize + slice + transcribe the raw mixture
+    # (run_pipeline_on_recording.py's `pipeline_minimal`). Defaulted so
+    # existing construction sites without the arm keep working.
+    pipeline_minimal_dir: Optional[Path] = None
 
 
 def _dir_if_present(p: Path) -> Optional[Path]:
@@ -98,6 +103,7 @@ def load_recording(recording_dir: Path) -> Optional[Recording]:
         pipeline_dir=_dir_if_present(recording_dir / "pipeline"),
         pipeline_nosep_dir=_dir_if_present(recording_dir / "pipeline_nosep"),
         pipeline_noenh_dir=_dir_if_present(recording_dir / "pipeline_noenh"),
+        pipeline_minimal_dir=_dir_if_present(recording_dir / "pipeline_minimal"),
     )
 
 

@@ -1,9 +1,9 @@
 """Layer 3 — ASR error rates + WER ablation table.
 
-For each pipeline mode that's been run (full / no-sep / no-enh), compute
-cpWER + tcpWER against the per-speaker GT transcripts. The differences
-between modes give the ablation: how much does separation buy, how much
-does enhancement buy?
+For each pipeline mode that's been run (full / no-sep / no-enh / minimal),
+compute cpWER + tcpWER against the per-speaker GT transcripts. The
+differences between modes give the ablation: how much does separation buy,
+how much does enhancement buy?
 
 Plus ORC-WER between the mixture-baseline transcript (single-stream
 Whisper on the raw mixture, written by Stage 5 when
@@ -11,6 +11,7 @@ Whisper on the raw mixture, written by Stage 5 when
 baseline. The full chain reads::
 
     mixture (no pipeline)  ─→  ORC-WER vs GT
+    pipeline_minimal       ─→  cpWER vs GT   (diarize+slice only, both off)
     pipeline_noenh         ─→  cpWER vs GT
     pipeline_nosep         ─→  cpWER vs GT
     pipeline (full)        ─→  cpWER vs GT
@@ -76,6 +77,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
                 "full":     {"cpwer": …, "tcpwer": …, ...},
                 "no_sep":   {…} or None,
                 "no_enh":   {…} or None,
+                "minimal":  {…} or None,   # both stages off
             },
             "mixture_orc":  {"orc_wer": …, …} or None,
             "mixture_mimo": {"mimo_wer": …, …} or None,
@@ -92,6 +94,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
         ("full", rec.pipeline_dir),
         ("no_sep", rec.pipeline_nosep_dir),
         ("no_enh", rec.pipeline_noenh_dir),
+        ("minimal", rec.pipeline_minimal_dir),
     ):
         if dir_ is None:
             modes_out[mode] = None
@@ -105,10 +108,11 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
         )
 
     # Mixture baseline (single-stream) — try the full pipeline_dir first;
-    # all three ablation runs use the same backend, so transcript_mixture
+    # all ablation runs use the same backend, so transcript_mixture
     # should be identical.
     mixture_utts = None
-    for d in (rec.pipeline_dir, rec.pipeline_nosep_dir, rec.pipeline_noenh_dir):
+    for d in (rec.pipeline_dir, rec.pipeline_nosep_dir, rec.pipeline_noenh_dir,
+              rec.pipeline_minimal_dir):
         if d is None:
             continue
         mixture_utts = _read_mixture(d)
