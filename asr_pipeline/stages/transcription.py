@@ -259,6 +259,23 @@ class _WhisperXBackend:
             device=device_str,
             model_name=self.cfg.align_model_name,
         )
+        # With align_model_name=None the config echo shows "None", which reads
+        # like "no aligner" — surface what WhisperX actually auto-picked
+        # (mirrors load_align_model's TORCH-then-HF resolution order).
+        resolved = self.cfg.align_model_name
+        if resolved is None:
+            from whisperx.alignment import (
+                DEFAULT_ALIGN_MODELS_HF,
+                DEFAULT_ALIGN_MODELS_TORCH,
+            )
+            resolved = DEFAULT_ALIGN_MODELS_TORCH.get(
+                self.cfg.language
+            ) or DEFAULT_ALIGN_MODELS_HF.get(self.cfg.language, "<unknown>")
+        _log(
+            f"align model: {resolved} "
+            f"(language={self.cfg.language}, auto-selected="
+            f"{self.cfg.align_model_name is None})"
+        )
         self._device_str = device_str
 
     def transcribe(self, audio: np.ndarray) -> dict:
