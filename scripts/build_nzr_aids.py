@@ -62,7 +62,6 @@ import argparse
 import re
 import sys
 import time
-import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -261,7 +260,7 @@ def slice_with_pad(
 
 
 # --------------------------------------------------------------------------- #
-# Per-occurrence work item
+# Per-occurrence work item + index entry
 # --------------------------------------------------------------------------- #
 
 
@@ -284,6 +283,58 @@ class WorkItem:
         msg = f"{stage}: {type(exc).__name__}: {exc}"
         self.errors.append(msg)
         print(f"    [FAIL] {self.occ.frag_id} {self.bundle.name} {msg}")
+
+
+@dataclass
+class IndexEntry:
+    """One row of the top-level index — fresh builds and kept bundles alike.
+
+    The index is regenerated fully on every run, so a ``--skip-existing`` run
+    must still produce a row for every occurrence: skipped bundles get an
+    entry with ``item=None`` and their best guess recovered from the existing
+    ``guesses.txt`` on disk.
+    """
+
+    occ: NzrOccurrence
+    bundle: Path
+    item: Optional[WorkItem] = None  # None == kept (skipped-existing) bundle
+    best_guess: str = ""
+    status: str = "kept"
+
+    def finalise(self) -> None:
+        """Pull post-phase results from the WorkItem (fresh entries only)."""
+        if self.item is not None:
+            self.best_guess = self.item.best_guess
+            self.status = (
+                "OK" if not self.item.errors else f"FAIL ({len(self.item.errors)})"
+            )
+
+
+_BEST_GUESS_RE = re.compile(r"^mix\s+@\s+0\.0\s+->\s+(.*)$")
+
+
+def recover_best_guess(guesses_text: str) -> str:
+    """Pull the ``mix @ 0.0`` reading back out of an existing guesses.txt body."""
+    for line in guesses_text.splitlines():
+        m = _BEST_GUESS_RE.match(line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _md_cell(text: str) -> str:
+    """Escape a string for a Markdown table cell, keeping ``<nzr>`` visible.
+
+    Raw ``<nzr>`` would be swallowed as an unknown HTML tag by most renderers
+    (Obsidian, VS Code preview, GitHub); backslash-escaping the angle brackets
+    makes it render literally while staying readable in plain text.
+    """
+    return (
+        text.replace("|", "\\|")
+        .replace("<", "\\<")
+        .replace(">", "\\>")
+        .replace("\n", " ")
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -474,26 +525,26 @@ def write_slow_versions(it: WorkItem) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def write_index(index_path: Path, items: list[WorkItem], drive_root: Path) -> None:
-    """Regenerate the top-level index table from scratch."""
+def write_index(index_path: Path, entries: list[IndexEntry], drive_root: Path) -> None:
+    """Regenerate the top-level index table from scratch (all occurrences —
+    fresh builds and kept bundles alike)."""
     rows = [
-        "# `<nzr>` listening-aid index",
+        "# `\\<nzr\\>` listening-aid index",
         "",
         f"Regenerated {time.strftime('%Y-%m-%d %H:%M:%S')} — "
-        f"{len(items)} occurrence(s) across "
-        f"{len({it.occ.frag_id for it in items})} fragment(s).",
+        f"{len(entries)} occurrence(s) across "
+        f"{len({e.occ.frag_id for e in entries})} fragment(s).",
         "",
         "| Fragment | Tier | Time | Utterance | Bundle | Best mix guess | Status |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for it in items:
-        utt = it.occ.text.replace("|", "\\|").replace("\n", " ")
-        guess = (it.best_guess or "").replace("|", "\\|").replace("\n", " ")
-        rel = it.bundle.relative_to(drive_root).as_posix()
-        status = "OK" if not it.errors else f"FAIL ({len(it.errors)})"
+    for e in entries:
+        e.finalise()
+        rel = e.bundle.relative_to(drive_root).as_posix()
         rows.append(
-            f"| {it.occ.frag_id} | {it.occ.tier} | {_fmt_time(it.occ.start)} "
-            f"| {utt} | `{rel}` | {guess} | {status} |"
+            f"| {e.occ.frag_id} | {e.occ.tier} | {_fmt_time(e.occ.start)} "
+            f"| {_md_cell(e.occ.text)} | `{rel}` "
+            f"| {_md_cell(e.best_guess or '')} | {e.status} |"
         )
     index_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -517,13 +568,17 @@ def build_items(
     drive_root: Path,
     audio_root: Path,
     skip_existing: bool,
-) -> tuple[list[WorkItem], list[str]]:
+) -> tuple[list[WorkItem], list[IndexEntry], list[str]]:
     """Scan EAFs, cut slices, create bundle dirs, write the CPU-only artefacts.
 
-    Returns ``(work_items, skip_messages)``. Fragments with no EAF or no audio
-    are reported (not silently dropped) and contribute a skip message.
+    Returns ``(work_items, index_entries, skip_messages)``. ``index_entries``
+    covers *every* occurrence — including ``--skip-existing`` keeps, whose best
+    guess is recovered from the on-disk ``guesses.txt`` — so the regenerated
+    index never loses rows. Fragments with no EAF or no audio are reported
+    (not silently dropped) and contribute a skip message.
     """
     items: list[WorkItem] = []
+    entries: list[IndexEntry] = []
     skips: list[str] = []
     for frag in fragments:
         eaf = drive_root / frag / "annotation.eaf"
@@ -543,6 +598,16 @@ def build_items(
             bundle = drive_root / frag / "nzr_aids" / bundle_dir_name(occ)
             if skip_existing and bundle.is_dir() and any(bundle.iterdir()):
                 skips.append(f"{frag}/{bundle.name}: exists, skipped")
+                guesses_file = bundle / "guesses.txt"
+                best = ""
+                if guesses_file.exists():
+                    best = recover_best_guess(
+                        guesses_file.read_text(encoding="utf-8")
+                    )
+                entries.append(IndexEntry(
+                    occ=occ, bundle=bundle, item=None,
+                    best_guess=best, status="kept",
+                ))
                 continue
             bundle.mkdir(parents=True, exist_ok=True)
             mix = slice_with_pad(audio, occ.start, occ.end, SAMPLE_RATE, PAD_S)
@@ -555,7 +620,8 @@ def build_items(
             sf.write(bundle / "mix.wav", mix, SAMPLE_RATE)
             write_slow_versions(it)
             items.append(it)
-    return items, skips
+            entries.append(IndexEntry(occ=occ, bundle=bundle, item=it))
+    return items, entries, skips
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -601,9 +667,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    items, skips = build_items(fragments, drive_root, audio_root, args.skip_existing)
-    print(f"[scan] {len(items)} <nzr> occurrence(s) with fresh bundles "
-          f"across {len({it.occ.frag_id for it in items})} fragment(s)")
+    items, entries, skips = build_items(
+        fragments, drive_root, audio_root, args.skip_existing
+    )
+    print(f"[scan] {len(entries)} <nzr> occurrence(s) total; "
+          f"{len(items)} fresh bundle(s) to build")
     for s in skips:
         print(f"  [skip] {s}")
 
@@ -613,9 +681,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         phase_enhancement(items, device)
         phase_transcription(items, device)
 
-    # Index covers everything we built this run.
+    # Index covers every occurrence (fresh + kept), regenerated from scratch.
     index_path = drive_root / INDEX_NAME
-    write_index(index_path, items, drive_root)
+    write_index(index_path, entries, drive_root)
 
     failed = [it for it in items if it.errors]
     print("\n=== summary ===")

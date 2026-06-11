@@ -217,6 +217,36 @@ def test_bundle_dir_names_unique_per_index_on_same_start():
 
 
 # --------------------------------------------------------------------------- #
+# Index helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_recover_best_guess_from_guesses_body():
+    body = (
+        "ASR candidate readings — a GUESS MENU, not ground truth.\n"
+        "Each line: <variant> @ temp <t> -> decoded text.\n"
+        "Priming prompt (preceding utterance): 'x'\n"
+        "\n"
+        "mix    @ 0.0  ->  To jest pewno przez pół godziny.\n"
+        "mix    @ 0.6  ->  To jest pewne.\n"
+        "sep_A  @ 0.0  ->  Inna wersja.\n"
+    )
+    assert bna.recover_best_guess(body) == "To jest pewno przez pół godziny."
+
+
+def test_recover_best_guess_empty_when_absent():
+    assert bna.recover_best_guess("errors:\n  - transcription failed\n") == ""
+
+
+def test_md_cell_keeps_nzr_visible_and_escapes_pipes():
+    out = bna._md_cell("a | b <nzr> c")
+    assert "\\|" in out
+    # Angle brackets escaped so Markdown renderers don't eat the tag.
+    assert "\\<nzr\\>" in out
+    assert "<nzr>" not in out.replace("\\<nzr\\>", "")
+
+
+# --------------------------------------------------------------------------- #
 # slice_with_pad bounds
 # --------------------------------------------------------------------------- #
 
