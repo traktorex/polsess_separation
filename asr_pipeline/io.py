@@ -239,7 +239,10 @@ def write_pipeline_outputs(
     if config_snapshot is not None:
         meta["config"] = redact_config_snapshot(config_snapshot)
     with open(pipeline_dir / "metadata.json", "w") as f:
-        json.dump(meta, f, indent=2, ensure_ascii=False)
+        # default=str: the config snapshot is normally all-primitive asdict
+        # output, but a future non-JSON-native value (e.g. a Path) stringifies
+        # instead of crashing the whole write at the very end (C4).
+        json.dump(meta, f, indent=2, ensure_ascii=False, default=str)
 
     _log(f"wrote pipeline outputs to {pipeline_dir}")
     return pipeline_dir

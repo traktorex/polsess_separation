@@ -169,6 +169,74 @@ def test_stage_failure_unloads_model(pipeline):
     assert p._current_stage_name is None
 
 
+def test_run_oneshot_happy_path_runs_every_enabled_stage(monkeypatch):
+    # The one-shot run() entry point on a clean path: load_audio → every
+    # enabled stage in order → final unload → returns the same ctx it built.
+    # A disabled stage is skipped (run never logged).
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    p = Pipeline(cfg)
+    log: list = []
+    a, b, c = _DummyStage("a", log), _DummyStage("b", log), _DummyStage("c", log)
+    b.enabled = False
+    p.stages = [a, b, c]
+    sentinel = _ctx()
+    monkeypatch.setattr(p, "load_audio", lambda path: sentinel)
+
+    out = p.run("dummy.wav")
+    assert out is sentinel                       # returns the ctx it built
+    assert ("run", "b") not in log               # disabled stage skipped
+    # a then c ran in order; switching a→c unloads a; final unload frees c.
+    assert [e for e in log if e[0] == "run"] == [("run", "a"), ("run", "c")]
+    assert log[-1] == ("unload", "c")
+    assert p._current_stage_name is None
+
+
+def test_spill_intermediate_calls_stage_spill(monkeypatch, tmp_path):
+    # spill_intermediate=True wires an artifact_dir; each stage's spill() is
+    # invoked after its run() (the legacy per-stage artefact path).
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    cfg.spill_intermediate = True
+    cfg.artifact_dir = str(tmp_path / "artefacts")
+    p = Pipeline(cfg)
+    assert p.artifact_dir is not None
+    assert p.artifact_dir.exists()               # ensure_artifact_dir created it
+
+    spilled: list = []
+
+    class _SpillStage(_DummyStage):
+        def spill(self, ctx, artifact_dir) -> None:
+            spilled.append((self.name, artifact_dir))
+
+    log: list = []
+    p.stages = [_SpillStage("a", log)]
+    p.run_stage("a", _ctx())
+    assert spilled == [("a", p.artifact_dir)]
+
+
+def test_no_spill_when_intermediate_disabled(monkeypatch):
+    # Default (spill_intermediate=False): artifact_dir is None, so spill() is
+    # never reached even if a stage defines it.
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    p = Pipeline(cfg)
+    assert p.artifact_dir is None
+
+    spilled: list = []
+
+    class _SpillStage(_DummyStage):
+        def spill(self, ctx, artifact_dir) -> None:
+            spilled.append(self.name)
+
+    p.stages = [_SpillStage("a", [])]
+    p.run_stage("a", _ctx())
+    assert spilled == []
+
+
 def test_run_oneshot_failure_halts_loop_and_unloads(monkeypatch):
     # The one-shot run() entry point: a mid-pipeline failure must HALT the
     # loop (the later stage 'c' never runs) and leave no model resident —

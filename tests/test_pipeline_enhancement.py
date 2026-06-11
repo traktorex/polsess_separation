@@ -12,6 +12,7 @@ any future change to the COLA math that would alter the audio fails loudly here.
 
 import numpy as np
 import pytest
+import soundfile as sf
 import torch
 
 from asr_pipeline.config import EnhancementConfig
@@ -78,6 +79,56 @@ def test_truncates_overlong_chunk_output():
 def test_output_is_float32():
     out = _hann_overlap_add(_noise(500), 200, lambda s: s)
     assert out.dtype == np.float32
+
+
+def test_zero_coverage_sample_uses_floor_not_nan():
+    # The Hann window is 0 at its endpoints, so the very first output sample
+    # accumulates zero weight (only the first chunk touches it, with win[0]=0).
+    # Without the `weights = np.maximum(weights, 1e-8)` floor that sample would
+    # be 0/0 = NaN; the floor turns it into a finite 0.0. Assert no NaN/Inf
+    # leaks into the enhanced audio anywhere.
+    x = _noise(1000)
+    out = _hann_overlap_add(x, window_n=256, process_chunk=lambda s: s)
+    assert np.all(np.isfinite(out))
+    assert out[0] == pytest.approx(0.0, abs=1e-6)  # zero-coverage edge → floored, not NaN
+
+
+# ---------------------------------------------------------------------------
+# Stage load_signature + spill
+# ---------------------------------------------------------------------------
+
+
+def test_load_signature_is_backend_key():
+    # The phase-major scheduler keys model (un)loading on this signature; the
+    # ClearerVoice backend's whole identity is its backend name (self-download
+    # by name), so the signature must be exactly that — change it and the
+    # scheduler reloads/reuses the wrong model.
+    stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
+    assert stage.load_signature() == ("frcrn_se_16k",)
+    other = EnhancementStage(EnhancementConfig(backend="mossformer2_se_48k"))
+    assert other.load_signature() != stage.load_signature()
+
+
+def test_spill_writes_enhanced_full(tmp_path):
+    stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
+    ctx = PipelineContext()
+    ctx.sample_rate = 16_000
+    ctx.enhanced_full = _noise(8000)
+    stage.spill(ctx, tmp_path)
+    out = tmp_path / "enhanced_full.wav"
+    assert out.exists()
+    audio, sr = sf.read(out)
+    assert sr == 16_000
+    assert len(audio) == 8000
+
+
+def test_spill_noop_when_nothing_enhanced(tmp_path):
+    stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
+    ctx = PipelineContext()
+    ctx.sample_rate = 16_000
+    ctx.enhanced_full = None
+    stage.spill(ctx, tmp_path)
+    assert not (tmp_path / "enhanced_full.wav").exists()
 
 
 # ---------------------------------------------------------------------------

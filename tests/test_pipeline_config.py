@@ -115,6 +115,24 @@ def test_invalid_enum_raises():
         cfg.__post_init__()
 
 
+@pytest.mark.parametrize("section,field,name", [
+    ("separation", "seam_mode", "seam_mode"),
+    ("separation", "volume_normalization", "volume_normalization"),
+    ("assembly", "output_mode", "output_mode"),
+    ("enhancement", "backend", "enhancement.backend"),
+    ("post_separation_processing", "backend", "post_separation_processing.backend"),
+    ("transcription", "backend", "transcription.backend"),
+])
+def test_each_enum_guard_rejects_bad_value(section, field, name):
+    """Every enum-string guard in __post_init__ (not just context_window_mode)
+    rejects an out-of-set value, naming the offending knob in the message — a
+    YAML typo on any of them fails loud at config time."""
+    cfg = PipelineConfig()
+    setattr(getattr(cfg, section), field, "definitely_not_valid")
+    with pytest.raises(ValueError, match=name):
+        cfg.__post_init__()
+
+
 def test_spill_without_artifact_dir_raises():
     with pytest.raises(ValueError):
         cfg = PipelineConfig()
@@ -208,3 +226,41 @@ def test_english_preset_loads_with_auto_aligner():
     cfg = load_pipeline_config_from_yaml(str(ENGLISH_YAML))
     assert cfg.transcription.language == "en"
     assert cfg.transcription.align_model_name is None
+
+
+# ---------------------------------------------------------------------------
+# Precedence + unknown-key rejection (C2)
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_hf_token_overrides_env(monkeypatch):
+    """env < YAML for a default_factory field: hf_token defaults to $HF_TOKEN,
+    but an explicit YAML value must win. The fixture sets $HF_TOKEN; a config
+    dict that names hf_token explicitly takes precedence."""
+    monkeypatch.setenv("HF_TOKEN", "from-env")
+    cfg = load_pipeline_config_from_dict(
+        {"diarization": {"hf_token": "from-yaml"}}
+    )
+    assert cfg.diarization.hf_token == "from-yaml"
+
+
+def test_env_used_when_yaml_omits_hf_token(monkeypatch):
+    """The other precedence leg: when the dict doesn't name hf_token, the
+    default_factory falls through to $HF_TOKEN."""
+    monkeypatch.setenv("HF_TOKEN", "from-env")
+    cfg = load_pipeline_config_from_dict({"diarization": {"num_speakers": 2}})
+    assert cfg.diarization.hf_token == "from-env"
+
+
+def test_unknown_top_level_key_rejected():
+    """An unknown top-level key (a YAML typo at the root) raises — it would
+    otherwise be silently ignored and the intended setting left at default."""
+    with pytest.raises(TypeError):
+        load_pipeline_config_from_dict({"sampel_rate": 8000})
+
+
+def test_unknown_stage_level_key_rejected():
+    """An unknown key inside a stage block raises too (the cls(**sub_dict)
+    splat is strict)."""
+    with pytest.raises(TypeError):
+        load_pipeline_config_from_dict({"separation": {"vad_treshold": 0.5}})

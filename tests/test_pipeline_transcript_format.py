@@ -6,6 +6,7 @@ The writer/reader pairs are the load-bearing contracts:
 """
 
 import json
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
@@ -107,6 +108,37 @@ def test_to_jsonable_passthrough_natives():
         assert to_jsonable(v) == v
 
 
+def test_to_jsonable_unhandled_type_logs_and_passes_through(capsys):
+    # A non-JSON-native scalar (here: a plain object) hits the contingency
+    # branch — it is passed through unchanged AND surfaced via dlog so a
+    # recurring unhandled type gets noticed instead of failing silently in a
+    # later json.dump.
+    class _Weird:
+        pass
+
+    obj = _Weird()
+    out = to_jsonable({"x": obj})
+    assert out["x"] is obj                     # passed through, not converted
+    captured = capsys.readouterr().out
+    assert "unhandled type" in captured
+    assert "_Weird" in captured
+
+
+# ---------------------------------------------------------------------------
+# format_transcript empty / None fallbacks
+# ---------------------------------------------------------------------------
+
+
+def test_format_transcript_empty_dict_is_empty():
+    # No segments, no text → empty string (not "None", not a raise).
+    assert format_transcript({}) == ""
+
+
+def test_format_transcript_text_none_is_empty():
+    # The top-level text fallback must tolerate an explicit None value.
+    assert format_transcript({"segments": [], "text": None}) == ""
+
+
 # ---------------------------------------------------------------------------
 # write_eaf <-> parse_eaf round-trip (the GT correction format)
 # ---------------------------------------------------------------------------
@@ -151,6 +183,66 @@ def test_write_eaf_from_whisper_results(tmp_path):
     assert n == 1                          # B's empty segment dropped
     tiers = parse_eaf(eaf_path)
     assert set(tiers) == {"A"}             # empty tier never written
+
+
+# ---------------------------------------------------------------------------
+# write_eaf MEDIA_DESCRIPTOR / relative-path logic (S6)
+# ---------------------------------------------------------------------------
+
+
+def _media_descriptor(eaf_path):
+    root = ET.fromstring(eaf_path.read_bytes())
+    md = root.find("./HEADER/MEDIA_DESCRIPTOR")
+    assert md is not None
+    return md
+
+
+def test_write_eaf_media_descriptor_same_dir(tmp_path):
+    # Audio next to the EAF → RELATIVE_MEDIA_URL is "./rec.wav"; MEDIA_URL is an
+    # absolute file:// URL (ELAN's whole point is finding the audio).
+    eaf_path = tmp_path / "annotation.eaf"
+    media = tmp_path / "rec.wav"
+    write_eaf({"A": [(0.0, 1.0, "x")]}, media_path=media, eaf_path=eaf_path)
+
+    md = _media_descriptor(eaf_path)
+    assert md.get("RELATIVE_MEDIA_URL") == "./rec.wav"
+    assert md.get("MEDIA_URL").startswith("file://")
+    assert md.get("MEDIA_URL").endswith("rec.wav")
+    assert md.get("MIME_TYPE") == "audio/x-wav"
+
+
+def test_write_eaf_media_descriptor_parent_dir(tmp_path):
+    # Audio one directory up from the EAF → the relative URL must climb with
+    # "../" so ELAN resolves it after a move that preserves layout.
+    sub = tmp_path / "transcripts"
+    sub.mkdir()
+    eaf_path = sub / "annotation.eaf"
+    media = tmp_path / "rec.wav"
+    write_eaf({"A": [(0.0, 1.0, "x")]}, media_path=media, eaf_path=eaf_path)
+
+    md = _media_descriptor(eaf_path)
+    assert md.get("RELATIVE_MEDIA_URL") == "../rec.wav"
+
+
+def test_write_eaf_dedups_shared_time_boundaries(tmp_path):
+    # Both speakers share the boundary 1.0 s. The TIME_ORDER block must carry it
+    # as a single TIME_SLOT (the dedup the docstring promises), not one per use.
+    utts = {
+        "A": [(0.0, 1.0, "a")],
+        "B": [(1.0, 2.0, "b")],
+    }
+    eaf_path = tmp_path / "shared.eaf"
+    write_eaf(utts, media_path=tmp_path / "rec.wav", eaf_path=eaf_path)
+
+    root = ET.fromstring(eaf_path.read_bytes())
+    slots = root.findall("./TIME_ORDER/TIME_SLOT")
+    values = [s.get("TIME_VALUE") for s in slots]
+    # 3 distinct boundaries (0, 1000, 2000 ms), not 4 — the shared 1000 ms
+    # appears exactly once.
+    assert values.count("1000") == 1
+    assert sorted(int(v) for v in values) == [0, 1000, 2000]
+    # ...and every TIME_VALUE is unique (the dedup invariant, asserted directly).
+    assert len(values) == len(set(values))
 
 
 def test_write_eaf_from_whisper_results_all_empty_writes_nothing(tmp_path):
