@@ -216,7 +216,13 @@ def _parse_libricss_transcript(
         parts = line.split("\t")
         if len(parts) < 5:
             continue
-        start = float(parts[0])
+        # Clamp negative starts at the source boundary. LibriCSS for_release
+        # alignments carry sub-millisecond negative starts (e.g. -0.001 s); the
+        # decimal-seconds writer renders those as `[ -0.00 → ...]`, which the
+        # non-negative-only parse_gt_txt grammar then drops on read-back —
+        # silently losing the whole utterance (and sometimes the recording) from
+        # L3. Mirrors the read-side max(0.0, f) clamp in transcript_parser.
+        start = max(0.0, float(parts[0]))
         end = float(parts[1])
         speaker = parts[2].strip()
         text = parts[4].strip()
