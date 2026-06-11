@@ -5,13 +5,10 @@
 # Deltas from frcrn_vadstrict.yaml:
 #   transcription.language:         pl -> en
 #   transcription.initial_prompt:   Polish -> English
-#   transcription.align_model_name: explicit English XLSR-53 wav2vec2 aligner
 #
-# align_model_name is pinned explicitly (rather than left to WhisperX's en
-# default, torchaudio WAV2VEC2_ASR_BASE_960H) for symmetry with the Polish
-# aligner family: jonatasgrosman's pl/en models share the same XLSR-53 recipe,
-# so any pl-vs-en difference stays attributable to the data, not the aligner
-# architecture class.
+# align_model_name is deliberately NOT set (author ruling 2026-06-11): WhisperX
+# picks its per-language default, which for en is the torchaudio
+# WAV2VEC2_ASR_BASE_960H pipeline — same auto mechanism the Polish runs use.
 #
 # hf_token is read from $HF_TOKEN at load (not stored here).
 sample_rate: 16000
@@ -69,5 +66,5 @@ transcription:
   language: en
   initial_prompt: A conversation in English.
   word_timestamps: true
-  align_model_name: jonatasgrosman/wav2vec2-large-xlsr-53-english
+  # align_model_name omitted -> WhisperX en default (WAV2VEC2_ASR_BASE_960H)
   transcribe_mixture: true

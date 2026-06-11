@@ -502,6 +502,10 @@ def _assign_overlaps(
             # anchor is missing. Never drop the region — a drop would lose the
             # audio for BOTH speakers, because the emit region has already
             # been subtracted from the solo intervals.
+            # Author ruling (2026-06-11, SCOPE §10 q3): these degenerate cases
+            # (sub-0.25 s solo anchors, sub-0.1 s overlaps, non-finite cosines)
+            # are too rare and information-poor to act on better — the fixed
+            # positional pairing is the accepted behavior, kept as-is.
             if too_short:
                 _log(
                     f"  overlap {ovl['idx']}: too short for ECAPA "

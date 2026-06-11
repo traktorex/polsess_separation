@@ -202,12 +202,9 @@ def test_align_model_name_explicit_override():
     assert cfg.transcription.align_model_name == name
 
 
-def test_english_preset_loads_and_pins_english_aligner():
-    """The shipped English preset selects English language + the explicit
-    English XLSR-53 aligner (symmetry with the Polish aligner family)."""
+def test_english_preset_loads_with_auto_aligner():
+    """The shipped English preset selects English language and leaves the
+    aligner to WhisperX's per-language default (author ruling 2026-06-11)."""
     cfg = load_pipeline_config_from_yaml(str(ENGLISH_YAML))
     assert cfg.transcription.language == "en"
-    assert (
-        cfg.transcription.align_model_name
-        == "jonatasgrosman/wav2vec2-large-xlsr-53-english"
-    )
+    assert cfg.transcription.align_model_name is None
