@@ -14,8 +14,10 @@ it writes ``<drive>/<frag_id>/nzr_aids/<NN>_<tier>_<start>s/`` containing:
 1. ``context.txt``    — the occurrence's tier / time / full text, plus the 2
                         preceding and 2 following utterances from BOTH tiers,
                         interleaved chronologically and tier/time-labelled.
-2. ``mix.wav``        — the utterance slice (16 kHz) with +-2.5 s padding,
-                        clamped to the fragment bounds.
+2. ``mix.wav``        — the utterance slice (16 kHz) with +-2.5 s padding
+                        (+-1.0 s for sub-1 s utterances, where the full pad
+                        drowns the slot in neighbour speech), clamped to the
+                        fragment bounds.
 3. ``mix_slow080.wav``,
    ``mix_slow060.wav`` — pitch-preserving tempo-stretched copies of mix.wav
                         (librosa phase-vocoder ``time_stretch``; rate < 1 = slower).
@@ -23,9 +25,11 @@ it writes ``<drive>/<frag_id>/nzr_aids/<NN>_<tier>_<start>s/`` containing:
    ``sep_B.wav``      — SepFormer separation of the slice.
 5. ``enh.wav``        — MossFormerGAN-enhanced slice (16 kHz).
 6. ``guesses.txt``    — Whisper-large-v2 (language=pl) candidate readings of
-                        mix / sep_A / sep_B / enh, primed with the preceding
-                        utterance as ``initial_prompt``, at temperatures 0.0 and
-                        0.6. A guess menu, not truth.
+                        mix / sep_A / sep_B / enh: primed with the preceding
+                        utterance as ``initial_prompt`` at temperatures 0.0 and
+                        0.6, plus an un-primed 0.0 control per variant (prompt-
+                        echo detector). Long token loops are collapsed to three
+                        repeats + ``[×N]``. A guess menu, not truth.
 
 Plus a top-level index ``<drive>/NZR_AIDS_INDEX.md`` — one row per occurrence,
 regenerated fully on every run (derived state).
@@ -87,10 +91,19 @@ from asr_pipeline.stages.enhancement import (  # noqa: E402
 
 NZR = "<nzr>"
 PAD_S = 2.5                      # +-padding around each utterance slice
+SHORT_UTT_S = 1.0                # below this utterance length, the full pad
+SHORT_PAD_S = 1.0                # drowns the slot in neighbour speech — use
+                                 # the tighter pad instead (adjudicator finding)
 SLOW_RATES = (0.80, 0.60)       # librosa time_stretch rates (< 1 = slower)
 CONTEXT_NEIGHBOURS = 2          # utterances of context on each side, both tiers
 SAMPLE_RATE = 16_000            # pipeline / output sample rate
 WHISPER_MODEL = "large-v2"
+# Decode grid per variant: (temperature, primed-with-preceding-utterance).
+# The un-primed 0.0 control exists because the priming prompt sometimes leaks
+# verbatim into a decode (prompt echo) — agreement between a primed and an
+# un-primed reading is evidence the words were actually heard, not echoed.
+DECODE_SPECS = ((0.0, True), (0.6, True), (0.0, False))
+# Kept for guesses.txt back-compat in recover_best_guess tests.
 WHISPER_TEMPS = (0.0, 0.6)
 SEP_CHECKPOINT = "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"
 SEP_SAMPLE_RATE = 8_000         # rate the SepFormer checkpoint operates at
@@ -277,7 +290,7 @@ class WorkItem:
     # in the index.
     best_guess: str = ""
     # ASR readings: {(variant, temp): text}, filled by the transcription phase.
-    guesses: dict[tuple[str, float], str] = field(default_factory=dict)
+    guesses: dict[tuple[str, float, bool], str] = field(default_factory=dict)
 
     def note_error(self, stage: str, exc: Exception) -> None:
         msg = f"{stage}: {type(exc).__name__}: {exc}"
@@ -432,8 +445,36 @@ def _whisper_text(model, audio: np.ndarray, prompt: str, temp: float) -> str:
         temperature=temp,
         word_timestamps=False,
         verbose=False,
+        # Each segment decoded independently: stops a hallucination loop in
+        # one segment from seeding the next (adjudicator finding on sep_*).
+        condition_on_previous_text=False,
     )
-    return (result.get("text") or "").strip()
+    return collapse_repeats((result.get("text") or "").strip())
+
+
+def collapse_repeats(text: str, max_run: int = 3) -> str:
+    """Collapse runs of an identical token longer than ``max_run``.
+
+    Whisper sometimes loops on separated streams ("tak tak tak ..."); a long
+    run carries no extra evidence and buries the rest of the guess menu. The
+    run is kept up to ``max_run`` and annotated with its true length, so the
+    reader still sees that a loop happened.
+    """
+    out: list[str] = []
+    run_tok, run_len = None, 0
+    for tok in text.split():
+        if tok == run_tok:
+            run_len += 1
+            if run_len <= max_run:
+                out.append(tok)
+        else:
+            if run_len > max_run:
+                out.append(f"[×{run_len}]")
+            run_tok, run_len = tok, 1
+            out.append(tok)
+    if run_len > max_run:
+        out.append(f"[×{run_len}]")
+    return " ".join(out)
 
 
 def phase_transcription(items: list[WorkItem], device: torch.device) -> None:
@@ -468,13 +509,13 @@ def phase_transcription(items: list[WorkItem], device: torch.device) -> None:
                         audio = it.mix
                     else:
                         audio, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
-                    for temp in WHISPER_TEMPS:
-                        it.guesses[(label, temp)] = _whisper_text(
-                            model, audio, it.prompt, temp
+                    for temp, primed in DECODE_SPECS:
+                        it.guesses[(label, temp, primed)] = _whisper_text(
+                            model, audio, it.prompt if primed else "", temp
                         )
                 except Exception as exc:  # noqa: BLE001
                     it.note_error(f"transcription[{label}]", exc)
-            it.best_guess = it.guesses.get(("mix", 0.0), "")
+            it.best_guess = it.guesses.get(("mix", 0.0, True), "")
             _write_guesses(it)
     finally:
         del model
@@ -487,14 +528,20 @@ def _write_guesses(it: WorkItem) -> None:
     lines = [
         "ASR candidate readings — a GUESS MENU, not ground truth.",
         "Each line: <variant> @ temp <t> -> decoded text.",
+        "Lines marked (no prompt) are un-primed controls: agreement with a",
+        "primed line means the words were heard, not echoed from the prompt.",
         f"Priming prompt (preceding utterance): {it.prompt!r}",
         "",
     ]
     order = ["mix", "sep_A", "sep_B", "enh"]
     for label in order:
-        for temp in WHISPER_TEMPS:
-            if (label, temp) in it.guesses:
-                lines.append(f"{label:6s} @ {temp:.1f}  ->  {it.guesses[(label, temp)]}")
+        for temp, primed in DECODE_SPECS:
+            if (label, temp, primed) in it.guesses:
+                tag = "" if primed else " (no prompt)"
+                lines.append(
+                    f"{label:6s} @ {temp:.1f}{tag}  ->  "
+                    f"{it.guesses[(label, temp, primed)]}"
+                )
     if not it.guesses:
         lines.append("(no readings — all ASR variants failed; see errors below)")
     if it.errors:
@@ -610,7 +657,8 @@ def build_items(
                 ))
                 continue
             bundle.mkdir(parents=True, exist_ok=True)
-            mix = slice_with_pad(audio, occ.start, occ.end, SAMPLE_RATE, PAD_S)
+            pad_s = PAD_S if (occ.end - occ.start) >= SHORT_UTT_S else SHORT_PAD_S
+            mix = slice_with_pad(audio, occ.start, occ.end, SAMPLE_RATE, pad_s)
             it = WorkItem(
                 occ=occ, bundle=bundle, mix=mix, prompt=preceding_prompt(occ)
             )

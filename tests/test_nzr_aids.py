@@ -266,3 +266,36 @@ def test_slice_with_pad_never_empty():
     # interval entirely past the array -> still returns >=1 sample, not empty
     sl = bna.slice_with_pad(audio, start_s=10.0, end_s=11.0, sr=16_000, pad_s=0.0)
     assert len(sl) >= 1
+
+
+# ---------------------------------------------------------------------------
+# collapse_repeats — hallucination-loop guard on the guess menu
+# ---------------------------------------------------------------------------
+
+
+def test_collapse_repeats_collapses_long_runs_with_count():
+    assert (
+        bna.collapse_repeats("no tak tak tak tak tak tak koniec")
+        == "no tak tak tak [×6] koniec"
+    )
+
+
+def test_collapse_repeats_leaves_short_runs_alone():
+    text = "tak tak tak no dobrze dobrze"
+    assert bna.collapse_repeats(text) == text
+
+
+def test_collapse_repeats_handles_trailing_run_and_empty():
+    assert bna.collapse_repeats("a b b b b") == "a b b b [×4]"
+    assert bna.collapse_repeats("") == ""
+
+
+def test_recover_best_guess_ignores_unprimed_control_line():
+    """The un-primed control line must not satisfy the primed-mix regex —
+    recovery has to return the primed reading even when the un-primed line
+    comes first in the file."""
+    body = (
+        "mix    @ 0.0 (no prompt)  ->  echo-free reading\n"
+        "mix    @ 0.0  ->  primed reading\n"
+    )
+    assert bna.recover_best_guess(body) == "primed reading"
