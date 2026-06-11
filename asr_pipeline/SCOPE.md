@@ -96,17 +96,17 @@ added after the deep-review pass, author-approved. New fallbacks join this
 table or they don't get merged. Sites are named by symbol, not line number —
 review passes shift lines too fast for refs to stay honest.
 
-| Site | What it does | Verdict |
-|---|---|---|
-| `transcription.py` `_normalise_result`; `io.py` `write_pipeline_outputs` (EAF locale → literal `"pl"`) | missing `language` in WhisperX result → config value | **KEEP** — the operator declared the language; trusting config is correct |
-| `eval/recordings.py` `Recording` / `load_recording` | eval-tree layout fallbacks (.txt+.rttm; old `mixture.wav` symlink) | **KEEP** (rule 4); not set in stone, prune layouts that die |
-| `eval/metrics.py` `_digits_to_words_pl` (module-level `_num2words` import) | number-to-words dep missing → digits stay digits | **UNDECIDED** — silently changes scores with environment; candidate: make it a hard dep |
-| `stages/assembly.py` `_assign_overlaps` | straight-through fallback in overlap assignment | **UNDECIDED** — needs a dedicated look |
-| `stages/assembly.py` `_assign_overlaps` (>2 speakers warn) | 3rd speaker → warn and continue | **KEEP for now** — see §3 phantom-speaker anomaly |
-| `stages/transcription.py` `_skip_transcription` *(review 2026-06-10)* | short (<0.5 s) or silent stream → empty transcript, Whisper not called | **KEEP** — silence in, silence out; Whisper hallucinates Polish on the assembler's all-zeros no-event sentinel, which L3 then scores as insertions. Logged visibly via dlog |
-| `stages/enhancement.py` `_MIN_ENHANCE_SAMPLES` *(review 2026-06-10)* | input <256 samples (16 ms) → passed through unenhanced | **KEEP** — below one STFT frame; nothing to enhance |
-| `stages/post_separation_processing.py` `_APBWEBackend.extend` (`< n_fft` gate) *(review 2026-06-10)* | input shorter than one STFT frame → passed through without BWE | **KEEP** — reflect-pad STFT crashes below this; reachable only via `context_window_mode: none`, which no shipped config sets |
-| `stages/post_separation_processing.py` `_FLOWHIGH_MIN_SAMPLES` *(review 2026-06-10)* | input <512 samples (32 ms) → passed through without BWE | **KEEP** — same as the AP-BWE row (FlowHigh frames at 48 kHz) |
+| Site                                                                                                   | What it does                                                           | Verdict                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transcription.py` `_normalise_result`; `io.py` `write_pipeline_outputs` (EAF locale → literal `"pl"`) | missing `language` in WhisperX result → config value                   | **KEEP** — the operator declared the language; trusting config is correct                                                                                                   |
+| `eval/recordings.py` `Recording` / `load_recording`                                                    | eval-tree layout fallbacks (.txt+.rttm; old `mixture.wav` symlink)     | **KEEP** (rule 4); not set in stone, prune layouts that die                                                                                                                 |
+| `eval/metrics.py` `_digits_to_words_pl` (module-level `_num2words` import)                             | number-to-words dep missing → digits stay digits                       | **UNDECIDED** — silently changes scores with environment; candidate: make it a hard dep                                                                                     |
+| `stages/assembly.py` `_assign_overlaps`                                                                | straight-through fallback in overlap assignment                        | **UNDECIDED** — needs a dedicated look                                                                                                                                      |
+| `stages/assembly.py` `_assign_overlaps` (>2 speakers warn)                                             | 3rd speaker → warn and continue                                        | **KEEP for now** — see §3 phantom-speaker anomaly                                                                                                                           |
+| `stages/transcription.py` `_skip_transcription` *(review 2026-06-10)*                                  | short (<0.5 s) or silent stream → empty transcript, Whisper not called | **KEEP** — silence in, silence out; Whisper hallucinates Polish on the assembler's all-zeros no-event sentinel, which L3 then scores as insertions. Logged visibly via dlog |
+| `stages/enhancement.py` `_MIN_ENHANCE_SAMPLES` *(review 2026-06-10)*                                   | input <256 samples (16 ms) → passed through unenhanced                 | **KEEP** — below one STFT frame; nothing to enhance                                                                                                                         |
+| `stages/post_separation_processing.py` `_APBWEBackend.extend` (`< n_fft` gate) *(review 2026-06-10)*   | input shorter than one STFT frame → passed through without BWE         | **KEEP** — reflect-pad STFT crashes below this; reachable only via `context_window_mode: none`, which no shipped config sets                                                |
+| `stages/post_separation_processing.py` `_FLOWHIGH_MIN_SAMPLES` *(review 2026-06-10)*                   | input <512 samples (32 ms) → passed through without BWE                | **KEEP** — same as the AP-BWE row (FlowHigh frames at 48 kHz)                                                                                                               |
 
 Resolved rows:
 
@@ -208,7 +208,7 @@ initiative — `UNDECIDED` means frozen until the author rules.
    clearly the worse setting; at 16k-in flowhigh is ~tied (n=5, mixed
    per-fragment direction) while costing more compute + an extra git dep.
    The decision remains the author's.*
-5. Vanilla Whisper backend — keep as a thesis comparison or delete?
+5. ~~Vanilla Whisper backend — keep as a thesis comparison or delete?~~ RESOLVED 2026-06-11 (author): keep it
 6. ~~Missing (no-sep, no-enh) ablation arm — add to
    `run_pipeline_on_recording.py`?~~ **RESOLVED 2026-06-10 (author): yes.**
    The producer already existed (`pipeline_minimal`, both stages off); the

@@ -114,11 +114,15 @@ def write_pipeline_outputs(
         transcript_<label>.json  full Whisper result for the speaker stream
         transcript_mixture.txt   single-stream baseline (only if produced)
         transcript_mixture.json
+        annotation.eaf           ELAN file, one tier per speaker (from the
+                                 word-level Whisper results)
         metadata.json            speaker map + counts + (optional) config
 
-    ``<label>`` is the A / B letter assigned by ECAPA anchoring in Stage 4
-    (``ctx.spk_to_label``). Stages that didn't run are silently skipped (we
-    write what's populated, not what we expected to be populated).
+    ``<label>`` is the positional A / B letter over the sorted pyannote speaker
+    IDs (``ctx.spk_to_label``, computed in Stage 4 *before* the ECAPA anchor
+    phase — ECAPA only routes s1/s2 within overlaps; it never assigns the
+    letter). Stages that didn't run are silently skipped (we write what's
+    populated, not what we expected to be populated).
 
     ``config_snapshot`` is an optional dict (typically ``dataclasses.asdict(cfg)``)
     embedded in ``metadata.json`` for reproducibility.
