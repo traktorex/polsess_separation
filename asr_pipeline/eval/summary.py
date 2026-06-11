@@ -77,7 +77,11 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
       - ``no_enh_cpwer``    cpWER of pipeline run with enhancement disabled
       - ``no_sep_cpwer``    cpWER of pipeline run with separation disabled
       - ``full_cpwer``      cpWER of the full pipeline
-      - ``full_tcpwer``     tcpWER (time-constrained variant) of the full pipeline
+      - ``full_tcpwer``     tcpWER (time-constrained) of the full pipeline, or
+                            None when the reference is untimed (EdAcc)
+      - ``tcp_skipped``     True when tcpWER was skipped — untimed reference, no
+                            GT times to gate on (then ``full_tcpwer`` is None,
+                            never a fabricated number; SCOPE §4.1)
       - ``ref_n_utts``      total reference utterances (A + B)
 
     The mixture → minimal → no_enh → no_sep → full progression is the
@@ -91,7 +95,11 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
         ref_n = sum(l3["ref_lengths"].values())
         modes = l3["modes"]
         def _pct(mode_d, key):
-            return 100.0 * mode_d[key] if mode_d is not None else None
+            # None mode (not run) OR None value (e.g. tcpwer skipped on an
+            # untimed ref) → None, never 100.0 * None.
+            if mode_d is None or mode_d.get(key) is None:
+                return None
+            return 100.0 * mode_d[key]
         row = {
             "dataset": s.dataset, "id": s.id,
             "ref_n_utts": ref_n,
@@ -108,6 +116,7 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
             "no_sep_cpwer": _pct(modes.get("no_sep"), "cpwer"),
             "full_cpwer":   _pct(modes.get("full"),   "cpwer"),
             "full_tcpwer":  _pct(modes.get("full"),   "tcpwer"),
+            "tcp_skipped":  bool(l3.get("ref_untimed", False)),
         }
         rows.append(row)
     return pd.DataFrame(rows)

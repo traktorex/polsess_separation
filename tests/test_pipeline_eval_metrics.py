@@ -94,6 +94,42 @@ def test_normalize_splits_hyphenated():
     assert _normalize_text("biało-czerwony") == "biało czerwony"
 
 
+def test_normalize_alphanumeric_split_en_matches_spelled_out():
+    # Mixed letter/digit tokens split into letter/digit runs with the digit
+    # runs spelled out, so a compact recognizer form matches a written-out
+    # reference. EdAcc's participant codes (`C3P2`) vs ref `C THREE P TWO`.
+    pytest.importorskip("num2words")
+    assert _normalize_text("C3P2", "en") == "c three p two"
+    assert _normalize_text("C3P2", "en") == _normalize_text("C THREE P TWO", "en")
+    assert _normalize_text("A24", "en") == "a twenty-four"
+    assert _normalize_text("10x", "en") == "ten x"
+
+
+def test_normalize_alphanumeric_split_pl_uses_polish_words():
+    # The rule is language-uniform — Polish digit words for a Polish recording.
+    pytest.importorskip("num2words")
+    assert _normalize_text("A24", "pl") == "a dwadzieścia cztery"
+    assert _normalize_text("10x", "pl") == "dziesięć x"
+
+
+def test_normalize_alphanumeric_does_not_touch_pure_alpha_or_digit():
+    # Pure-alpha tokens stay verbatim; pure-digit tokens still go through the
+    # existing digit speller (not the alnum split) — byte-identical to before.
+    pytest.importorskip("num2words")
+    assert _normalize_text("hello world", "en") == "hello world"
+    assert _normalize_text("mam 2024 koty") == "mam dwa tysiące dwadzieścia cztery koty"
+
+
+def test_normalize_alphanumeric_is_symmetric_so_match_is_free():
+    # Applied identically to both sides → a token glued one way and spelled the
+    # other still matches (cpWER 0), the whole point of the rule.
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "my code is C3P2")]}
+    hyp = {"A": [U(0.0, 1.0, "my code is C three P two")]}
+    r = cpwer_meeteval(ref, hyp, session_id="s", lang="en")
+    assert r["cpwer"] == pytest.approx(0.0)
+
+
 def test_normalize_empty_input():
     assert _normalize_text("") == ""
 
@@ -155,6 +191,28 @@ def test_cpwer_normalization_applied_to_both_sides():
     hyp = {"A": [U(0.0, 1.0, "Ala, ma kota!!! [śmiech]")]}
     out = cpwer_meeteval(ref, hyp, session_id="t")
     assert out["cpwer"] == 0.0
+
+
+def test_cpwer_skip_tcp_returns_none_tcpwer_not_zero():
+    # Untimed-reference path: skip_tcp=True must compute cpWER normally but
+    # return tcpwer=None (never a fabricated number) with tcp_skipped=True.
+    pytest.importorskip("meeteval")
+    ref = _two_speaker_ref()
+    out = cpwer_meeteval(ref, ref, session_id="t", skip_tcp=True)
+    assert out["cpwer"] == 0.0           # cpWER still computed (time-agnostic)
+    assert out["tcpwer"] is None         # NOT 0.0 — never computed
+    assert out["tcp_skipped"] is True
+    assert out["tcp_assignment"] is None and out["tcp_errors"] is None
+
+
+def test_cpwer_default_computes_tcp():
+    # Default path (timed ref) still computes tcpWER — skip is opt-in only.
+    pytest.importorskip("meeteval")
+    ref = _two_speaker_ref()
+    out = cpwer_meeteval(ref, ref, session_id="t")
+    assert out["tcpwer"] == pytest.approx(0.0)
+    assert out["tcp_skipped"] is False
+    assert out["tcp_errors"] == 0
 
 
 def test_cpwer_all_filler_session_scores_zero_not_crash():

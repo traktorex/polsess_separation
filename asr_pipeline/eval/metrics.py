@@ -39,8 +39,12 @@ The number speller is **language-aware** (E13): every scoring entry point
 takes `lang` (default `"pl"`), threaded down to `_digits_to_words`, so an
 English hypothesis spells `3` as `three`, not the Polish `trzy`. Layer 3
 resolves `lang` from the pipeline's `metadata.json` config snapshot.
-Known residual (out of scope): mixed alphanumeric tokens like `C3P2` are
-not split, so they won't match a GT `C three P two`.
+Mixed alphanumeric tokens (`C3P2`, `A24`) are split into letter/digit runs
+with the digit runs spelled out (`c three p two`, `a twenty-four` for en /
+`a dwadzieścia cztery` for pl), so the compact recognizer form matches a
+spelled-out reference (`C THREE P TWO`). This is language-uniform and applied
+symmetrically to both sides, so it can only fix a spurious mismatch, never
+introduce one.
 
 Finally, following the CHiME normalizer, we drop non-verbal material that
 neither side should be scored on: bracketed non-speech markup (`[śmiech]`,
@@ -86,6 +90,12 @@ _FILLER_RE = re.compile(r"(?:y{2,}|e{2,}|m{2,}|hm+|mhm+|yhy)")
 # different spelling — not different words).
 _CANON = {"okej": "ok"}
 
+# Split a token on its maximal digit runs, keeping the runs as separate groups:
+# "c3p2" → ["c", "3", "p", "2"]; "a24" → ["a", "24"]; "10x" → ["10", "x"].
+# Used to render alphanumeric tokens letter/digit-run-wise so a digit-run hyp
+# ("C3P2") matches a spelled-out reference ("C THREE P TWO") — see _alnum_split.
+_DIGIT_RUN_RE = re.compile(r"(\d+)")
+
 
 @lru_cache(maxsize=4096)
 def _digits_to_words(token: str, lang: str = "pl") -> str:
@@ -112,16 +122,49 @@ def _digits_to_words(token: str, lang: str = "pl") -> str:
         return token
 
 
+def _alnum_split(token: str, lang: str) -> str:
+    """Render a mixed letter/digit token as space-separated letter/digit runs,
+    spelling each digit run in `lang`.
+
+    `'c3p2'` → `'c three p two'` (en) / `'c trzy p dwa'` (pl), so a recognizer
+    that emits the compact form (`C3P2`) lands in the same surface form as a
+    reference written out (`C THREE P TWO`). Letter runs are kept verbatim;
+    digit runs go through `_digits_to_words`. The rule is language-uniform
+    (uses the per-language number speller).
+
+    Pure-letter and pure-digit tokens never reach here (the caller dispatches
+    pure digits to `_digits_to_words` directly and leaves pure letters alone),
+    so this only fires on genuinely mixed tokens (`a24`, `10x`, `ck3`).
+    """
+    parts = [p for p in _DIGIT_RUN_RE.split(token) if p]
+    return " ".join(
+        _digits_to_words(p, lang) if p.isdigit() else p for p in parts
+    )
+
+
+def _is_alnum_mixed(token: str) -> bool:
+    """True iff the token has at least one digit AND at least one non-digit
+    character (the case `_alnum_split` handles). Pure-digit / pure-alpha → False."""
+    has_digit = any(c.isdigit() for c in token)
+    has_other = any(not c.isdigit() for c in token)
+    return has_digit and has_other
+
+
 def _normalize_text(s: str, lang: str = "pl") -> str:
     """Lowercase, drop non-speech markup + fillers, fold digits to spoken
-    words in `lang`, strip punctuation, collapse whitespace.
+    words in `lang`, split alphanumeric tokens, strip punctuation, collapse
+    whitespace.
 
     Preserves diacritics (phonemic in Polish — `ł` vs `l` is a real
     substitution and should count as a WER error). Digit tokens become their
-    spoken cardinal form *in `lang`* so they match GT written as words;
-    bracketed non-speech and non-lexical fillers are removed from both sides
-    so they never count as errors. `lang="pl"` (the default) reproduces the
-    pre-E13 behaviour byte-for-byte.
+    spoken cardinal form *in `lang`* so they match GT written as words; mixed
+    alphanumeric tokens (`C3P2`, `A24`) are split into letter/digit runs with
+    the digit runs spelled out, so the compact recognizer form matches a
+    spelled-out reference. Bracketed non-speech and non-lexical fillers are
+    removed from both sides so they never count as errors. `lang="pl"` (the
+    default) reproduces the pre-E13 behaviour byte-for-byte *except* on mixed
+    alphanumeric tokens, which previously stayed glued (e.g. `a24`) and now
+    split (`a dwadzieścia cztery`) — applied symmetrically to ref and hyp.
     """
     s = _BRACKET_RE.sub(" ", s.lower())
     tokens = _PUNCT_RE.sub(" ", s).split()
@@ -130,7 +173,12 @@ def _normalize_text(s: str, lang: str = "pl") -> str:
         if _FILLER_RE.fullmatch(tok):
             continue
         tok = _CANON.get(tok, tok)
-        out.append(_digits_to_words(tok, lang) if tok.isdigit() else tok)
+        if tok.isdigit():
+            out.append(_digits_to_words(tok, lang))
+        elif _is_alnum_mixed(tok):
+            out.append(_alnum_split(tok, lang))
+        else:
+            out.append(tok)
     return " ".join(out)
 
 
@@ -145,12 +193,17 @@ def _seglst_from_dict(
     """
     from meeteval.io.seglst import SegLST
 
+    # Untimed utterances (start/end = None) carry 0.0 placeholders here. This
+    # is safe ONLY because the metrics that consume this SegLST — cpWER, ORC,
+    # MIMO — ignore time; the time-aware metric (tcpWER) must be gated upstream
+    # in layer3 so it never scores an untimed reference on these placeholders
+    # (SCOPE §4.1: no fake-time scoring presented as real).
     return SegLST([
         {
             "session_id": session_id,
             "speaker": spk,
-            "start_time": float(u.start),
-            "end_time": float(u.end),
+            "start_time": float(u.start) if u.start is not None else 0.0,
+            "end_time": float(u.end) if u.end is not None else 0.0,
             "words": _normalize_text(u.text, lang),
         }
         for spk, utts in utts_by_spk.items()
@@ -192,8 +245,9 @@ def cpwer_meeteval(
     session_id: str,
     tcp_collar_s: float = 5.0,
     lang: str = "pl",
+    skip_tcp: bool = False,
 ) -> Dict[str, object]:
-    """cpWER + tcpWER via MeetEval, with language-aware text normalization.
+    """cpWER (+ tcpWER unless skipped) via MeetEval, language-aware normalization.
 
     Inputs are dicts mapping speaker label → list of
     `Utterance(start, end, text)` (as produced by
@@ -204,36 +258,53 @@ def cpwer_meeteval(
         {
             "cpwer": float,                  # 0..1 fraction
             "cp_assignment": tuple,          # (ref_spk, hyp_spk) pairs
-            "tcpwer": float,
-            "tcp_assignment": tuple,
+            "tcpwer": float or None,         # None when skip_tcp
+            "tcp_assignment": tuple or None,
             "cp_errors": int, "cp_length": int,
-            "tcp_errors": int, "tcp_length": int,
+            "tcp_errors": int or None, "tcp_length": int or None,
+            "tcp_skipped": bool,             # True iff tcpWER not computed
         }
 
     `tcp_collar_s` is the per-word time tolerance for tcpWER (CHiME-7
     default is 5.0). MeetEval places each word at its segment midpoint
     by default — fine for our use since GT segments come from Whisper's
     own segmentation.
+
+    `skip_tcp` exists for untimed references (e.g. EdAcc, which ships no
+    per-utterance timing): tcpWER on fake/placeholder times would be a
+    fabricated number (SCOPE §4.1), so the caller sets `skip_tcp=True` and
+    tcpWER is returned as `None` with `tcp_skipped=True`. cpWER, which ignores
+    time, is unaffected.
     """
-    from meeteval.wer import cpwer, tcpwer
+    from meeteval.wer import cpwer
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
     hyp = _seglst_from_dict(hyp_utts_by_spk, session_id, lang)
 
     cp = cpwer(ref, hyp)[session_id]
-    tcp = tcpwer(ref, hyp, collar=tcp_collar_s)[session_id]
-
-    return {
+    out: Dict[str, object] = {
         "cpwer": _rate(cp),
         "cp_assignment": tuple(cp.assignment),
         "cp_errors": int(cp.errors),
         "cp_length": int(cp.length),
-        "tcpwer": _rate(tcp),
-        "tcp_assignment": tuple(tcp.assignment),
-        "tcp_errors": int(tcp.errors),
-        "tcp_length": int(tcp.length),
         "tcp_collar_s": float(tcp_collar_s),
+        "tcp_skipped": bool(skip_tcp),
     }
+    if skip_tcp:
+        out.update(tcpwer=None, tcp_assignment=None,
+                   tcp_errors=None, tcp_length=None)
+        return out
+
+    from meeteval.wer import tcpwer
+
+    tcp = tcpwer(ref, hyp, collar=tcp_collar_s)[session_id]
+    out.update(
+        tcpwer=_rate(tcp),
+        tcp_assignment=tuple(tcp.assignment),
+        tcp_errors=int(tcp.errors),
+        tcp_length=int(tcp.length),
+    )
+    return out
 
 
 def orc_wer_meeteval(

@@ -14,8 +14,14 @@
     [00:00:01.20 → 00:00:03.45] To jest pierwszy segment.
     [00:00:03.50 → 00:00:05.80] To jest drugi segment.
 
-Both return lists of `Utterance(start, end, text)` named tuples with
-times in seconds.
+  It *also* reads an UNTIMED variant — a `# untimed` header line followed by
+  one utterance per line, no timestamps — for datasets that ship no per-
+  utterance timing at all (EdAcc, where the official eval time-gated against
+  an STM that isn't distributed). Untimed utterances carry `start=end=None`;
+  callers that need timing (tcpWER) must check `is_untimed(...)` and skip.
+
+Both return lists of `Utterance(start, end, text)` named tuples; `start`/`end`
+are seconds for timed files and `None` for untimed ones.
 """
 
 from __future__ import annotations
@@ -23,17 +29,34 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Iterable, NamedTuple
+from typing import Iterable, NamedTuple, Optional
 
 from asr_pipeline.debug_log import dlog
 
 
 class Utterance(NamedTuple):
-    """One timestamped utterance."""
+    """One utterance. `start`/`end` are seconds, or `None` for untimed GT
+    (datasets with no per-utterance timing — see ``parse_gt_txt``)."""
 
-    start: float
-    end: float
+    start: Optional[float]
+    end: Optional[float]
     text: str
+
+
+# Header that marks a GT .txt file as untimed (one utterance per line, no
+# `[s → s]` brackets). Self-describing so the reader dispatches on content,
+# not on filename/dataset. Must be the first non-blank line.
+_UNTIMED_HEADER = "# untimed"
+
+
+def is_untimed(utts: Iterable[Utterance]) -> bool:
+    """True iff any utterance lacks timing (`start is None`).
+
+    Untimed and timed utterances never mix within one parsed file (the parser
+    dispatches whole-file), so checking the first/any is equivalent. Used by
+    L3 to skip tcpWER on untimed references rather than score it on fake times.
+    """
+    return any(u.start is None for u in utts)
 
 
 # Pipeline output: `=== Speaker A (SPEAKER_00) ===` header + `[s.cc → s.cc] text` lines.
@@ -88,18 +111,25 @@ def parse_transcript_file(path: str | Path) -> dict[str, list[Utterance]]:
 def parse_gt_txt(path: str | Path) -> list[Utterance]:
     """Parse one GT .txt file (one channel) → list of utterances.
 
-    Accepts either timestamp format (`[HH:MM:SS.cc → ...]` or `[s.cc → s.cc]`);
-    blank / non-matching lines (sub-headers, comments) are skipped.
+    Dispatches on content. A file whose first non-blank line is ``# untimed``
+    is parsed as untimed GT (one utterance per line, ``start=end=None``); every
+    other file is parsed as timestamped GT (`[HH:MM:SS.cc → ...]` or
+    `[s.cc → s.cc]`). The two formats never mix within one file.
 
-    A `[`-bracketed line that matches neither timestamp grammar is warned
-    about visibly (SCOPE §4.1, no-silent-substitution): the most likely cause
-    is a negative timestamp from an older writer (`[ -0.30 → ...]`), which the
-    non-negative-only seconds grammar drops — that utterance must not vanish
+    Timestamped path: blank / non-matching lines (sub-headers, comments) are
+    skipped. A `[`-bracketed line that matches neither timestamp grammar is
+    warned about visibly (SCOPE §4.1, no-silent-substitution): the most likely
+    cause is a negative timestamp from an older writer (`[ -0.30 → ...]`), which
+    the non-negative-only seconds grammar drops — that utterance must not vanish
     without a trace. Plain comments (`# ...`) and blank lines still skip silently.
     """
     path = Path(path)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if _is_untimed_header(lines):
+        return _parse_untimed(lines, path)
+
     utts: list[Utterance] = []
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in lines:
         parsed = _parse_timed_line(raw)
         if parsed is None:
             if raw.lstrip().startswith("["):
@@ -110,6 +140,35 @@ def parse_gt_txt(path: str | Path) -> list[Utterance]:
         start, end, text = parsed
         if text:
             utts.append(Utterance(start, end, text))
+    return utts
+
+
+def _is_untimed_header(lines: list[str]) -> bool:
+    """True iff the first non-blank line is the ``# untimed`` marker."""
+    for raw in lines:
+        if raw.strip():
+            return raw.strip().lower() == _UNTIMED_HEADER
+    return False
+
+
+def _parse_untimed(lines: list[str], path: Path) -> list[Utterance]:
+    """Parse an untimed GT file → utterances with `start=end=None`.
+
+    Body = every non-blank, non-comment line after the header; one utterance
+    per line. SCOPE §4.1 (no silent substitution): a `[`-bracketed line here is
+    a format violation (a timed line leaking into an untimed file) — warned
+    visibly via dlog and then *kept* as plain text (we don't silently drop it).
+    """
+    utts: list[Utterance] = []
+    for raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("["):
+            dlog("transcript_parser",
+                 f"_parse_untimed: bracketed line in an untimed file "
+                 f"{path} (format mix?), keeping its text: {s!r}")
+        utts.append(Utterance(None, None, s))
     return utts
 
 
@@ -173,6 +232,18 @@ def parse_eaf(path: str | Path) -> dict[str, list[Utterance]]:
         utts.sort(key=lambda u: u.start)
         out[label] = utts
     return out
+
+
+def format_untimed_gt(texts: Iterable[str]) -> str:
+    """Render utterance texts as an untimed GT file body (header + one per line).
+
+    The inverse of the ``_parse_untimed`` reader, kept beside it so the format
+    has exactly one definition. Blank/whitespace-only texts are dropped (an
+    empty utterance carries nothing to score). Returns a trailing-newline'd
+    string (empty body → just the header line).
+    """
+    body = [t.strip() for t in texts if t and t.strip()]
+    return "\n".join([_UNTIMED_HEADER, *body]) + "\n"
 
 
 def concat_utterances(utts: Iterable[Utterance]) -> str:

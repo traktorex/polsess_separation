@@ -34,6 +34,7 @@ from asr_pipeline.eval.layer2 import (
     stoi_chunked,
     unload_squim_model,
 )
+from asr_pipeline.eval.edacc import ExcisionReport, excise_stella_passage
 from asr_pipeline.eval.layer3 import compute_layer3
 from asr_pipeline.eval.metrics import (
     cp_cer_meeteval,
@@ -58,6 +59,8 @@ from asr_pipeline.eval.summary import (
 from asr_pipeline.eval.transcript_parser import (
     Utterance,
     concat_utterances,
+    format_untimed_gt,
+    is_untimed,
     parse_gt_txt,
     parse_transcript_file,
 )
@@ -78,6 +81,9 @@ __all__ = [
     "load_squim_model", "unload_squim_model",
     # Transcript IO
     "Utterance", "concat_utterances", "parse_gt_txt", "parse_transcript_file",
+    "format_untimed_gt", "is_untimed",
+    # EdAcc hypothesis filtering (dataset-specific, opt-in hyp_filter)
+    "excise_stella_passage", "ExcisionReport",
     # Summaries
     "inventory",
     "summarize_layer2_intrusive",

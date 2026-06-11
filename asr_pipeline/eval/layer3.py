@@ -29,15 +29,40 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.eval.metrics import (
     cpwer_meeteval,
     mimo_wer_meeteval,
     orc_wer_meeteval,
 )
 from asr_pipeline.eval.recordings import Recording, load_reference_utterances
-from asr_pipeline.eval.transcript_parser import parse_gt_txt
+from asr_pipeline.eval.transcript_parser import (
+    Utterance,
+    is_untimed,
+    parse_gt_txt,
+)
+
+# A hypothesis filter rewrites one hypothesis stream before scoring. EdAcc uses
+# it to excise the Stella elicitation passage (see ``eval.edacc``); it returns
+# (filtered_utterances, report). Default None = identity = every non-EdAcc path
+# is byte-identical. The report is surfaced by the filter itself (dlog).
+HypFilter = Callable[[list[Utterance]], tuple[list[Utterance], object]]
+
+
+def _apply_hyp_filter(
+    hyp_filter: Optional[HypFilter], utts: list[Utterance]
+) -> list[Utterance]:
+    """Run an optional hypothesis filter, returning just the filtered stream.
+
+    The filter's report is logged inside the filter (dlog); we drop it here
+    because L3's return shape stays a plain WER dict. None filter = passthrough.
+    """
+    if hyp_filter is None:
+        return utts
+    filtered, _report = hyp_filter(utts)
+    return filtered
 
 
 def _resolve_lang(rec: Recording) -> str:
@@ -96,7 +121,11 @@ def read_mixture(pipeline_dir: Path) -> Optional[list]:
     return parse_gt_txt(path)
 
 
-def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
+def compute_layer3(
+    rec: Recording,
+    tcp_collar_s: float = 5.0,
+    hyp_filter: Optional[HypFilter] = None,
+) -> Optional[dict]:
     """ASR error rates per ablation mode + ORC-WER baseline.
 
     Returns None when the GT transcripts are missing — without them L3 is
@@ -106,8 +135,9 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
 
         {
             "ref_lengths": {"A": int, "B": int},
+            "ref_untimed": bool,              # True → tcpWER skipped (no GT times)
             "modes": {
-                "full":     {"cpwer": …, "tcpwer": …, ...},
+                "full":     {"cpwer": …, "tcpwer": … or None, "tcp_skipped": …},
                 "no_sep":   {…} or None,
                 "no_enh":   {…} or None,
                 "minimal":  {…} or None,   # both stages off
@@ -116,12 +146,30 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
             "mixture_mimo": {"mimo_wer": …, …} or None,
             "tcp_collar_s": float,
         }
+
+    ``hyp_filter`` (default None) rewrites each hypothesis stream — per-speaker
+    AND the mixture — before scoring. EdAcc passes ``eval.edacc`` here to excise
+    the Stella elicitation passage that has no timestamps to gate on; every
+    other dataset leaves it None (identity, byte-identical to before).
+
+    When the reference is **untimed** (EdAcc GT, ``start=end=None``), tcpWER is
+    skipped — scoring it on placeholder times would fabricate a number
+    (SCOPE §4.1). ``ref_untimed=True`` and each mode's ``tcpwer`` is ``None``
+    with ``tcp_skipped=True``; cpWER and ORC/MIMO (time-agnostic) are unaffected.
     """
     ref_utts = {k: v for k, v in load_reference_utterances(rec).items() if v}
     if "A" not in ref_utts or "B" not in ref_utts:
         return None
     ref_lengths = {label: len(utts) for label, utts in ref_utts.items()}
     lang = _resolve_lang(rec)
+
+    # Untimed GT (EdAcc) → no per-word time gating is possible; skip tcpWER
+    # rather than score it on placeholder times. Visible via ref_untimed +
+    # each mode's tcp_skipped flag (surfaced by summarize_layer3).
+    ref_untimed = any(is_untimed(utts) for utts in ref_utts.values())
+    if ref_untimed:
+        dlog("layer3",
+             f"compute_layer3[{rec.id}]: untimed reference → tcpWER skipped")
 
     modes_out: dict[str, Optional[dict]] = {}
     for mode, dir_ in (
@@ -137,8 +185,13 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
         if hyp is None:
             modes_out[mode] = None
             continue
+        hyp = {
+            label: _apply_hyp_filter(hyp_filter, utts)
+            for label, utts in hyp.items()
+        }
         modes_out[mode] = cpwer_meeteval(
-            ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s, lang=lang,
+            ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s,
+            lang=lang, skip_tcp=ref_untimed,
         )
 
     # Mixture baseline (single-stream) — take whichever mode dir has a
@@ -157,6 +210,12 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
         mixture_utts = read_mixture(d)
         if mixture_utts is not None:
             break
+    # The Stella passage appears in the mixture transcript too (both speakers
+    # read it into the single un-separated stream), so the hyp_filter must run
+    # here as well — otherwise the ORC/MIMO mixture floor is scored against a
+    # reference that already dropped the passage, inflating it with insertions.
+    if mixture_utts is not None:
+        mixture_utts = _apply_hyp_filter(hyp_filter, mixture_utts)
     # Mixture floor scored two ways: ORC (time-fixed reference merge) and
     # MIMO (optimised interleaving). MIMO <= ORC always; it doesn't penalise
     # the unpredictable order Whisper interleaves the speakers in overlaps,
@@ -176,6 +235,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
 
     return {
         "ref_lengths": ref_lengths,
+        "ref_untimed": ref_untimed,
         "modes": modes_out,
         "mixture_orc": mixture_orc,
         "mixture_mimo": mixture_mimo,

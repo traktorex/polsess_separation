@@ -44,7 +44,8 @@ def test_evaluate_many_loads_squim_once_and_threads_it(monkeypatch):
     monkeypatch.setattr(run, "load_squim_model",
                         lambda: (loads.append(1), (sentinel, "cpu"))[1])
     monkeypatch.setattr(run, "unload_squim_model", lambda m: unloads.append(m))
-    monkeypatch.setattr(run, "compute_layer3", lambda rec, tcp_collar_s: None)
+    monkeypatch.setattr(run, "compute_layer3",
+                        lambda rec, tcp_collar_s, hyp_filter=None: None)
     monkeypatch.setattr(
         run, "compute_layer2",
         lambda rec, sr, squim_model, squim_device: seen_models.append(squim_model),
@@ -66,7 +67,7 @@ def test_evaluate_many_unloads_squim_on_error(monkeypatch):
     monkeypatch.setattr(run, "compute_layer2",
                         lambda rec, sr, squim_model, squim_device: None)
 
-    def _boom(rec, tcp_collar_s):
+    def _boom(rec, tcp_collar_s, hyp_filter=None):
         raise RuntimeError("L3 boom")
 
     monkeypatch.setattr(run, "compute_layer3", _boom)
