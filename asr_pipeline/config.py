@@ -332,7 +332,12 @@ class TranscriptionConfig:
     word_timestamps: bool = True
     # WhisperX-only knobs (ignored when ``backend != whisperx``):
     # the wav2vec2 model used for forced alignment.
-    align_model_name: str = "jonatasgrosman/wav2vec2-large-xlsr-53-polish"
+    #   None = WhisperX picks its per-language default
+    #          (pl → jonatasgrosman/wav2vec2-large-xlsr-53-polish, the previous
+    #          pinned value; en → torchaudio WAV2VEC2_ASR_BASE_960H).
+    #   Set explicitly to override (e.g. the English XLSR-53 aligner — see
+    #   configs/english.yaml).
+    align_model_name: Optional[str] = None
     # When True, additionally run the same backend on the whole mixture
     # (``ctx.audio``) as a single stream, writing the result to
     # ``ctx.mixture_transcript``. Used for the thesis ablation table

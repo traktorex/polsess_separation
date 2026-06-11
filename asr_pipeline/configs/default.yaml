@@ -95,7 +95,9 @@ transcription:
   language: pl
   initial_prompt: Rozmowa po polsku.
   word_timestamps: true
-  # wav2vec2 forced-alignment model. ONLY used by backend=whisperx.
-  align_model_name: jonatasgrosman/wav2vec2-large-xlsr-53-polish
+  # wav2vec2 forced-alignment model (WhisperX only). Omitted → WhisperX picks
+  # its per-language default; for language: pl that is exactly
+  # jonatasgrosman/wav2vec2-large-xlsr-53-polish (the previously-pinned value).
+  # Set align_model_name explicitly to override.
   # Rationale for choosing (backend, model_name): see configs/README.md
   # (5-variant comparison, 2026-05-25 / -26).

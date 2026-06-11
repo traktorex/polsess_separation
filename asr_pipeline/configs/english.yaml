@@ -1,17 +1,17 @@
-# Leading candidate config from the CLARIN 5-recording pilot sweep (2026-05-30).
-# PRELIMINARY (n=5): cpWER 17.2 / orcWER 17.2 vs no-pipeline mixture floor 25.8
-# and vs the then-shipped default.yaml (mpsenet, since removed) 30.5.
+# English preset — frcrn_vadstrict.yaml with the transcription stage retargeted
+# to English. Intended for English eval runs (LibriCSS_2spk / EdAcc), where the
+# input is 2-speaker English rather than the Polish CLARIN universe.
 #
-# Deltas from default.yaml that define this candidate:
-#   enhancement.backend:        mpsenet -> frcrn_se_16k   (mpsenet HURTS; FRCRN best)
-#   separation.vad_threshold:   0.25 -> 0.50
-#   separation.vad_soft_threshold: 0.10 -> 0.20
+# Deltas from frcrn_vadstrict.yaml:
+#   transcription.language:         pl -> en
+#   transcription.initial_prompt:   Polish -> English
+#   transcription.align_model_name: explicit English XLSR-53 wav2vec2 aligner
 #
-# The following are EVAL-HARNESS overrides (set by run_pipeline_on_recording._fresh_cfg),
-# not pipeline-quality knobs -- drop them for production use if undesired:
-#   transcription.transcribe_mixture: true   (extra single-stream baseline transcript)
-#   assembly.output_mode: full_length        (timestamp-aligned streams for tcpWER)
-#   routing.min_overlap_dur: 0.0             (send every overlap to the separator)
+# align_model_name is pinned explicitly (rather than left to WhisperX's en
+# default, torchaudio WAV2VEC2_ASR_BASE_960H) for symmetry with the Polish
+# aligner family: jonatasgrosman's pl/en models share the same XLSR-53 recipe,
+# so any pl-vs-en difference stays attributable to the data, not the aligner
+# architecture class.
 #
 # hf_token is read from $HF_TOKEN at load (not stored here).
 sample_rate: 16000
@@ -66,9 +66,8 @@ transcription:
   enabled: true
   backend: whisperx
   model_name: large-v2
-  language: pl
-  initial_prompt: Rozmowa po polsku.
+  language: en
+  initial_prompt: A conversation in English.
   word_timestamps: true
-  # align_model_name omitted → WhisperX per-language default (pl → jonatasgrosman
-  # wav2vec2-large-xlsr-53-polish, the previously-pinned value). Set to override.
+  align_model_name: jonatasgrosman/wav2vec2-large-xlsr-53-english
   transcribe_mixture: true

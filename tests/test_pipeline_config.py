@@ -42,7 +42,9 @@ def test_default_yaml_loads():
     assert cfg.assembly.output_mode == "shortened"
     assert cfg.transcription.backend == "whisperx"
     assert cfg.transcription.model_name == "large-v2"
-    assert cfg.transcription.align_model_name == "jonatasgrosman/wav2vec2-large-xlsr-53-polish"
+    # default.yaml no longer pins the aligner; None → WhisperX picks the
+    # per-language default (pl → the previously-pinned jonatasgrosman model).
+    assert cfg.transcription.align_model_name is None
 
 
 def test_yaml_roundtrip(tmp_path):
@@ -166,3 +168,46 @@ def test_flowhigh_input_sr_must_be_positive():
         cfg = PipelineConfig()
         cfg.post_separation_processing.flowhigh_input_sr = 0
         cfg.__post_init__()
+
+
+# ---------------------------------------------------------------------------
+# Per-language alignment model (SCOPE §9 "Not Polish-only")
+# ---------------------------------------------------------------------------
+
+ENGLISH_YAML = REPO_ROOT / "asr_pipeline" / "configs" / "english.yaml"
+
+
+def test_align_model_name_defaults_to_none():
+    """The aligner is no longer pinned in the dataclass: None lets WhisperX
+    pick its per-language default (pl → the previous jonatasgrosman pin)."""
+    assert PipelineConfig().transcription.align_model_name is None
+
+
+def test_align_model_name_yaml_null_round_trips_to_none():
+    """`align_model_name: null` in YAML must load as Python None (not the
+    string 'null') so WhisperX's per-language default kicks in."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {"align_model_name": None}}
+    )
+    assert cfg.transcription.align_model_name is None
+
+
+def test_align_model_name_explicit_override():
+    """An explicit aligner id round-trips unchanged — the override path the
+    English preset relies on."""
+    name = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {"align_model_name": name}}
+    )
+    assert cfg.transcription.align_model_name == name
+
+
+def test_english_preset_loads_and_pins_english_aligner():
+    """The shipped English preset selects English language + the explicit
+    English XLSR-53 aligner (symmetry with the Polish aligner family)."""
+    cfg = load_pipeline_config_from_yaml(str(ENGLISH_YAML))
+    assert cfg.transcription.language == "en"
+    assert (
+        cfg.transcription.align_model_name
+        == "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+    )
