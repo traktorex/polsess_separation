@@ -59,6 +59,7 @@ import re
 from functools import lru_cache
 from typing import Dict, List
 
+from asr_pipeline.debug_log import dlog
 from asr_pipeline.eval.transcript_parser import Utterance
 
 try:
@@ -220,6 +221,30 @@ def _seglst_from_list(
     return _seglst_from_dict({speaker: utterances}, session_id, lang)
 
 
+def _ensure_nonempty_hyp(hyp, session_id: str, context: str):
+    """Make an all-empty hypothesis scoreable as 100 % deletions.
+
+    meeteval aborts the whole batch ("Missing ... recordings in hypothesis")
+    when a session has zero hypothesis segments — but an empty hypothesis is
+    a real pipeline outcome (observed: LibriCSS OV40_session8_seg2,
+    pipeline_nosep — WhisperX heard nothing in either sparse stream).
+    meeteval's own remedy is to emit an empty transcript, so we insert one
+    empty-text segment (→ WER 1.0, all deletions) and say so visibly
+    (SCOPE §4.1: no silent substitution)."""
+    if len(hyp) > 0:
+        return hyp
+    from meeteval.io.seglst import SegLST
+
+    dlog("metrics",
+         f"{context}: hypothesis for session {session_id!r} is empty — "
+         "inserting one empty-text segment so it scores as all-deletions "
+         "(WER 1.0) instead of aborting the batch")
+    return SegLST([{
+        "session_id": session_id, "speaker": "A",
+        "start_time": 0.0, "end_time": 0.0, "words": "",
+    }])
+
+
 def _rate(obj) -> float:
     """A meeteval result's error rate as a float, scoring a 0/0 session as a
     perfect match.
@@ -279,7 +304,10 @@ def cpwer_meeteval(
     from meeteval.wer import cpwer
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
-    hyp = _seglst_from_dict(hyp_utts_by_spk, session_id, lang)
+    hyp = _ensure_nonempty_hyp(
+        _seglst_from_dict(hyp_utts_by_spk, session_id, lang),
+        session_id, "cpwer_meeteval",
+    )
 
     cp = cpwer(ref, hyp)[session_id]
     out: Dict[str, object] = {
@@ -332,7 +360,10 @@ def orc_wer_meeteval(
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
     # One pseudo-speaker for the mixture hypothesis.
-    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
+    hyp = _ensure_nonempty_hyp(
+        _seglst_from_list(hyp_utterances, session_id, lang=lang),
+        session_id, "orc_wer_meeteval",
+    )
     orc = orcwer(ref, hyp)[session_id]
     return _wer_result(orc, "orc_wer")
 
@@ -374,7 +405,10 @@ def mimo_wer_meeteval(
     from meeteval.wer import mimower
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
-    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
+    hyp = _ensure_nonempty_hyp(
+        _seglst_from_list(hyp_utterances, session_id, lang=lang),
+        session_id, "mimo_wer_meeteval",
+    )
     m = mimower(ref, hyp)[session_id]
     return _wer_result(m, "mimo_wer")
 
@@ -399,7 +433,10 @@ def orc_wer_multistream(
 
     orc = orcwer(
         _seglst_from_dict(ref_utts_by_spk, session_id, lang),
-        _seglst_from_dict(hyp_utts_by_spk, session_id, lang),
+        _ensure_nonempty_hyp(
+            _seglst_from_dict(hyp_utts_by_spk, session_id, lang),
+            session_id, "orc_wer_multistream",
+        ),
     )[session_id]
     return _wer_result(orc, "orc_wer")
 

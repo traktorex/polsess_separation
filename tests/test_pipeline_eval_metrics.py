@@ -324,3 +324,44 @@ def test_cp_cer_unmatched_reference_speaker_counts_as_deletions():
     assert out["errors"] == 4               # "pies" fully deleted
     assert out["length"] == 7               # "kot" (3) + "pies" (4)
     assert out["cer"] == pytest.approx(4 / 7)
+
+
+# ---------------------------------------------------------------------------
+# Empty hypothesis — a real pipeline outcome (WhisperX hears nothing in a
+# sparse stream; observed live on LibriCSS OV40_session8_seg2 pipeline_nosep).
+# meeteval would abort the whole batch ("Missing recordings in hypothesis");
+# the _ensure_nonempty_hyp guard scores it as 100 % deletions instead.
+# ---------------------------------------------------------------------------
+
+
+def test_cpwer_empty_hypothesis_scores_all_deletions():
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(1.0, 2.0, "pies je")]}
+    hyp = {"A": [], "B": []}
+    out = cpwer_meeteval(ref, hyp, session_id="t")
+    assert out["cpwer"] == 1.0
+    assert out["cp_length"] == 5            # all 5 ref words deleted
+    assert out["cp_errors"] == 5
+    assert out["tcpwer"] == 1.0             # tcp leg survives the guard too
+
+
+def test_orc_and_mimo_empty_mixture_hypothesis_scores_all_deletions():
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    assert orc_wer_meeteval(ref, [], session_id="t")["orc_wer"] == 1.0
+    assert mimo_wer_meeteval(ref, [], session_id="t")["mimo_wer"] == 1.0
+
+
+def test_orc_multistream_empty_hypothesis_scores_all_deletions():
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    hyp = {"A": [], "B": []}
+    assert orc_wer_multistream(ref, hyp, session_id="t")["orc_wer"] == 1.0
+
+
+def test_cp_cer_empty_hypothesis_scores_all_deletions():
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "kot")]}
+    out = cp_cer_meeteval(ref, {"A": []}, session_id="t")
+    assert out["cer"] == 1.0
