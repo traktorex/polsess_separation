@@ -1,0 +1,70 @@
+# RE-SepFormer width-matched configuration for PolSESS
+# Capacity control for the SepFormer comparison: same encoder width (N=256) and
+# same transformer dims (num_blocks=2, num_layers=8, nhead=8, d_ffn=1024) as the
+# SepFormer baseline. The ONLY architectural differences that remain vs. SepFormer
+# are RE-SepFormer's own contributions: the averaged-summary memory (instead of
+# full inter-chunk attention) and non-overlapping segments.
+#
+# Note: this does NOT equalize parameter counts. RE-SepFormer has 3 transformer
+# stacks (2 seg + 1 mem) vs SepFormer's 4 (2 intra + 2 inter), so at matched width
+# it lands at ~19.1M vs SepFormer's ~25.7M. That ~25% gap is part of the efficiency
+# result, not a confound to erase — report SI-SDRi against params/latency.
+#
+# Differs from resepformer_baseline.yaml ONLY in N (128 -> 256). segment_size is a
+# receptive-field knob with no effect on param count, so it is left at the baseline
+# value; align it to ~250 if you want it to track SepFormer's chunk_size.
+#
+# Memory: N=256 roughly doubles encoder activations vs the N=128 baseline. If
+# batch_size 8 OOMs, lower it and set training.grad_accumulation_steps so the
+# effective batch stays 8 (matching the baseline for a fair comparison).
+
+data:
+  dataset_type: polsess
+  batch_size: 8  # Transformers use more memory
+  num_workers: 1
+  prefetch_factor: 1
+  task: SB  # Speaker separation
+  train_max_samples: 16000
+  val_max_samples: null
+
+model:
+  model_type: resepformer
+  resepformer:
+    N: 256          # Encoder channels (also transformer d_model) — matches SepFormer
+    kernel_size: 16
+    stride: 8
+    C: 2            # Number of speakers
+    causal: false
+    num_blocks: 2   # Resource-efficient separation blocks
+    num_layers: 8   # Transformer layers in both intra (seg) and inter (mem) blocks
+    nhead: 8        # Attention heads
+    d_ffn: 1024     # Feed-forward dimension
+    dropout: 0.0
+    segment_size: 150  # Non-overlapping chunk size (no effect on param count)
+    use_positional_encoding: True
+
+training:
+  lr: 0.0006
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  wandb_run_name: resepformer-matched
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

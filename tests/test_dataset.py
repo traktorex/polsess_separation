@@ -1,5 +1,6 @@
 """Tests for PolSESSDataset."""
 
+import os
 import pytest
 from pathlib import Path
 from datasets import PolSESSDataset
@@ -18,16 +19,20 @@ def test_dataset_all_variants():
     assert sorted(all_variants) == sorted(expected)
 
 
+_POLSESS_ROOT = os.getenv(
+    "POLSESS_DATA_ROOT",
+    "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
+)
+
+
 @pytest.mark.skipif(
-    not Path("F:\\PolSMSE\\EksperymentyMOWA\\BAZY\\MOWA\\PolSESS_C_in\\PolSESS_C_in").exists(),
-    reason="PolSESS data not available"
+    not Path(_POLSESS_ROOT).exists(),
+    reason="PolSESS data not available (set POLSESS_DATA_ROOT env var)",
 )
 def test_dataset_loading_with_data():
     """Test dataset can load samples (requires actual data)."""
-    data_root = "F:\\PolSMSE\\EksperymentyMOWA\\BAZY\\MOWA\\PolSESS_C_in\\PolSESS_C_in"
-
     dataset = PolSESSDataset(
-        data_root=data_root,
+        data_root=_POLSESS_ROOT,
         subset="train",
         task="ES",
     )

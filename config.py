@@ -15,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
+            "/home/user/datasets/PolSESS_C_final_128_v2",
         )
     )
 
@@ -55,6 +55,50 @@ class SepFormerParams:
     dropout: float = 0.0  # Dropout rate
     chunk_size: int = 250  # Chunk size for dual-path processing
     hop_size: int = 125  # Hop size between chunks
+    use_positional_encoding: bool = True  # Sinusoidal PE (paper default; False for pre-2026-03 checkpoints)
+
+
+@dataclass
+class RESepFormerParams:
+    """RE-SepFormer (Resource-Efficient Separation Transformer) parameters.
+
+    Defaults match the official SpeechBrain recipe (resepformer.yaml). Note that
+    the transformer d_model is bound to N inside the wrapper, and mem_type='av' /
+    nonlinear='relu' / unit=256 are fixed to match the paper (see
+    models/resepformer.py).
+    """
+
+    N: int = 128  # Encoder/decoder channels (also the transformer d_model)
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 2  # Output sources (number of speakers)
+    causal: bool = False
+    num_blocks: int = 2  # Number of resource-efficient separation blocks (seg copies)
+    num_layers: int = 8  # Transformer layers in both intra (seg) and inter (mem) blocks
+    nhead: int = 8  # Number of attention heads
+    d_ffn: int = 1024  # Feed-forward network dimension
+    dropout: float = 0.0  # Dropout rate
+    segment_size: int = 150  # Chunk size for non-overlapping segmentation
+    use_positional_encoding: bool = True  # Sinusoidal PE (paper default)
+
+
+@dataclass
+class MossFormer2Params:
+    """MossFormer2 (Zhao et al. 2023, arXiv:2312.11825) model-specific parameters.
+
+    Vendored from ClearerVoice-Studio's training implementation (see
+    models/mossformer2/). The model owns a learnable Conv1d encoder (stride =
+    kernel_size // 2) and matching ConvTranspose1d decoder. `N` is BOTH the encoder
+    feature dim and the transformer/GFSMN working dim — the two must be equal, so a
+    single knob is exposed (see models/mossformer2/__init__.py). Paper-faithful
+    config is N=512, num_blocks=24 (~55.7M params).
+    """
+
+    N: int = 512  # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: int = 16  # Encoder kernel size (decoder stride = kernel_size // 2)
+    C: int = 2  # Output sources (number of speakers)
+    num_blocks: int = 24  # GFSMN depth (paper uses 24)
+    attn_dropout: float = 0.1  # Self-attention dropout (upstream hard-codes 0.1)
 
 
 @dataclass
@@ -89,11 +133,49 @@ class SPMambaParams:
     attn_n_head: int = 4  # Number of attention heads
     attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
     emb_dim: int = 16  # Embedding dimension
-    emb_ks: int = 4  # Embedding kernel size
+    emb_ks: int = 8  # Embedding kernel size (original librimix config uses 8)
     emb_hs: int = 1  # Embedding hop size
     activation: str = "prelu"  # Activation function
     eps: float = 1.0e-5  # Epsilon for numerical stability
-    sample_rate: int = 16000  # Audio sample rate
+
+
+@dataclass
+class MambaTasNetParams:
+    """Mamba-TasNet model-specific parameters."""
+
+    N: int = 256  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    bot_dim: int = 256  # Bottleneck dimension for Mamba blocks
+    n_mamba: int = 8  # Number of bidirectional Mamba blocks
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    residual_in_fp32: bool = False  # Keep residual stream in fp32 (stabilizes deep models under AMP)
+
+
+@dataclass
+class DPMambaParams:
+    """DPMamba (Dual-Path Mamba) model-specific parameters."""
+
+    N: int = 64  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    num_layers: int = 8  # Number of dual-path iterations
+    chunk_size: int = 250  # Chunk length K for dual-path segmentation
+    n_mamba_dp: int = 2  # Total BiMamba blocks across intra+inter (each gets half)
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    skip_around_intra: bool = False  # Residual around intra-chunk (True for M/L configs)
+    residual_in_fp32: bool = False  # Cast residual stream to fp32 between Mamba blocks (prevents bf16 precision loss)
+
 
 
 @dataclass
@@ -120,12 +202,16 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, resepformer, mossformer2, dprnn, spmamba, mamba_tasnet, dpmamba
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
+    resepformer: Optional[RESepFormerParams] = None
+    mossformer2: Optional[MossFormer2Params] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    mamba_tasnet: Optional[MambaTasNetParams] = None
+    dpmamba: Optional[DPMambaParams] = None
 
     def __post_init__(self):
         """Initialize model-specific params if not provided."""
@@ -133,10 +219,18 @@ class ModelConfig:
             self.convtasnet = ConvTasNetParams()
         elif self.model_type == "sepformer" and self.sepformer is None:
             self.sepformer = SepFormerParams()
+        elif self.model_type == "resepformer" and self.resepformer is None:
+            self.resepformer = RESepFormerParams()
+        elif self.model_type == "mossformer2" and self.mossformer2 is None:
+            self.mossformer2 = MossFormer2Params()
         elif self.model_type == "dprnn" and self.dprnn is None:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "mamba_tasnet" and self.mamba_tasnet is None:
+            self.mamba_tasnet = MambaTasNetParams()
+        elif self.model_type == "dpmamba" and self.dpmamba is None:
+            self.dpmamba = DPMambaParams()
 
 
 @dataclass
@@ -160,6 +254,7 @@ class TrainingConfig:
     seed: int = 42
     resume_from: Optional[str] = None
     validation_variants: Optional[List[str]] = None
+    per_variant_validation: bool = False  # If True, run validation once per MM-IPC variant and use avg SI-SDRi as the monitored metric
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
@@ -203,19 +298,35 @@ class Config:
                 self.model.convtasnet.C = 1
             elif self.model.model_type == "sepformer":
                 self.model.sepformer.C = 1
+            elif self.model.model_type == "resepformer":
+                self.model.resepformer.C = 1
+            elif self.model.model_type == "mossformer2":
+                self.model.mossformer2.C = 1
             elif self.model.model_type == "dprnn":
                 self.model.dprnn.C = 1
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 1
+            elif self.model.model_type == "mamba_tasnet":
+                self.model.mamba_tasnet.C = 1
+            elif self.model.model_type == "dpmamba":
+                self.model.dpmamba.C = 1
         elif self.data.task == "SB":
             if self.model.model_type == "convtasnet":
                 self.model.convtasnet.C = 2
             elif self.model.model_type == "sepformer":
                 self.model.sepformer.C = 2
+            elif self.model.model_type == "resepformer":
+                self.model.resepformer.C = 2
+            elif self.model.model_type == "mossformer2":
+                self.model.mossformer2.C = 2
             elif self.model.model_type == "dprnn":
                 self.model.dprnn.C = 2
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
+            elif self.model.model_type == "mamba_tasnet":
+                self.model.mamba_tasnet.C = 2
+            elif self.model.model_type == "dpmamba":
+                self.model.dpmamba.C = 2
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -277,7 +388,25 @@ class Config:
                 f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
                 f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.d_model}",
                 f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
+                f"  Positional encoding: {p.use_positional_encoding}",
                 f"  Chunking: chunk={p.chunk_size}, hop={p.hop_size}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "resepformer":
+            p = self.model.resepformer
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.N}",
+                f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
+                f"  Positional encoding: {p.use_positional_encoding}",
+                f"  Chunking: segment_size={p.segment_size}, mem_type=av",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "mossformer2":
+            p = self.model.mossformer2
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.kernel_size // 2}",
+                f"  Backbone: MossFormer + gated-FSMN, blocks={p.num_blocks}, attn_dropout={p.attn_dropout}",
                 f"  Output: C={p.C}",
             ])
         elif mt == "spmamba":
@@ -288,6 +417,23 @@ class Config:
                 f"  LSTM: hidden={p.lstm_hidden_units}",
                 f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
                 f"  Output: n_srcs={p.n_srcs}",
+            ])
+        elif mt == "mamba_tasnet":
+            p = self.model.mamba_tasnet
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Mamba: bot_dim={p.bot_dim}, n_mamba={p.n_mamba}, expand={p.expand}",
+                f"  SSM: d_state={p.d_state}, d_conv={p.d_conv}, rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "dpmamba":
+            p = self.model.dpmamba
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Dual-path: layers={p.num_layers}, chunk_size={p.chunk_size}",
+                f"  SSM: n_mamba_dp={p.n_mamba_dp}, d_state={p.d_state}, d_conv={p.d_conv}, expand={p.expand}",
+                f"  Norm: rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
             ])
 
         # Training section
@@ -300,7 +446,15 @@ class Config:
             f"  Grad clip norm: {self.training.grad_clip_norm}",
             f"  LR scheduler: factor={self.training.lr_factor}, patience={self.training.lr_patience}",
             f"  Seed: {self.training.seed}",
-            f"  AMP: {self.training.use_amp}",
+            # Mirrors Trainer._setup_amp dispatch: Mamba + MossFormer2 train in
+            # bf16 (no GradScaler), everything else fp16 + GradScaler.
+            f"  AMP: {self.training.use_amp}"
+            + (
+                " (bf16, no GradScaler)"
+                if self.training.use_amp
+                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2")
+                else " (fp16 + GradScaler)" if self.training.use_amp else ""
+            ),
         ])
 
         if self.training.grad_accumulation_steps > 1:
@@ -321,6 +475,9 @@ class Config:
         if self.training.validation_variants:
             lines.append(f"  Validation variants: {self.training.validation_variants}")
 
+        if self.training.per_variant_validation:
+            lines.append("  Per-variant validation: enabled (monitored metric = avg SI-SDRi)")
+
         if self.training.use_wandb:
             lines.extend(["", "Logging (W&B):"])
             lines.append(f"  Project: {self.training.wandb_project}")
@@ -333,18 +490,11 @@ class Config:
         return "\n".join(lines)
 
 
-def load_config_from_yaml(yaml_path: str) -> Config:
-    """Load configuration from YAML file."""
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"Config file not found: {yaml_path}")
-
-    with open(yaml_path, "r") as f:
-        config_dict = yaml.safe_load(f)
-
-    data_dict = config_dict.get("data", {}) or {}
-    model_dict = config_dict.get("model", {}) or {}
-    training_dict = config_dict.get("training", {}) or {}
+def load_config_from_dict(config_dict: dict) -> Config:
+    """Load configuration from a nested dict (same structure as YAML/checkpoint configs)."""
+    data_dict = dict(config_dict.get("data", {}) or {})
+    model_dict = dict(config_dict.get("model", {}) or {})
+    training_dict = dict(config_dict.get("training", {}) or {})
 
     # Handle nested dataset-specific params
     polsess_dict = data_dict.pop("polsess", None)
@@ -357,23 +507,55 @@ def load_config_from_yaml(yaml_path: str) -> Config:
     sepformer_dict = model_dict.pop("sepformer", None)
     sepformer_params = SepFormerParams(**sepformer_dict) if sepformer_dict else None
 
+    resepformer_dict = model_dict.pop("resepformer", None)
+    resepformer_params = RESepFormerParams(**resepformer_dict) if resepformer_dict else None
+
+    mossformer2_dict = model_dict.pop("mossformer2", None)
+    mossformer2_params = MossFormer2Params(**mossformer2_dict) if mossformer2_dict else None
+
     dprnn_dict = model_dict.pop("dprnn", None)
     dprnn_params = DPRNNParams(**dprnn_dict) if dprnn_dict else None
 
     spmamba_dict = model_dict.pop("spmamba", None)
+    if spmamba_dict:
+        # Backward compat: `sample_rate` was removed from SPMambaParams; drop it
+        # silently from legacy YAMLs and pre-2026-04 checkpoint configs.
+        spmamba_dict.pop("sample_rate", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
+
+    mamba_tasnet_dict = model_dict.pop("mamba_tasnet", None)
+    mamba_tasnet_params = MambaTasNetParams(**mamba_tasnet_dict) if mamba_tasnet_dict else None
+
+    dpmamba_dict = model_dict.pop("dpmamba", None)
+    dpmamba_params = DPMambaParams(**dpmamba_dict) if dpmamba_dict else None
 
     data_config = DataConfig(**data_dict, polsess=polsess_params)
     model_config = ModelConfig(
         **model_dict,
         convtasnet=convtasnet_params,
         sepformer=sepformer_params,
+        resepformer=resepformer_params,
+        mossformer2=mossformer2_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        mamba_tasnet=mamba_tasnet_params,
+        dpmamba=dpmamba_params,
     )
     training_config = TrainingConfig(**training_dict)
 
     return Config(data=data_config, model=model_config, training=training_config)
+
+
+def load_config_from_yaml(yaml_path: str) -> Config:
+    """Load configuration from YAML file."""
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Config file not found: {yaml_path}")
+
+    with open(yaml_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+
+    return load_config_from_dict(config_dict)
 
 
 def save_config_to_yaml(config: Config, yaml_path: str):
@@ -392,11 +574,19 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["convtasnet"] = value
         elif key == "sepformer" and value is not None:
             model_dict["sepformer"] = value
+        elif key == "resepformer" and value is not None:
+            model_dict["resepformer"] = value
+        elif key == "mossformer2" and value is not None:
+            model_dict["mossformer2"] = value
         elif key == "dprnn" and value is not None:
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba"]:
+        elif key == "mamba_tasnet" and value is not None:
+            model_dict["mamba_tasnet"] = value
+        elif key == "dpmamba" and value is not None:
+            model_dict["dpmamba"] = value
+        elif key not in ["convtasnet", "sepformer", "resepformer", "mossformer2", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
             model_dict[key] = value
 
     config_dict = {
@@ -483,6 +673,13 @@ def create_config_parser() -> "argparse.ArgumentParser":
         help="Disable W&B logging",
     )
 
+    # Training overrides
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable automatic mixed precision (overrides YAML use_amp)",
+    )
+
     # Reproducibility
     parser.add_argument(
         "--seed",
@@ -523,6 +720,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.resume_from = args.resume
     if args.no_wandb:
         config.training.use_wandb = False
+    if args.no_amp:
+        config.training.use_amp = False
     if args.save_all_checkpoints:
         config.training.save_all_checkpoints = True
     if args.seed is not None:
@@ -535,6 +734,7 @@ def get_config_from_args() -> Config:
     """Parse command-line arguments and create configuration.
 
     Main entry point that orchestrates config loading from CLI.
+    Config priority: --config YAML > checkpoint config > defaults.
 
     Note: Most parameters should be set in YAML config files.
     CLI args are for quick switches and overrides only.
@@ -543,6 +743,8 @@ def get_config_from_args() -> Config:
     Returns:
         Validated Config object with CLI overrides applied.
     """
+    import torch as _torch
+
     parser = create_config_parser()
     args = parser.parse_args()
 
@@ -550,6 +752,19 @@ def get_config_from_args() -> Config:
     if args.config:
         print(f"Loading config from: {args.config}")
         config = load_config_from_yaml(args.config)
+    elif args.resume:
+        # No --config but --resume: load config from checkpoint
+        print(f"Loading config from checkpoint: {args.resume}")
+        checkpoint = _torch.load(args.resume, map_location="cpu", weights_only=False)
+        ckpt_config = checkpoint.get("config")
+        if ckpt_config is None:
+            raise ValueError(
+                f"Checkpoint '{args.resume}' does not contain a config. "
+                "Please provide --config explicitly."
+            )
+        config = load_config_from_dict(ckpt_config)
+        config._loaded_from_checkpoint = True
+        del checkpoint  # free memory before training starts
     else:
         config = Config()
 
@@ -574,7 +789,11 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     Supported sweep override keys: model_B, model_H, weight_decay,
     grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
     task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants, dropout, chunk_size, rnn_type
+    validation_variants, dropout, chunk_size, rnn_type.
+    Note: dropout and chunk_size are routed to the active model's params
+    (DPRNN, SepFormer, or MossFormer2 — where dropout maps to attn_dropout).
+    For SepFormer, chunk_size also sets hop_size to chunk_size // 2
+    automatically.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -599,6 +818,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         "save_all_checkpoints":     (config.training, "save_all_checkpoints"),
         "curriculum_learning":      (config.training, "curriculum_learning"),
         "validation_variants":      (config.training, "validation_variants"),
+        "per_variant_validation":   (config.training, "per_variant_validation"),
         # Data
         "task":                     (config.data, "task"),
         "batch_size":               (config.data, "batch_size"),
@@ -625,6 +845,19 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     for key in DPRNN_OVERRIDES:
         if key in sweep_config and config.model.dprnn is not None:
             setattr(config.model.dprnn, key, getattr(sweep_config, key))
+
+    # Special cases: SepFormer architecture overrides (nested)
+    SEPFORMER_OVERRIDES = ["dropout", "chunk_size"]
+    for key in SEPFORMER_OVERRIDES:
+        if key in sweep_config and config.model.sepformer is not None:
+            setattr(config.model.sepformer, key, getattr(sweep_config, key))
+            # Keep hop_size = chunk_size // 2 (standard dual-path convention)
+            if key == "chunk_size":
+                config.model.sepformer.hop_size = getattr(sweep_config, key) // 2
+
+    # Special cases: MossFormer2 architecture overrides (nested)
+    if "dropout" in sweep_config and config.model.mossformer2 is not None:
+        config.model.mossformer2.attn_dropout = sweep_config.dropout
 
     # Validate and return
     config.__post_init__()

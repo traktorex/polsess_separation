@@ -1,0 +1,75 @@
+# Leading candidate config from the CLARIN 5-recording pilot sweep (2026-05-30).
+# PRELIMINARY (n=5): cpWER 17.2 / orcWER 17.2 vs no-pipeline mixture floor 25.8
+# and vs the shipped default.yaml (mpsenet) 30.5.
+#
+# Deltas from default.yaml that define this candidate:
+#   enhancement.backend:        mpsenet -> frcrn_se_16k   (mpsenet HURTS; FRCRN best)
+#   separation.vad_threshold:   0.25 -> 0.50
+#   separation.vad_soft_threshold: 0.10 -> 0.20
+#
+# The following are EVAL-HARNESS overrides (set by run_pipeline_on_recording._fresh_cfg),
+# not pipeline-quality knobs -- drop them for production use if undesired:
+#   transcription.transcribe_mixture: true   (extra single-stream baseline transcript)
+#   assembly.output_mode: full_length        (timestamp-aligned streams for tcpWER)
+#   routing.min_overlap_dur: 0.0             (send every overlap to the separator)
+#
+# hf_token is read from $HF_TOKEN at load (not stored here).
+sample_rate: 16000
+device: cuda
+spill_intermediate: false
+artifact_dir: null
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  num_speakers: 2
+routing:
+  enabled: true
+  min_overlap_dur: 0.0
+  merge_gap: 0.5
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  checkpoint_path: /home/user/MP-SENet/best_ckpt/g_best_vb
+  config_path: /home/user/MP-SENet/config.json
+  max_segment_length_s: 8.0
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.5
+  vad_soft_threshold: 0.2
+  vad_attack_frames: 1
+  vad_release_frames: 1
+post_separation_processing:
+  backend: flowhigh
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  flowhigh_input_sr: 8000
+assembly:
+  enabled: true
+  min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 30.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  align_model_name: jonatasgrosman/wav2vec2-large-xlsr-53-polish
+  transcribe_mixture: true

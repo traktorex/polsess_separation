@@ -27,6 +27,9 @@ htmlcov/
 # Checkpoints
 checkpoints/*
 
+# asr_pipeline outputs
+/runs
+
 # Wandb
 wandb/
 *.wandb
@@ -50,3 +53,20 @@ Thumbs.db
 /archive
 /mobile
 /asr/archive
+
+/venv_mamba3
+/venv_backup
+
+*.csv
+
+/.cache
+
+/.claude
+
+# Thesis vault (symlink to Windows filesystem, tracked by its own git repo)
+/thesis
+
+*.nsys-rep
+
+
+/evaluate

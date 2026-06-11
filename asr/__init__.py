@@ -1,15 +1,8 @@
-"""ASR evaluation module for speech separation."""
+"""Notebooks driving the CLARIN ASR pipeline (`asr_pipeline/` package).
 
-from .transcribe import WhisperTranscriber
-from .metrics import word_error_rate, character_error_rate, compute_metrics, aggregate_metrics
-from .dataset import LibriSpeechMixDataset, RealMDataset
-
-__all__ = [
-    "WhisperTranscriber",
-    "word_error_rate",
-    "character_error_rate",
-    "compute_metrics",
-    "aggregate_metrics",
-    "LibriSpeechMixDataset",
-    "RealMDataset",
-]
+This directory hosts notebooks only — the importable pipeline code lives
+in the top-level `asr_pipeline/` package. The old one-shot REAL-M/LibriMix
+evaluation modules that used to live here (`transcribe.py`, `metrics.py`,
+`dataset.py`, ...) are archived under `asr/archive/old-asr/` and are not
+importable from this package anymore.
+"""

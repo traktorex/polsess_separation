@@ -1,0 +1,61 @@
+# Phase 4 knob-smoke variant: fixed_pad context window.
+# All other knobs match default.yaml.
+
+sample_rate: 16000
+device: cuda
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  # hf_token comes from $HF_TOKEN env var.
+  num_speakers: 2
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  checkpoint_path: /home/user/MP-SENet/best_ckpt/g_best_vb
+  config_path: /home/user/MP-SENet/config.json
+  max_segment_length_s: 8.0
+
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/sepformer/SB/sepformer_SB_best-64k_baseline_posenc_v25/sepformer_SB_best.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: fixed_pad
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: zero_crossing
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.50
+  vad_soft_threshold: 0.20
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+assembly:
+  enabled: true
+  min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 30.0
+  output_mode: shortened
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  model_name: large-v3
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true

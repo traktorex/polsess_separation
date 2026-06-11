@@ -1,8 +1,6 @@
 """Evaluation script for PolSESS speech separation models (SI-SDR, PESQ, STOI)."""
 
-import warnings
-warnings.filterwarnings("ignore", message=".*torchaudio.*", category=UserWarning)
-warnings.filterwarnings("ignore", message=".*pkg_resources.*", category=UserWarning)
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
 
 import logging
 import torch
@@ -60,6 +58,8 @@ def evaluate_model(
     si_sdri_scores = []
     pesq_scores = []
     stoi_scores = []
+    pesqi_scores = []
+    stoii_scores = []
 
     model.eval()
     with torch.no_grad():
@@ -83,8 +83,9 @@ def evaluate_model(
 
             # Compute SI-SDR based on task
             if task == "SB":
-                # Speaker separation: use PIT-based SI-SDR
-                loss = pit_sisdr(estimates, clean)
+                # Speaker separation: use PIT to find best permutation
+                # return_est=True gives us reordered estimates aligned with clean
+                loss, reordered = pit_sisdr(estimates, clean, return_est=True)
                 si_sdr = -loss
                 si_sdr_scores.append(si_sdr.item())
 
@@ -95,6 +96,40 @@ def evaluate_model(
                     mix_baseline += si_sdr_metric(mix_trimmed, clean[:, spk]).item()
                 mix_baseline /= clean.shape[1]
                 si_sdri_scores.append(si_sdr.item() - mix_baseline)
+
+                # PESQ and STOI on PIT-reordered estimates
+                if pesq_metric:
+                    pesq_sum = 0.0
+                    pesq_mix_sum = 0.0
+                    pesq_count = 0
+                    for spk in range(clean.shape[1]):
+                        for est, ref, mx in zip(reordered[:, spk], clean[:, spk], mix_trimmed):
+                            try:
+                                p = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
+                                p_mix = pesq_metric(mx.unsqueeze(0), ref.unsqueeze(0))
+                                if not (torch.isnan(p) or torch.isinf(p)
+                                        or torch.isnan(p_mix) or torch.isinf(p_mix)):
+                                    pesq_sum += p.item()
+                                    pesq_mix_sum += p_mix.item()
+                                    pesq_count += 1
+                            except Exception as e:
+                                logger.debug(f"PESQ computation failed for sample: {e}")
+                    if pesq_count > 0:
+                        avg_pesq = pesq_sum / pesq_count
+                        avg_pesq_mix = pesq_mix_sum / pesq_count
+                        pesq_scores.append(avg_pesq)
+                        pesqi_scores.append(avg_pesq - avg_pesq_mix)
+
+                if stoi_metric:
+                    stoi_sum = 0.0
+                    stoi_mix_sum = 0.0
+                    for spk in range(clean.shape[1]):
+                        stoi_sum += stoi_metric(reordered[:, spk], clean[:, spk]).item()
+                        stoi_mix_sum += stoi_metric(mix_trimmed, clean[:, spk]).item()
+                    avg_stoi = stoi_sum / clean.shape[1]
+                    avg_stoi_mix = stoi_mix_sum / clean.shape[1]
+                    stoi_scores.append(avg_stoi)
+                    stoii_scores.append(avg_stoi - avg_stoi_mix)
             else:
                 # Enhancement: standard SI-SDR
                 if clean.dim() == 3 and clean.shape[1] == 1:
@@ -107,8 +142,6 @@ def evaluate_model(
                 si_sdr_scores.append(si_sdr.item())
                 si_sdri_scores.append(si_sdr.item() - si_sdr_mix.item())
 
-            # PESQ and STOI only for enhancement tasks
-            if task != "SB":
                 if pesq_metric:
                     for est, ref in zip(estimates, clean):
                         try:
@@ -132,6 +165,10 @@ def evaluate_model(
         results["pesq"] = sum(pesq_scores) / len(pesq_scores)
     if stoi_scores:
         results["stoi"] = sum(stoi_scores) / len(stoi_scores)
+    if pesqi_scores:
+        results["pesqi"] = sum(pesqi_scores) / len(pesqi_scores)
+    if stoii_scores:
+        results["stoii"] = sum(stoii_scores) / len(stoii_scores)
 
     return results
 
@@ -203,9 +240,15 @@ def evaluate_by_variant(
         logger.info(f"  SI-SDR: {variant_results['si_sdr']:.2f} dB")
         logger.info(f"  SI-SDRi: {variant_results['si_sdri']:.2f} dB")
         if "pesq" in variant_results:
-            logger.info(f"  PESQ: {variant_results['pesq']:.2f}")
+            pesq_str = f"  PESQ: {variant_results['pesq']:.2f}"
+            if "pesqi" in variant_results:
+                pesq_str += f" (PESQi: {variant_results['pesqi']:+.2f})"
+            logger.info(pesq_str)
         if "stoi" in variant_results:
-            logger.info(f"  STOI: {variant_results['stoi']:.3f}")
+            stoi_str = f"  STOI: {variant_results['stoi']:.3f}"
+            if "stoii" in variant_results:
+                stoi_str += f" (STOIi: {variant_results['stoii']:+.3f})"
+            logger.info(stoi_str)
         logger.info(f"  Samples: {variant_results['num_samples']}")
 
     return results
@@ -219,12 +262,18 @@ def print_summary(results: dict):
 
     has_pesq = any("pesq" in r for r in results.values())
     has_stoi = any("stoi" in r for r in results.values())
+    has_pesqi = any("pesqi" in r for r in results.values())
+    has_stoii = any("stoii" in r for r in results.values())
 
     headers = ["Variant", "SI-SDR (dB)", "SI-SDRi (dB)"]
     if has_pesq:
         headers.append("PESQ")
+    if has_pesqi:
+        headers.append("PESQi")
     if has_stoi:
         headers.append("STOI")
+    if has_stoii:
+        headers.append("STOIi")
     headers.append("Samples")
 
     table_data = []
@@ -232,8 +281,12 @@ def print_summary(results: dict):
         row = [variant, f"{metrics['si_sdr']:.2f}", f"{metrics['si_sdri']:.2f}"]
         if has_pesq:
             row.append(f"{metrics['pesq']:.2f}" if "pesq" in metrics else "N/A")
+        if has_pesqi:
+            row.append(f"{metrics['pesqi']:+.2f}" if "pesqi" in metrics else "N/A")
         if has_stoi:
             row.append(f"{metrics['stoi']:.3f}" if "stoi" in metrics else "N/A")
+        if has_stoii:
+            row.append(f"{metrics['stoii']:+.3f}" if "stoii" in metrics else "N/A")
         row.append(metrics["num_samples"])
         table_data.append(row)
 
@@ -248,10 +301,20 @@ def print_summary(results: dict):
             avg_row.append(
                 f"{sum(pesq_values) / len(pesq_values):.2f}" if pesq_values else "N/A"
             )
+        if has_pesqi:
+            pesqi_values = [r["pesqi"] for r in results.values() if "pesqi" in r]
+            avg_row.append(
+                f"{sum(pesqi_values) / len(pesqi_values):+.2f}" if pesqi_values else "N/A"
+            )
         if has_stoi:
             stoi_values = [r["stoi"] for r in results.values() if "stoi" in r]
             avg_row.append(
                 f"{sum(stoi_values) / len(stoi_values):.3f}" if stoi_values else "N/A"
+            )
+        if has_stoii:
+            stoii_values = [r["stoii"] for r in results.values() if "stoii" in r]
+            avg_row.append(
+                f"{sum(stoii_values) / len(stoii_values):+.3f}" if stoii_values else "N/A"
             )
         avg_row.append("")
         table_data.append(avg_row)
@@ -272,8 +335,12 @@ def save_results_csv(results: dict, output_path: str):
         }
         if "pesq" in metrics:
             row["pesq"] = metrics["pesq"]
+        if "pesqi" in metrics:
+            row["pesqi"] = metrics["pesqi"]
         if "stoi" in metrics:
             row["stoi"] = metrics["stoi"]
+        if "stoii" in metrics:
+            row["stoii"] = metrics["stoii"]
         rows.append(row)
 
     df = pd.DataFrame(rows)

@@ -1,5 +1,9 @@
 """Utility functions for polsess_separation project."""
 
+# Must stay first: registers warning filters before the submodules below pull in
+# speechbrain, which emits a deprecation warning at import time. See warning_filters.
+from . import warning_filters  # noqa: F401
+
 from .common import (
     set_seed,
     setup_warnings,
@@ -17,6 +21,7 @@ from .model_utils import (
     load_model_for_inference,
     count_parameters,
     apply_torch_compile,
+    compile_for_model_type,
 )
 
 __all__ = [
@@ -34,4 +39,5 @@ __all__ = [
     "dataclass_to_dict",
     "ensure_dir",
     "apply_torch_compile",
+    "compile_for_model_type",
 ]

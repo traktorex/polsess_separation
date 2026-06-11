@@ -1,5 +1,7 @@
 """Training script for speech separation using various model architectures."""
 
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
+
 import torch
 from torch.utils.data import DataLoader
 from config import get_config_from_args
@@ -12,7 +14,7 @@ from utils import (
     setup_logger,
     setup_device_and_amp,
     WandbLogger,
-    apply_torch_compile,
+    compile_for_model_type,
 )
 import os
 
@@ -21,6 +23,7 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 def main():
     setup_warnings()
+    torch.set_float32_matmul_precision('high')
     config = get_config_from_args()
     set_seed(config.training.seed)
 
@@ -66,32 +69,66 @@ def main():
         collate_fn=polsess_collate_fn,
     )
     
-    # Create val dataset
-    val_dataset = dataset_class(
-        data_root,
-        subset="val",
-        task=config.data.task,
-        max_samples=config.data.val_max_samples,
-        allowed_variants=config.training.validation_variants,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.data.batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
-        collate_fn=polsess_collate_fn,
-    )
-    
+    # Create val dataset(s)
+    # Canonical MM-IPC variant order (indoor + outdoor), matching evaluate.py.
+    ALL_VARIANTS = ["SER", "SR", "ER", "R", "SE", "S", "E", "C"]
+
+    val_loader = None
+    per_variant_val_loaders = None
+
+    if config.training.per_variant_validation:
+        # Build one dataloader per variant. Each forces a specific MM-IPC variant
+        # via allowed_variants=[v], so every val sample is re-rendered 8 times.
+        filter_set = config.training.validation_variants
+        variants_to_use = [v for v in ALL_VARIANTS if filter_set is None or v in filter_set]
+        per_variant_val_loaders = {}
+        for variant in variants_to_use:
+            v_dataset = dataset_class(
+                data_root,
+                subset="val",
+                task=config.data.task,
+                max_samples=config.data.val_max_samples,
+                allowed_variants=[variant],
+            )
+            per_variant_val_loaders[variant] = DataLoader(
+                v_dataset,
+                batch_size=config.data.batch_size,
+                shuffle=False,
+                num_workers=config.data.num_workers,
+                prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+                collate_fn=polsess_collate_fn,
+            )
+        # All variant loaders share the same underlying val pool size; pick one for the summary.
+        first_loader = next(iter(per_variant_val_loaders.values()))
+        summary_info["val_samples"] = len(first_loader.dataset)
+        summary_info["val_variants"] = list(per_variant_val_loaders.keys())
+    else:
+        val_dataset = dataset_class(
+            data_root,
+            subset="val",
+            task=config.data.task,
+            max_samples=config.data.val_max_samples,
+            allowed_variants=config.training.validation_variants,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=config.data.batch_size,
+            shuffle=False,
+            num_workers=config.data.num_workers,
+            prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+            collate_fn=polsess_collate_fn,
+        )
+        summary_info["val_samples"] = len(val_loader.dataset)
+
     # Update summary info
     summary_info["train_samples"] = len(train_loader.dataset)
-    summary_info["val_samples"] = len(val_loader.dataset)
 
     # Create model using factory
     model = create_model_from_config(config.model, summary_info)
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only)
-    model = apply_torch_compile(model, logger=logger)
+    # Apply torch.compile (PyTorch 2.0+, Linux only) with per-architecture
+    # settings — see compile_for_model_type for the Mamba/MossFormer2 rationale.
+    model = compile_for_model_type(model, config.model.model_type, logger=logger)
 
     # Setup WandB logger
     wandb_logger = WandbLogger(
@@ -115,6 +152,7 @@ def main():
         device=device,
         logger=logger,
         wandb_logger=wandb_logger,
+        per_variant_val_loaders=per_variant_val_loaders,
     )
 
     # Resume from checkpoint if specified
@@ -130,7 +168,8 @@ def main():
 
     # Log completion
     logger.info("Training complete!")
-    logger.info(f"Best validation SI-SDR: {trainer.best_val_sisdr:.2f} dB")
+    metric_name = "avg SI-SDRi" if trainer.per_variant_mode else "SI-SDR"
+    logger.info(f"Best validation {metric_name}: {trainer.best_val_sisdr:.2f} dB")
 
     if wandb_logger:
         wandb_logger.finish()
