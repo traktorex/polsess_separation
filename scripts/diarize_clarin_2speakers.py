@@ -36,7 +36,10 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from asr_pipeline.config import DiarizationConfig                # noqa: E402
+from asr_pipeline.config import (                                # noqa: E402
+    DiarizationConfig,
+    redact_config_snapshot,
+)
 from asr_pipeline.context import PipelineContext                 # noqa: E402
 from asr_pipeline.io import load_audio_as_mono                   # noqa: E402
 from asr_pipeline.stages.diarization import DiarizationStage     # noqa: E402
@@ -77,7 +80,10 @@ def main() -> int:
         return 0
 
     cfg = DiarizationConfig()  # defaults: pyannote 3.1, num_speakers=2, HF_TOKEN env
-    print(f"[diarize] config: {asdict(cfg) | {'hf_token': '***' if cfg.hf_token else None}}")
+    # Mask the HF token via the single-source redactor (write-side truth shared
+    # with io.write_pipeline_outputs / save_pipeline_config_to_yaml). It keys on
+    # a top-level "diarization" dict, so wrap the bare DiarizationConfig snapshot.
+    print(f"[diarize] config: {redact_config_snapshot({'diarization': asdict(cfg)})['diarization']}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[diarize] loading {cfg.model_id} on {device}")

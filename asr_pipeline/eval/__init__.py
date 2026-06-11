@@ -24,6 +24,7 @@ Low-level helpers (kept exported for direct use in notebooks):
 - ``parse_gt_txt``, ``parse_transcript_file`` from `transcript_parser.py`.
 """
 
+from asr_pipeline.eval.config_presets import fresh_eval_cfg
 from asr_pipeline.eval.layer2 import (
     compute_intrusive,
     compute_layer2,
@@ -62,6 +63,8 @@ from asr_pipeline.eval.transcript_parser import (
 )
 
 __all__ = [
+    # Config presets
+    "fresh_eval_cfg",
     # Discovery
     "Recording", "ScoreCard", "load_recording", "walk_eval_tree",
     # Orchestration

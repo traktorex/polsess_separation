@@ -1,7 +1,7 @@
 """Sweep ASR-pipeline configurations over a fixed eval set and rank by cpWER.
 
 Runs each named config (a set of overrides on ``default.yaml`` + the eval
-overrides from ``run_pipeline_on_recording._fresh_cfg``) across the pilot
+overrides from ``asr_pipeline.eval.fresh_eval_cfg``) across the pilot
 recordings, writes outputs to ``<id>/sweep/<config_name>/``, then scores
 every config's per-speaker transcripts against the hand-corrected GT EAF
 (``<id>/annotation.eaf``) with cpWER / tcpWER and ranks them.
@@ -50,12 +50,12 @@ from asr_pipeline.eval.metrics import (                             # noqa: E402
     orc_wer_meeteval,
     orc_wer_multistream,
 )
+from asr_pipeline.eval.config_presets import fresh_eval_cfg         # noqa: E402
 from asr_pipeline.eval.layer3 import read_mixture, read_per_speaker  # noqa: E402
 from asr_pipeline.eval.recordings import (                          # noqa: E402
     load_recording,
     load_reference_utterances,
 )
-from scripts.run_pipeline_on_recording import _fresh_cfg            # noqa: E402
 
 
 EVAL_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
@@ -182,7 +182,7 @@ def _apply(cfg, overrides: dict):
 
 
 def _build_cfg(overrides: dict):
-    return _apply(_fresh_cfg(CFG_PATH), overrides)
+    return _apply(fresh_eval_cfg(CFG_PATH), overrides)
 
 
 # --- Run ------------------------------------------------------------------
@@ -235,12 +235,17 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
         gt[fid] = load_reference_utterances(rec) if rec is not None else {}
     rows = []
     for name in config_names:
-        cp_err = cp_len = tcp_err = tcp_len = 0
-        orc_err = orc_len = 0          # ORC-WER on the 2-stream output
-        cer_err = cer_len = 0          # cp-CER on the 2-stream output (cpWER permutation)
-        mix_err = mix_len = 0          # mixture floor, ORC-WER (time-fixed merge)
-        mmix_err = mmix_len = 0        # mixture floor, MIMO-WER (optimised interleaving)
-        mxcer_err = mxcer_len = 0      # mixture floor, MIMO-CER
+        # Per-metric [error_sum, ref_length_sum] accumulators. cpWER carries an
+        # extra `tcp` pair (cpwer_meeteval returns both in one call), so its
+        # entry holds two (err, len) pairs.
+        acc: dict[str, list[float]] = {
+            "cp": [0, 0], "tcp": [0, 0],   # 2-stream output, cpWER permutation
+            "orc": [0, 0],                 # 2-stream output, ORC-WER
+            "cer": [0, 0],                 # 2-stream output, cp-CER
+            "mixORC": [0, 0],              # mixture floor, ORC-WER (time-fixed merge)
+            "mixMIMO": [0, 0],             # mixture floor, MIMO-WER (optimised interleaving)
+            "mixCER": [0, 0],              # mixture floor, MIMO-CER
+        }
         per_rec = {}
         n_done = 0
         for fid in recordings:
@@ -252,37 +257,42 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
             if not ref:
                 continue
             r = cpwer_meeteval(ref, hyp, session_id=fid)
-            cp_err += r["cp_errors"]; cp_len += r["cp_length"]
-            tcp_err += r["tcp_errors"]; tcp_len += r["tcp_length"]
+            acc["cp"][0] += r["cp_errors"];  acc["cp"][1] += r["cp_length"]
+            acc["tcp"][0] += r["tcp_errors"]; acc["tcp"][1] += r["tcp_length"]
             o = orc_wer_multistream(ref, hyp, session_id=fid)
-            orc_err += o["errors"]; orc_len += o["length"]
+            acc["orc"][0] += o["errors"]; acc["orc"][1] += o["length"]
             cc = cp_cer_meeteval(ref, hyp, session_id=fid)
-            cer_err += cc["errors"]; cer_len += cc["length"]
+            acc["cer"][0] += cc["errors"]; acc["cer"][1] += cc["length"]
             mix_utts = read_mixture(d)
             if mix_utts is not None:
                 m = orc_wer_meeteval(ref, mix_utts, session_id=fid)
-                mix_err += m["errors"]; mix_len += m["length"]
+                acc["mixORC"][0] += m["errors"]; acc["mixORC"][1] += m["length"]
                 mm = mimo_wer_meeteval(ref, mix_utts, session_id=fid)
-                mmix_err += mm["errors"]; mmix_len += mm["length"]
+                acc["mixMIMO"][0] += mm["errors"]; acc["mixMIMO"][1] += mm["length"]
                 mxc = mimo_cer_meeteval(ref, mix_utts, session_id=fid)
-                mxcer_err += mxc["errors"]; mxcer_len += mxc["length"]
+                acc["mixCER"][0] += mxc["errors"]; acc["mixCER"][1] += mxc["length"]
             per_rec[fid] = r["cpwer"]
             n_done += 1
         if n_done == 0:
             continue
-        cpwer = 100 * cp_err / cp_len if cp_len else float("nan")
-        orcwer = 100 * orc_err / orc_len if orc_len else float("nan")
+
+        def pct(metric: str) -> float:
+            err, length = acc[metric]
+            return 100 * err / length if length else float("nan")
+
+        cpwer = pct("cp")
+        orcwer = pct("orc")
         row = {
             "config": name,
             "n": n_done,
             "cpWER": cpwer,
             "orcWER": orcwer,
             "attr_gap": cpwer - orcwer,      # speaker-attribution penalty
-            "tcpWER": 100 * tcp_err / tcp_len if tcp_len else float("nan"),
-            "CER": 100 * cer_err / cer_len if cer_len else float("nan"),
-            "mixMIMO": 100 * mmix_err / mmix_len if mmix_len else float("nan"),
-            "mixORC": 100 * mix_err / mix_len if mix_len else float("nan"),
-            "mixCER": 100 * mxcer_err / mxcer_len if mxcer_len else float("nan"),
+            "tcpWER": pct("tcp"),
+            "CER": pct("cer"),
+            "mixMIMO": pct("mixMIMO"),
+            "mixORC": pct("mixORC"),
+            "mixCER": pct("mixCER"),
         }
         for fid in recordings:
             row[fid[:8]] = round(100 * per_rec[fid], 1) if fid in per_rec else None
