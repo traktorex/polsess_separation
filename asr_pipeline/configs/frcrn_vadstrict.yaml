@@ -1,6 +1,6 @@
 # Leading candidate config from the CLARIN 5-recording pilot sweep (2026-05-30).
 # PRELIMINARY (n=5): cpWER 17.2 / orcWER 17.2 vs no-pipeline mixture floor 25.8
-# and vs the shipped default.yaml (mpsenet) 30.5.
+# and vs the then-shipped default.yaml (mpsenet, since removed) 30.5.
 #
 # Deltas from default.yaml that define this candidate:
 #   enhancement.backend:        mpsenet -> frcrn_se_16k   (mpsenet HURTS; FRCRN best)
@@ -29,8 +29,6 @@ routing:
 enhancement:
   enabled: true
   backend: frcrn_se_16k
-  checkpoint_path: /home/user/MP-SENet/best_ckpt/g_best_vb
-  config_path: /home/user/MP-SENet/config.json
   max_segment_length_s: 8.0
 separation:
   enabled: true

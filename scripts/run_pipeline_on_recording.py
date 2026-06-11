@@ -76,7 +76,7 @@ MODES: list[tuple[str, callable]] = [
     ("pipeline_noenh",              lambda cfg: setattr(cfg.enhancement, "enabled", False)),
     ("pipeline_minimal",            _disable_both),
     # GT-bootstrap candidate: keep enhancement to recover the quieter
-    # speaker during overlap, but switch backend from the default MP-SENet
+    # speaker during overlap, but switch backend from the default FRCRN
     # to MossFormerGAN (less aggressive suppression of the non-dominant
     # speaker in mixed regions).
     ("pipeline_nosep_mossformer",   _nosep_with_mossformer),

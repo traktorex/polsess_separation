@@ -28,9 +28,10 @@ routing:
 
 enhancement:
   enabled: true
-  checkpoint_path: /home/user/MP-SENet/best_ckpt/g_best_vb
-  config_path: /home/user/MP-SENet/config.json
-  max_segment_length_s: 8.0   # solos longer than this get Hann overlap-add chunked
+  # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is the
+  # evidence leader). Final default ruling deferred pending substantive data.
+  backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k | mossformer2_se_48k
+  max_segment_length_s: 8.0    # solos longer than this get Hann overlap-add chunked
 
 separation:
   enabled: true

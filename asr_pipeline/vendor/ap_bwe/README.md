@@ -16,7 +16,8 @@ The upstream repository is clone-only (no pip package) and uses top-level
 `models/`, `datasets/`, `utils.py` namespaces that would clash with the host
 project's own modules. Vendoring just the inference-relevant code into a local
 namespace (`asr_pipeline.vendor.ap_bwe`) keeps the integration self-contained
-and matches the pattern already used for MP-SENet.
+and follows the project's standard vendoring pattern (a minimal copy under
+`asr_pipeline/vendor/` with locally-resolving imports).
 
 ## What was kept
 

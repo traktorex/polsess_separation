@@ -107,7 +107,7 @@ class PipelineContext:
     overlap_regions: Optional[List[Interval]] = None
     speakers: List[str] = field(default_factory=list)
 
-    # Stage 3a — full-recording enhancement (single MP-SENet pass).
+    # Stage 3a — full-recording enhancement (single enhancer pass).
     # Same length as `ctx.audio`; sliced per-speaker at assembly time.
     enhanced_full: Optional[np.ndarray] = None
 

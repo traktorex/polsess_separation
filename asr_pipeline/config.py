@@ -92,47 +92,26 @@ class EnhancementConfig:
     """Stage 3a: full-recording speech enhancement (single pass; sliced
     per-speaker at assembly).
 
-    Multiple backends are supported. The default is the vendored MP-SENet
-    (VoiceBank+DEMAND training distribution, narrow). ClearerVoice-Studio
-    alternatives are trained on broader DNS-Challenge data and handle
-    reverberant / out-of-distribution input more robustly.
+    Backends are ClearerVoice-Studio single-output SE models, trained on
+    broad DNS-Challenge data. They self-download by name to a HuggingFace
+    cache on first use (no checkpoint path to configure).
     """
 
     enabled: bool = True
-    # Backend selector:
-    #   - "mpsenet": vendored MP-SENet checkpoint (16k, narrow training dist)
-    #   - "frcrn_se_16k": ClearerVoice FRCRN, DNS-2020 winner, native 16k
-    #   - "mossformer_gan_se_16k": ClearerVoice MossFormer + GAN losses, 16k
-    #   - "mossformer2_se_48k": ClearerVoice MossFormer2, native 48k
+    # Backend selector (all ClearerVoice-Studio, self-downloading):
+    #   - "frcrn_se_16k": FRCRN, DNS-2020 winner, native 16k
+    #   - "mossformer_gan_se_16k": MossFormer + GAN losses, 16k
+    #   - "mossformer2_se_48k": MossFormer2, native 48k
     #     (pipeline at 16k → upsample/downsample handled internally by the
     #     backend; expect modest extra compute)
-    # The non-MPSENet backends ignore the `checkpoint_path` / `config_path`
-    # fields below — they self-download to their respective caches on
-    # first use.
-    backend: str = "mpsenet"
-    # Path to the MP-SENet generator checkpoint (PyTorch state dict containing
-    # the 'generator' key). The vendored model code reads its hyperparameters
-    # from a `config.json` placed next to the checkpoint.
-    checkpoint_path: str = field(
-        default_factory=lambda: os.getenv(
-            "MPSENET_CHECKPOINT",
-            "/home/user/MP-SENet/best_ckpt/g_best_vb",
-        )
-    )
-    # Path to MP-SENet's `config.json` (architecture hyperparameters).
-    config_path: str = field(
-        default_factory=lambda: os.getenv(
-            "MPSENET_CONFIG",
-            "/home/user/MP-SENet/config.json",
-        )
-    )
-    # MP-SENet's time-axis attention is O(T^2), so feeding a long
-    # recording to it in one shot blows up GPU memory. Recordings longer
-    # than this duration are processed via Hann overlap-add — chunks of
-    # this size with a 50% hop (canonical COLA: window sum is 1.0 in the
-    # interior, head/tail divided by actual weights). MP-SENet was
-    # trained on 2 s crops; 8 s chunks were verified by ear on long
-    # Polish recordings.
+    # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is
+    # the evidence leader). The *final* default ruling is deferred until there
+    # is substantive testing data.
+    backend: str = "frcrn_se_16k"
+    # Long recordings are processed via Hann overlap-add — chunks of this
+    # size with a 50% hop (canonical COLA: window sum is 1.0 in the interior,
+    # head/tail divided by actual weights). 8 s chunks were verified by ear on
+    # long Polish recordings.
     max_segment_length_s: float = 8.0
 
 
@@ -308,7 +287,7 @@ class AssemblyConfig:
     # Per-speaker RMS match: scale each overlap event so its RMS matches the
     # median RMS of that speaker's solo events. Fixes the common case where
     # SepFormer outputs (with sum_equals_mix normalisation) end up noticeably
-    # louder than MP-SENet's solo audio. Solo events are not touched, so the
+    # louder than the enhancer's solo audio. Solo events are not touched, so the
     # speaker's natural dynamics are preserved.
     overlap_rms_match_solo: bool = True
     # Optional aggressive per-piece RMS normalisation before concat. When
@@ -378,7 +357,7 @@ class PipelineConfig:
     device: str = "cuda"
 
     # Force deterministic cuDNN algorithms so runs are reproducible. The
-    # enhancement conv stack (e.g. FRCRN / MP-SENet) is otherwise the pipeline's
+    # enhancement conv stack (e.g. FRCRN) is otherwise the pipeline's
     # sole source of run-to-run nondeterminism — it picks nondeterministic cuDNN
     # algorithms that inject ~1e-7 float noise into `enhanced_full`, which
     # WhisperX occasionally amplifies into a flipped token (per-speaker WER
@@ -416,7 +395,7 @@ class PipelineConfig:
         _one_of(self.assembly.output_mode, "output_mode",
                 ("shortened", "full_length"))
         _one_of(self.enhancement.backend, "enhancement.backend",
-                ("mpsenet", "frcrn_se_16k", "mossformer_gan_se_16k", "mossformer2_se_48k"))
+                ("frcrn_se_16k", "mossformer_gan_se_16k", "mossformer2_se_48k"))
         _one_of(self.post_separation_processing.backend,
                 "post_separation_processing.backend",
                 ("naive", "ap_bwe", "flowhigh"))

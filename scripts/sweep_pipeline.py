@@ -69,7 +69,7 @@ PILOT = [
 
 # --- Config registry ------------------------------------------------------
 # Each value is a dict of "stage.field" -> value, applied on the baseline.
-# baseline = default.yaml (full pipeline: enh=mpsenet, sep=128k SepFormer,
+# baseline = default.yaml (full pipeline: enh=frcrn_se_16k, sep=128k SepFormer,
 # bwe=ap_bwe, whisperx large-v2) + eval overrides (full_length,
 # transcribe_mixture, min_overlap_dur=0).
 CONFIGS: dict[str, dict] = {

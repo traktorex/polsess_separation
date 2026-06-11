@@ -1,14 +1,13 @@
 """Unit tests for Stage 3a enhancement.
 
-Covers the shared Hann overlap-add helper, the MP-SENet STFT/ISTFT seam, the
-backend dispatcher + its error guards, and the ClearVoice resample/length
-contract — all on CPU, no model weights.
+Covers the shared Hann overlap-add helper, the backend dispatcher + its error
+guards, and the ClearVoice resample/length contract — all on CPU, no model
+weights.
 
-`_hann_overlap_add` replaced two near-identical chunking loops (MP-SENet's
-`_enhance_chunked` and ClearerVoice's `_enhance_native`). The regression
-tests at the bottom keep verbatim copies of both *original* loops and assert
-the helper reproduces them exactly — so any future change to the COLA math
-that would alter the audio fails loudly here.
+`_hann_overlap_add` is the COLA reconstruction the ClearerVoice backend uses
+for long audio. The regression test at the bottom keeps a verbatim copy of the
+*original* ClearerVoice loop and asserts the helper reproduces it exactly — so
+any future change to the COLA math that would alter the audio fails loudly here.
 """
 
 import numpy as np
@@ -21,10 +20,7 @@ from asr_pipeline.stages.enhancement import (
     _CLEARVOICE_BACKENDS,
     EnhancementStage,
     _ClearVoiceBackend,
-    _MPSENetBackend,
     _hann_overlap_add,
-    _mpsenet_istft,
-    _mpsenet_stft,
 )
 
 RNG = np.random.default_rng(0)
@@ -85,27 +81,6 @@ def test_output_is_float32():
 
 
 # ---------------------------------------------------------------------------
-# MP-SENet STFT/ISTFT seam (default backend hot path)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("cf", [0.3, 0.5, 1.0])
-def test_mpsenet_stft_istft_roundtrip(cf):
-    # Default backend hot path: the STFT compresses magnitude (^cf) and the
-    # ISTFT inverts it (^1/cf). The interior (away from the reflect-pad edges)
-    # must reconstruct to within float tolerance (measured clean err ~7e-7 at
-    # cf=0.3). Looping cf pins the compress/decompress *pairing*, not the
-    # literal 0.3: a swapped pow() would silently corrupt every MP-SENet output
-    # and fail here for cf != 1.0 (cf == 1.0 is the degenerate no-op case).
-    h = {"n_fft": 400, "hop_size": 100, "win_size": 400, "compress_factor": cf}
-    torch.manual_seed(0)
-    x = torch.randn(1, 4000)
-    mag, pha = _mpsenet_stft(x, h)
-    rec = _mpsenet_istft(mag, pha, h)
-    assert torch.allclose(rec[..., 200:-200], x[..., 200:-200], atol=1e-5)
-
-
-# ---------------------------------------------------------------------------
 # Backend dispatch + error guards
 # ---------------------------------------------------------------------------
 
@@ -114,7 +89,6 @@ def test_load_dispatches_to_correct_backend(monkeypatch):
     # Lock the table that decides which model runs and at which sample rate —
     # a wrong SR pairing degrades output with no crash. Backend load() is
     # stubbed so no weights are read.
-    monkeypatch.setattr(_MPSENetBackend, "load", lambda self, device: None)
     monkeypatch.setattr(_ClearVoiceBackend, "load", lambda self, device: None)
     dev = torch.device("cpu")
 
@@ -133,10 +107,6 @@ def test_load_dispatches_to_correct_backend(monkeypatch):
         assert stage._backend.model_name == model_name
         assert stage._backend.native_sample_rate == sr
 
-    stage = EnhancementStage(EnhancementConfig(backend="mpsenet"))
-    stage.load(dev)
-    assert isinstance(stage._backend, _MPSENetBackend)
-
 
 def test_unknown_backend_raises():
     stage = EnhancementStage(EnhancementConfig(backend="does_not_exist"))
@@ -145,7 +115,7 @@ def test_unknown_backend_raises():
 
 
 def test_run_before_load_raises():
-    stage = EnhancementStage(EnhancementConfig(backend="mpsenet"))
+    stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
     ctx = PipelineContext()
     ctx.audio = _noise(1000)
     with pytest.raises(RuntimeError, match="called before load"):
@@ -153,7 +123,7 @@ def test_run_before_load_raises():
 
 
 def test_run_audio_none_raises():
-    stage = EnhancementStage(EnhancementConfig(backend="mpsenet"))
+    stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
     stage._backend = object()  # bypass load(); exercise the audio guard
     ctx = PipelineContext()
     ctx.audio = None
@@ -201,11 +171,11 @@ def test_clearvoice_enhance_pads_short_forward():
 
 
 # ---------------------------------------------------------------------------
-# Regression: byte-for-byte equivalence with the two original loops
+# Regression: byte-for-byte equivalence with the original ClearerVoice loop
 # ---------------------------------------------------------------------------
-# Verbatim copies of the pre-refactor implementations (only the model call is
-# parameterised). If `_hann_overlap_add` ever drifts from these, the audio
-# output of Stage 3a changes — these tests are the tripwire.
+# Verbatim copy of the pre-refactor implementation (only the model call is
+# parameterised). If `_hann_overlap_add` ever drifts from this, the audio
+# output of Stage 3a changes — this test is the tripwire.
 
 
 def _old_clearvoice_loop(x, window, cv_call):
@@ -229,35 +199,6 @@ def _old_clearvoice_loop(x, window, cv_call):
     return out / norm
 
 
-def _old_mpsenet_loop(audio_np, chunk_n, win_size, one_shot):
-    hop_n = chunk_n // 2
-    n = len(audio_np)
-    if n <= chunk_n:
-        return one_shot(audio_np)
-    out = np.zeros(n, dtype=np.float32)
-    weights = np.zeros(n, dtype=np.float32)
-    window = np.hanning(chunk_n).astype(np.float32)
-    start = 0
-    while start < n:
-        end = min(start + chunk_n, n)
-        seg = audio_np[start:end]
-        if len(seg) < win_size:
-            chunk_out = seg.astype(np.float32)
-        else:
-            seg_padded = (
-                np.pad(seg, (0, chunk_n - len(seg))) if len(seg) < chunk_n else seg
-            )
-            chunk_out = one_shot(seg_padded)[: len(seg)]
-        w = window[: len(seg)]
-        out[start:end] += chunk_out * w
-        weights[start:end] += w
-        if end == n:
-            break
-        start += hop_n
-    weights = np.maximum(weights, 1e-6)
-    return (out / weights).astype(np.float32)
-
-
 def _fake_model(s):
     """Deterministic non-trivial stand-in for an enhancement forward."""
     return (np.asarray(s, np.float32) * 0.7 + 0.05).astype(np.float32)
@@ -268,23 +209,5 @@ def test_matches_original_clearvoice_loop(n):
     x = _noise(n)
     old = _old_clearvoice_loop(x, 1000, _fake_model)
     new = _hann_overlap_add(x, 1000, _fake_model)
-    assert old.shape == new.shape
-    assert np.allclose(old, new, atol=1e-6, rtol=0)
-
-
-@pytest.mark.parametrize("n", [1250, 1500, 2500, 3001, 4096])
-def test_matches_original_mpsenet_loop(n):
-    chunk_n, win_size = 1000, 300
-    x = _noise(n)
-    old = _old_mpsenet_loop(x, chunk_n, win_size, _fake_model)
-
-    # Mirror the refactored MPSENet enhance(): pad each chunk to chunk_n.
-    def _process(seg):
-        if len(seg) < win_size:
-            return seg.astype(np.float32)
-        sp = np.pad(seg, (0, chunk_n - len(seg))) if len(seg) < chunk_n else seg
-        return _fake_model(sp)
-
-    new = _hann_overlap_add(x, chunk_n, _process)
     assert old.shape == new.shape
     assert np.allclose(old, new, atol=1e-6, rtol=0)

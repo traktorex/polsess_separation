@@ -12,9 +12,6 @@ independent is intentional.
 
 Backends are selected via `EnhancementConfig.backend`:
 
-  - `mpsenet`            : vendored MP-SENet (`asr_pipeline.vendor.mpsenet`).
-                           Tiny (~2.8 M), narrow training distribution
-                           (VoiceBank+DEMAND additive noise only).
   - `frcrn_se_16k`       : ClearerVoice FRCRN_SE_16K. DNS-2020 winner,
                            native 16 kHz, ~7 M params.
   - `mossformer_gan_se_16k`: ClearerVoice MossFormerGAN_SE_16K. GAN-loss
@@ -33,7 +30,6 @@ to a HuggingFace cache.
 from __future__ import annotations
 
 import gc
-import json
 from pathlib import Path
 from typing import Callable
 
@@ -45,27 +41,11 @@ import torch
 from asr_pipeline.config import EnhancementConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.stages.base import Stage
-from asr_pipeline.vendor.mpsenet import MPNet
-
-
-class _AttrDict(dict):
-    """Dict that supports attribute access (needed by MPNet.__init__).
-
-    Mirrors upstream MP-SENet's own ``env.AttrDict``; kept local so the
-    vendored package stays self-contained (no cross-import from sibling
-    vendor packages).
-    """
-
-    def __getattr__(self, name):
-        try:
-            return self[name]
-        except KeyError as e:
-            raise AttributeError(name) from e
 
 
 # Inputs shorter than this (samples) are passed through unenhanced — too short
-# for the STFT window / a meaningful forward. Shared by both backends. (Not the
-# same threshold as separation's like-valued _MIN_OVERLAP_SAMPLES; kept separate.)
+# for the STFT window / a meaningful forward. (Not the same threshold as
+# separation's like-valued _MIN_OVERLAP_SAMPLES; kept separate.)
 _MIN_ENHANCE_SAMPLES = 256
 
 # Fraction of a ClearVoice backend's one_time_decode_length we actually fill per
@@ -89,8 +69,7 @@ def _hann_overlap_add(
     `process_chunk(seg)` enhances one chunk and returns audio at least as long
     as `seg` (truncated to `len(seg)` here). Input shorter than `window_n` is a
     single `process_chunk` call — for one chunk the Hann weights cancel, so the
-    result equals `process_chunk(audio)[:n]`. Shared by the MP-SENet and
-    ClearerVoice backends, whose long-audio chunking is otherwise identical.
+    result equals `process_chunk(audio)[:n]`.
     """
     n = len(audio)
     if n <= window_n:
@@ -112,137 +91,6 @@ def _hann_overlap_add(
         start += hop
     weights = np.maximum(weights, 1e-8)  # inaudible floor; only guards div-by-0 at uncovered edges
     return (out / weights).astype(np.float32)
-
-
-# ---------------------------------------------------------------------------
-# MP-SENet backend
-# ---------------------------------------------------------------------------
-# STFT helpers — port of upstream MP-SENet `mag_pha_stft` / `mag_pha_istft`
-# (compressed-magnitude + raw phase representation). Deviates from an "exact"
-# port in one inaudible way — see the phase note in `_mpsenet_stft`.
-
-
-def _mpsenet_stft(audio_t: torch.Tensor, h: dict) -> tuple[torch.Tensor, torch.Tensor]:
-    window = torch.hann_window(h["win_size"]).to(audio_t.device)
-    spec = torch.stft(
-        audio_t,
-        h["n_fft"],
-        hop_length=h["hop_size"],
-        win_length=h["win_size"],
-        window=window,
-        center=True,
-        pad_mode="reflect",
-        normalized=False,
-        return_complex=True,
-    )
-    mag = spec.abs().pow(h["compress_factor"])
-    # Upstream computes atan2(imag + 1e-10, real + 1e-5); we use plain atan2.
-    # The real-axis bias is a negligible, inaudible train/infer mismatch.
-    pha = spec.angle()
-    return mag, pha
-
-
-def _mpsenet_istft(mag: torch.Tensor, pha: torch.Tensor, h: dict) -> torch.Tensor:
-    mag = mag.pow(1.0 / h["compress_factor"])
-    spec = torch.complex(mag * torch.cos(pha), mag * torch.sin(pha))
-    window = torch.hann_window(h["win_size"]).to(spec.device)
-    return torch.istft(
-        spec,
-        h["n_fft"],
-        hop_length=h["hop_size"],
-        win_length=h["win_size"],
-        window=window,
-        center=True,
-        normalized=False,
-        onesided=True,
-    )
-
-
-class _MPSENetBackend:
-    """Vendored MP-SENet — narrow training (VoiceBank+DEMAND), tiny.
-
-    Time-axis attention is O(T^2), so long recordings are processed via
-    Hann overlap-add (chunk = `max_segment_length_s`, hop = chunk / 2).
-    """
-
-    def __init__(self, config: EnhancementConfig) -> None:
-        self.config = config
-        self._model: MPNet | None = None
-        self._h: _AttrDict | None = None
-        self._device: torch.device | None = None
-
-    def load(self, device: torch.device) -> None:
-        config_path = Path(self.config.config_path)
-        ckpt_path = Path(self.config.checkpoint_path)
-        if not config_path.exists():
-            raise FileNotFoundError(f"MP-SENet config.json not found: {config_path}")
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"MP-SENet checkpoint not found: {ckpt_path}")
-
-        with open(config_path) as f:
-            h = _AttrDict(json.load(f))
-
-        model = MPNet(h).to(device)
-        state = torch.load(ckpt_path, map_location=device)
-        model.load_state_dict(state["generator"])
-        model.eval()
-
-        self._model = model
-        self._h = h
-        self._device = device
-
-    def unload(self) -> None:
-        self._model = None
-        self._h = None
-        self._device = None
-
-    @torch.no_grad()
-    def _enhance_one_shot(self, audio_np: np.ndarray) -> np.ndarray:
-        """Enhance one mono region in a single MP-SENet forward pass.
-
-        Caller is responsible for keeping the region under
-        `max_segment_length_s` — longer regions blow up MP-SENet's O(T^2)
-        time-axis attention.
-        """
-        assert self._model is not None and self._h is not None
-        if len(audio_np) < self._h["win_size"]:
-            return audio_np.copy()
-        audio = torch.from_numpy(audio_np).to(self._device)
-        norm = torch.sqrt(audio.numel() / (audio.pow(2).sum() + 1e-12))
-        audio_n = (audio * norm).unsqueeze(0)
-        mag, pha = _mpsenet_stft(audio_n, self._h)
-        # MPNet.forward returns (amp, pha, denoised_com); the third (complex
-        # spectrogram) is unused — the seam rebuilds it in _mpsenet_istft.
-        amp_out, pha_out, _ = self._model(mag, pha)
-        audio_out = _mpsenet_istft(amp_out, pha_out, self._h).squeeze(0)
-        audio_out = (audio_out / (norm + 1e-12)).cpu().numpy().astype(np.float32)
-        if len(audio_out) < len(audio_np):
-            audio_out = np.pad(audio_out, (0, len(audio_np) - len(audio_out)))
-        else:
-            audio_out = audio_out[: len(audio_np)]
-        return audio_out
-
-    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        if len(audio_np) < _MIN_ENHANCE_SAMPLES:
-            return audio_np.astype(np.float32)
-        chunk_n = int(self.config.max_segment_length_s * sample_rate)
-        if len(audio_np) <= chunk_n:
-            # Short input: single forward at exact length (no chunk padding).
-            return self._enhance_one_shot(audio_np)
-
-        # Long input: Hann overlap-add. Each chunk is padded up to `chunk_n`
-        # before the forward (MP-SENet's O(T^2) attention expects the trained
-        # window); the helper truncates the output back to the chunk's real
-        # length. The <256-sample chunk guard mirrors `_enhance_one_shot`.
-        def _process(seg: np.ndarray) -> np.ndarray:
-            if len(seg) < self._h["win_size"]:
-                return seg.astype(np.float32)
-            seg_padded = (
-                np.pad(seg, (0, chunk_n - len(seg))) if len(seg) < chunk_n else seg
-            )
-            return self._enhance_one_shot(seg_padded)
-
-        return _hann_overlap_add(audio_np, chunk_n, _process)
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +203,8 @@ class _ClearVoiceBackend:
         ClearVoice's own long-audio segmentation (input longer than
         `one_time_decode_length`) is bugged, so we keep every forward under
         that threshold and stitch with a canonical 50 %-hop Hann window
-        (constant overlap-add) — the same `_hann_overlap_add` scheme the
-        MP-SENet backend uses. Short input reduces to a single forward.
+        (constant overlap-add) via `_hann_overlap_add`. Short input reduces
+        to a single forward.
         """
         sr = self.native_sample_rate
         # stay under the decode threshold; ≥ 1 s
@@ -384,12 +232,10 @@ class EnhancementStage(Stage):
     def __init__(self, config: EnhancementConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: _MPSENetBackend | _ClearVoiceBackend | None = None
+        self._backend: _ClearVoiceBackend | None = None
 
     def load(self, device: torch.device) -> None:
-        if self.config.backend == "mpsenet":
-            backend = _MPSENetBackend(self.config)
-        elif self.config.backend in _CLEARVOICE_BACKENDS:
+        if self.config.backend in _CLEARVOICE_BACKENDS:
             model_name, native_sr = _CLEARVOICE_BACKENDS[self.config.backend]
             backend = _ClearVoiceBackend(model_name, native_sr)
         else:
@@ -400,15 +246,8 @@ class EnhancementStage(Stage):
         self._backend = backend
 
     def load_signature(self) -> tuple:
-        # Which model gets loaded depends on `backend`. MP-SENet additionally
-        # reads its weights and architecture from disk; the other backends
-        # self-download by name and ignore those fields.
-        if self.config.backend == "mpsenet":
-            return (
-                self.config.backend,
-                self.config.checkpoint_path,
-                self.config.config_path,
-            )
+        # Which model gets loaded depends on `backend`. ClearerVoice backends
+        # self-download by name, so the backend key is the whole identity.
         return (self.config.backend,)
 
     def unload(self) -> None:

@@ -108,7 +108,7 @@ CONFIG_LABELS = {
     "frcrn_vad_strict": "FRCRN + separation + VAD-strict  ★ best",
     "enh_frcrn": "FRCRN + separation (default VAD)",
     "enh_mossformer": "MossFormerGAN + separation",
-    "baseline": "MP-SENet + separation  (shipped default)",
+    "baseline": "FRCRN + separation  (shipped default)",
     "enh_none": "no enhancement + separation",
     "nosep": "FRCRN enhancement, NO separation  (ablation)",
     "nosep_noenh": "no enhancement, NO separation  (ablation)",

@@ -1,7 +1,7 @@
 """Stage 4 — per-speaker stream assembly via ECAPA anchors + TimestampMap.
 
 Inputs from upstream stages:
-- `ctx.enhanced_full`     full-recording MP-SENet output (Stage 3a). When
+- `ctx.enhanced_full`     full-recording enhancer output (Stage 3a). When
                           `enhancement.enabled: false` this stays None and
                           the assembler falls back to `ctx.audio`.
 - `ctx.diarization`       per-speaker pyannote segments + overlap timeline
