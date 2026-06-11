@@ -27,6 +27,7 @@ the same Stage 5 backend as the per-speaker transcripts.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +38,34 @@ from asr_pipeline.eval.metrics import (
 )
 from asr_pipeline.eval.recordings import Recording, load_reference_utterances
 from asr_pipeline.eval.transcript_parser import parse_gt_txt
+
+
+def _resolve_lang(rec: Recording) -> str:
+    """Transcription language for this recording, for language-aware WER
+    normalization (E13).
+
+    Read from the first available pipeline mode's ``metadata.json`` config
+    snapshot (``config.transcription.language``, written by
+    ``io.write_pipeline_outputs``). Falls back to ``"pl"`` when no metadata or
+    config snapshot is present — the project default and the pre-E13 behaviour.
+    The number speller for English (EdAcc/LibriCSS) hypotheses would otherwise
+    spell digits in Polish, fabricating substitutions.
+    """
+    for d in (rec.pipeline_dir, rec.pipeline_nosep_dir, rec.pipeline_noenh_dir,
+              rec.pipeline_minimal_dir):
+        if d is None:
+            continue
+        meta_path = d / "metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            lang = meta.get("config", {}).get("transcription", {}).get("language")
+        except (json.JSONDecodeError, AttributeError, OSError):
+            continue
+        if isinstance(lang, str) and lang:
+            return lang
+    return "pl"
 
 
 def read_per_speaker(pipeline_dir: Path) -> Optional[dict]:
@@ -92,6 +121,7 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
     if "A" not in ref_utts or "B" not in ref_utts:
         return None
     ref_lengths = {label: len(utts) for label, utts in ref_utts.items()}
+    lang = _resolve_lang(rec)
 
     modes_out: dict[str, Optional[dict]] = {}
     for mode, dir_ in (
@@ -108,12 +138,17 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
             modes_out[mode] = None
             continue
         modes_out[mode] = cpwer_meeteval(
-            ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s,
+            ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s, lang=lang,
         )
 
-    # Mixture baseline (single-stream) — try the full pipeline_dir first;
-    # all ablation runs use the same backend, so transcript_mixture
-    # should be identical.
+    # Mixture baseline (single-stream) — take whichever mode dir has a
+    # transcript_mixture.txt. The mixture transcript is Whisper on the *raw*
+    # loaded mixture (`ctx.audio`), which is the same audio in every ablation
+    # arm — enhancement writes to `ctx.enhanced_full`, separation never
+    # touches `ctx.audio` — so the transcript is identical across modes given
+    # deterministic transcription. (The earlier comment justified this by "same
+    # backend"; the real reason is "same input audio". The per-mode *directory*
+    # differs, the transcribed signal does not.) Any one mode's copy is fine.
     mixture_utts = None
     for d in (rec.pipeline_dir, rec.pipeline_nosep_dir, rec.pipeline_noenh_dir,
               rec.pipeline_minimal_dir):
@@ -129,12 +164,12 @@ def compute_layer3(rec: Recording, tcp_collar_s: float = 5.0) -> Optional[dict]:
     # Fig 1c). MIMO is the more principled single-stream floor; we keep ORC
     # too for continuity.
     mixture_orc = (
-        orc_wer_meeteval(ref_utts, mixture_utts, session_id=rec.id)
+        orc_wer_meeteval(ref_utts, mixture_utts, session_id=rec.id, lang=lang)
         if mixture_utts is not None
         else None
     )
     mixture_mimo = (
-        mimo_wer_meeteval(ref_utts, mixture_utts, session_id=rec.id)
+        mimo_wer_meeteval(ref_utts, mixture_utts, session_id=rec.id, lang=lang)
         if mixture_utts is not None
         else None
     )

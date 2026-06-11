@@ -10,7 +10,7 @@ everything runs.
 import pytest
 
 from asr_pipeline.eval.metrics import (
-    _digits_to_words_pl,
+    _digits_to_words,
     _normalize_text,
     cp_cer_meeteval,
     cpwer_meeteval,
@@ -46,12 +46,12 @@ def test_normalize_canonical_variants():
 
 def test_normalize_digits_to_polish_words():
     pytest.importorskip("num2words")
-    assert _digits_to_words_pl("2") == "dwa"
+    assert _digits_to_words("2") == "dwa"
     assert _normalize_text("mam 2 koty") == "mam dwa koty"
 
 
 def test_digits_helper_leaves_non_integers():
-    assert _digits_to_words_pl("abc") == "abc"
+    assert _digits_to_words("abc") == "abc"
 
 
 def test_digits_long_run_left_unchanged():
@@ -59,12 +59,34 @@ def test_digits_long_run_left_unchanged():
     # passes str.isdigit() into num2words, whose Polish magnitude table raises
     # KeyError — which must be swallowed, returning the token unchanged, not
     # propagate out and crash every Layer-3 scorer for the recording.
-    assert _digits_to_words_pl("1" * 70) == "1" * 70
+    assert _digits_to_words("1" * 70) == "1" * 70
 
 
 def test_digits_leading_zeros_collapse_via_int():
     pytest.importorskip("num2words")
-    assert _digits_to_words_pl("007") == "siedem"
+    assert _digits_to_words("007") == "siedem"
+
+
+# E13 — language-aware number spelling
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_default_lang_is_polish_byte_identical():
+    # Pin: the default (no lang arg) must reproduce the pre-E13 Polish path
+    # byte-for-byte — the thesis L2/L3 numbers depend on it.
+    pytest.importorskip("num2words")
+    assert _normalize_text("mam 2024 koty") == "mam dwa tysiące dwadzieścia cztery koty"
+    assert _digits_to_words("3") == "trzy"
+    assert _digits_to_words("3", "pl") == "trzy"
+
+
+def test_normalize_english_spells_digits_in_english():
+    # E13 regression: scoring an English hypothesis must spell digits in
+    # English, not Polish — `3` → `three`, never `trzy`.
+    pytest.importorskip("num2words")
+    assert _digits_to_words("3", "en") == "three"
+    assert _normalize_text("i have 3 cats", "en") == "i have three cats"
+    assert "trzy" not in _normalize_text("3", "en")
 
 
 def test_normalize_splits_hyphenated():

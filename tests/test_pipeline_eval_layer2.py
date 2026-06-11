@@ -16,6 +16,10 @@ import torch
 
 from asr_pipeline.eval.layer2 import (
     _ESSENTIALLY_SILENT_FRAC,
+    _MIN_INTRUSIVE_CHUNK_S,
+    _MIN_SPEECH_FRAC,
+    _SILENCE_FLOOR,
+    _iter_speech_chunks,
     compute_intrusive,
     pesq_wb_chunked,
     squim_chunked,
@@ -126,6 +130,91 @@ def test_stoi_chunked_all_silent_is_nan():
 
 
 # ---------------------------------------------------------------------------
+# E2 — shared chunk iterator reproduces the old per-loop decisions exactly
+# ---------------------------------------------------------------------------
+
+
+def _old_kept_boundaries(presence, sr, chunk_s, min_chunk_s, min_speech_frac):
+    """The pre-E2 inline windowing/filter, reimplemented here as the oracle:
+    returns the start indices of the chunks the old loops would have SCORED."""
+    chunk_n = int(chunk_s * sr)
+    min_n = max(int(min_chunk_s * sr), 1)
+    kept = []
+    for i in range(0, len(presence), chunk_n):
+        c = presence[i:i + chunk_n]
+        if len(c) < min_n:
+            continue
+        if isinstance(c, torch.Tensor):
+            frac = (c.abs() > _SILENCE_FLOOR).float().mean().item()
+        else:
+            frac = float((np.abs(c) > _SILENCE_FLOOR).mean())
+        if frac < min_speech_frac:
+            continue
+        kept.append(i)
+    return kept
+
+
+def test_iter_speech_chunks_matches_old_decisions_on_mixed_signal():
+    # A signal with loud, silent, and a final short ragged chunk — the three
+    # branches (kept / silent / short). New iterator's kept boundaries AND its
+    # payload slices must equal the old inline logic's, byte-for-byte.
+    rng = np.random.RandomState(7)
+    n = int(SR * 30.5)                       # 3 full 8 s chunks + part + ragged tail
+    presence = np.zeros(n, np.float32)
+    presence[: SR * 8] = rng.standard_normal(SR * 8) * 0.1      # chunk 0: loud
+    # chunk 1 (8..16 s): left silent
+    presence[SR * 16: SR * 24] = rng.standard_normal(SR * 8) * 0.1   # chunk 2: loud
+    presence[SR * 24: SR * 30] = (rng.standard_normal(SR * 6) * 0.1).astype(np.float32)  # chunk 3 loud-ish
+    payload = (presence * 2.0).astype(np.float32)               # arbitrary aligned rider
+    pt, payt = torch.from_numpy(presence), torch.from_numpy(payload)
+
+    expected = _old_kept_boundaries(pt, SR, 8.0, _MIN_INTRUSIVE_CHUNK_S, _MIN_SPEECH_FRAC)
+    kept_starts = []
+    cursor = 0
+    chunk_n = int(8.0 * SR)
+    for reason, p_c, payloads in _iter_speech_chunks(
+        pt, [payt], SR, 8.0, _MIN_INTRUSIVE_CHUNK_S, _MIN_SPEECH_FRAC,
+    ):
+        if reason is None:
+            kept_starts.append(cursor)
+            # payload slice must be exactly payload[cursor:cursor+chunk_n]
+            assert torch.equal(payloads[0], payt[cursor:cursor + chunk_n])
+            # presence slice identity too
+            assert torch.equal(p_c, pt[cursor:cursor + chunk_n])
+        cursor += chunk_n
+    assert kept_starts == expected
+
+
+# ---------------------------------------------------------------------------
+# E4 — silent-estimate guard (distinct from the silent-target NaN-skip)
+# ---------------------------------------------------------------------------
+
+
+def test_compute_intrusive_silent_estimate_scored_not_nan():
+    # A real (non-silent) target but a ~silent estimate = a dropped speaker.
+    # MUST be SCORED (si_sdr floored to 0.0), NOT NaN-skipped like a silent
+    # target — NaN-ing it would hide a separation failure.
+    target = _noise(SR * 30)
+    silent_est = np.zeros(SR * 30, np.float32)
+    out = compute_intrusive(silent_est, target, target, SR)
+    assert out["si_sdr"] == 0.0
+    assert not np.isnan(out["si_sdr"])
+    assert np.isfinite(out["si_sdr_baseline"])   # baseline arm still real
+
+
+def test_compute_intrusive_silent_estimate_is_flagged(capsys):
+    # SCOPE §4.3: the dropped-speaker case must be VISIBLE (dlog → stdout),
+    # naming the stream.
+    target = _noise(SR * 30)
+    silent_est = np.zeros(SR * 30, np.float32)
+    compute_intrusive(silent_est, target, target, SR, label="rec42/A")
+    captured = capsys.readouterr()
+    blob = captured.out + captured.err
+    assert "rec42/A" in blob
+    assert "silent estimate" in blob.lower()
+
+
+# ---------------------------------------------------------------------------
 # SQUIM chunker (fake model — never loads the real SQUIM)
 # ---------------------------------------------------------------------------
 
@@ -154,3 +243,34 @@ def test_squim_chunked_all_silent_returns_nan_without_calling_model():
     assert out["n_chunks"] == 0
     assert np.isnan(out["squim_stoi"])
     assert calls == []                     # silent chunks never hit the model
+
+
+# ---------------------------------------------------------------------------
+# E6 — real SQUIM load/unload smoke (weights/network-dependent → optional)
+# ---------------------------------------------------------------------------
+
+
+def _load_real_squim_or_skip():
+    """Load the real SQUIM_OBJECTIVE on CPU, or skip when the weights aren't
+    cached / no network — so a cold `pytest -k pipeline` never fails here."""
+    pytest.importorskip("torchaudio")
+    from asr_pipeline.eval.layer2 import load_squim_model
+    try:
+        return load_squim_model(device="cpu")
+    except Exception as exc:                 # download failure, offline, etc.
+        pytest.skip(f"SQUIM weights unavailable ({type(exc).__name__}): {exc}")
+
+
+def test_load_squim_model_real_forward_and_unload():
+    # The fake-model tests cover control flow; this one exercises the actual
+    # weight load + a forward + clean unload. Optional: skips without weights.
+    from asr_pipeline.eval.layer2 import unload_squim_model
+
+    model, device = _load_real_squim_or_skip()
+    try:
+        out = squim_chunked(_noise(SR * 5), SR, model, device)
+        assert out["n_chunks"] >= 1
+        for k in ("squim_stoi", "squim_pesq", "squim_si_sdr"):
+            assert np.isfinite(out[k])
+    finally:
+        unload_squim_model(model)            # must not raise

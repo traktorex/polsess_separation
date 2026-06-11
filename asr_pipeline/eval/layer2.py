@@ -63,6 +63,54 @@ _MIN_SQUIM_CHUNK_S = 1.0
 
 
 # ---------------------------------------------------------------------------
+# Shared chunk iterator
+# ---------------------------------------------------------------------------
+
+
+def _speech_fraction(chunk) -> float:
+    """Fraction of `chunk` samples above `_SILENCE_FLOOR`. Accepts a torch
+    tensor or a numpy array (the three metric loops mix both)."""
+    if isinstance(chunk, torch.Tensor):
+        return (chunk.abs() > _SILENCE_FLOOR).float().mean().item()
+    return float((np.abs(chunk) > _SILENCE_FLOOR).mean())
+
+
+def _iter_speech_chunks(presence, payloads, sr, chunk_s, min_chunk_s, min_speech_frac):
+    """Window `presence` (+ aligned `payloads`) and yield only chunks that are
+    long enough AND speech-present.
+
+    The single windowing/speech-presence iterator shared by the three chunked
+    metric loops (PESQ, STOI, SQUIM) so they make byte-identical chunk
+    decisions (E2). `presence` drives both the length gate and the
+    speech-presence gate (it is the reference channel for the intrusive
+    metrics, the audio itself for SQUIM). `payloads` are arrays sliced on the
+    same boundaries (e.g. the estimate channel); they are NOT tested for
+    presence — they ride along with the presence signal's decision.
+
+    Yields ``(reason, presence_chunk, payload_chunks)`` for every window:
+      - ``reason`` is ``None`` for a kept chunk, else ``"short"`` / ``"silent"``
+        so a caller can tally skips without re-deriving the predicate.
+      - skipped chunks still yield (with empty payload list) so the counts stay
+        exact; callers filter on ``reason is None``.
+
+    Chunk boundaries, the ``len < min_n`` short-gate, and the
+    ``fraction < min_speech_frac`` silent-gate reproduce the pre-E2 per-loop
+    logic exactly.
+    """
+    chunk_n = int(chunk_s * sr)
+    min_n = max(int(min_chunk_s * sr), 1)
+    for i in range(0, len(presence), chunk_n):
+        p_c = presence[i:i + chunk_n]
+        if len(p_c) < min_n:
+            yield "short", p_c, []
+            continue
+        if _speech_fraction(p_c) < min_speech_frac:
+            yield "silent", p_c, []
+            continue
+        yield None, p_c, [pl[i:i + chunk_n] for pl in payloads]
+
+
+# ---------------------------------------------------------------------------
 # Chunked intrusive metrics
 # ---------------------------------------------------------------------------
 
@@ -77,21 +125,20 @@ def pesq_wb_chunked(
     """PESQ-WB on `chunk_s` windows where the ref is ≥ `min_speech_frac` non-silent.
 
     Aggregates by median. Returns `{median, n_scored, n_skipped_silent,
-    n_skipped_short, n_errored}`.
+    n_errored}` (the chunker tallies; `n_skipped_short` was trimmed — read by
+    nobody, E3).
     """
-    chunk_n = int(chunk_s * sr)
-    min_n = max(int(_MIN_INTRUSIVE_CHUNK_S * sr), 1)
     vals: list[float] = []
-    skipped_silent = skipped_short = errored = 0
-    for i in range(0, len(ref_t), chunk_n):
-        e_c = est_t[i:i + chunk_n]
-        r_c = ref_t[i:i + chunk_n]
-        if len(r_c) < min_n:
-            skipped_short += 1
-            continue
-        if (r_c.abs() > _SILENCE_FLOOR).float().mean().item() < min_speech_frac:
+    skipped_silent = errored = 0
+    for reason, _r_c, payloads in _iter_speech_chunks(
+        ref_t, [est_t], sr, chunk_s, _MIN_INTRUSIVE_CHUNK_S, min_speech_frac,
+    ):
+        if reason == "silent":
             skipped_silent += 1
             continue
+        if reason is not None:        # "short"
+            continue
+        r_c, (e_c,) = _r_c, payloads
         try:
             v = perceptual_evaluation_speech_quality(e_c, r_c, sr, "wb").item()
             vals.append(v)
@@ -102,7 +149,6 @@ def pesq_wb_chunked(
         "median": float(np.median(vals)) if vals else float("nan"),
         "n_scored": len(vals),
         "n_skipped_silent": skipped_silent,
-        "n_skipped_short": skipped_short,
         "n_errored": errored,
     }
 
@@ -114,19 +160,17 @@ def stoi_chunked(
     chunk_s: float = 8.0,
     min_speech_frac: float = _MIN_SPEECH_FRAC,
 ) -> float:
-    """STOI on `chunk_s` windows. Same speech-presence filter as PESQ so the
-    two metrics are scored over the same regions. Aggregates by median.
+    """STOI on `chunk_s` windows. Same speech-presence filter as PESQ (same
+    shared chunk iterator) so the two metrics are scored over the same
+    regions. Aggregates by median.
     """
-    chunk_n = int(chunk_s * sr)
-    min_n = max(int(_MIN_INTRUSIVE_CHUNK_S * sr), 1)
     vals: list[float] = []
-    for i in range(0, len(ref_t), chunk_n):
-        e_c = est_t[i:i + chunk_n]
-        r_c = ref_t[i:i + chunk_n]
-        if len(r_c) < min_n:
+    for reason, r_c, payloads in _iter_speech_chunks(
+        ref_t, [est_t], sr, chunk_s, _MIN_INTRUSIVE_CHUNK_S, min_speech_frac,
+    ):
+        if reason is not None:
             continue
-        if (r_c.abs() > _SILENCE_FLOOR).float().mean().item() < min_speech_frac:
-            continue
+        (e_c,) = payloads
         try:
             vals.append(short_time_objective_intelligibility(e_c, r_c, sr).item())
         except Exception:
@@ -139,21 +183,45 @@ def _align_lengths(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray
     return a[:n], b[:n]
 
 
-def _target_essentially_silent(t: torch.Tensor) -> bool:
-    """True when the oracle target is unusable as an SI-SDR reference: empty, or
-    with fewer than `_ESSENTIALLY_SILENT_FRAC` of its samples above
-    `_SILENCE_FLOOR` (a near-silent debleed channel for a speaker who barely
-    talks). Deliberately far below the per-chunk `_MIN_SPEECH_FRAC`: this catches
-    the degenerate ~all-silent reference, not a legitimately low-talk speaker
-    (who is still scored on the chunks they speak).
+def _essentially_silent(x: torch.Tensor) -> bool:
+    """True when fewer than `_ESSENTIALLY_SILENT_FRAC` of `x`'s samples exceed
+    `_SILENCE_FLOOR` (empty counts as silent). Deliberately far below the
+    per-chunk `_MIN_SPEECH_FRAC`: this catches a degenerate ~all-silent signal,
+    not a legitimately low-energy one. Shared by the silent-target and
+    silent-estimate guards in `compute_intrusive`.
     """
-    if len(t) == 0:
+    if len(x) == 0:
         return True
-    return float((t.abs() > _SILENCE_FLOOR).float().mean()) < _ESSENTIALLY_SILENT_FRAC
+    return float((x.abs() > _SILENCE_FLOOR).float().mean()) < _ESSENTIALLY_SILENT_FRAC
+
+
+def _target_essentially_silent(t: torch.Tensor) -> bool:
+    """The oracle target is unusable as an SI-SDR reference (empty / near-silent
+    debleed channel for a speaker who barely talks). See `_essentially_silent`.
+    """
+    return _essentially_silent(t)
+
+
+def _dlog_silent_estimate(label: Optional[str]) -> None:
+    """Visibly flag a silent estimate against a non-silent target (E4 /
+    SCOPE §4.3) — a dropped speaker. Routed through `dlog` (stdout + the debug
+    log), naming the stream when the caller passed a label."""
+    from asr_pipeline.debug_log import dlog
+
+    where = f" [{label}]" if label else ""
+    dlog(
+        "eval-layer2",
+        f"silent estimate vs non-silent target{where}: si_sdr floored to "
+        f"{_SILENCE_FLOOR_DB} (dropped speaker, not NaN-skipped)",
+    )
+
+
+_SILENCE_FLOOR_DB = 0.0  # si_sdr score charged to a silent estimate (E4)
 
 
 def compute_intrusive(
     estimate: np.ndarray, target: np.ndarray, mix: np.ndarray, sr: int,
+    label: Optional[str] = None,
 ) -> dict:
     """SI-SDR (whole stream) + PESQ-WB / STOI (chunked) + improvement vs
     the mono-mix baseline.
@@ -164,8 +232,17 @@ def compute_intrusive(
     additionally truncates to the mix length (the mix is irrelevant to the
     est-vs-target metric, so its length must not clip it).
 
-    When the oracle target is essentially silent, the SI-SDR fields are NaN
-    (not a fabricated floor value) so nan-aware aggregation skips the row.
+    `label` (e.g. ``"<rec_id>/A"``) only names the stream in the silent-estimate
+    warning (E4); scoring is identical with or without it.
+
+    Two distinct silence guards (do NOT conflate them):
+      - **silent TARGET** → SI-SDR NaN-skipped: the oracle reference is unusable,
+        so the row carries no information and must not be aggregated.
+      - **silent ESTIMATE** against a non-silent target → SI-SDR floored to
+        ``_SILENCE_FLOOR_DB`` (0.0), NOT NaN: the separator dropping a speaker
+        who actually spoke is a *real, bad* result L2 exists to catch; NaN-ing
+        it would silently hide a separation failure. Flagged visibly (SCOPE
+        §4.3) via ``dlog`` naming the stream.
     """
     # Est-vs-target arm: mixture-independent — do NOT truncate to the mix.
     n_et = min(len(estimate), len(target))
@@ -176,11 +253,24 @@ def compute_intrusive(
     t_base = t[:n_base]
     m = torch.from_numpy(mix[:n_base].astype(np.float32))
 
+    # TODO(E5): NaN/Inf-estimate propagation — a non-finite sample in `e`
+    # (upstream NaN in a separator/BWE output) currently flows straight into
+    # scale_invariant_signal_distortion_ratio and the PESQ/STOI arms, which can
+    # emit NaN/garbage that nan-aware aggregation then silently drops. Decide
+    # whether to detect + loud-fail (per SCOPE §4) or floor it like a silent
+    # estimate; until then it is undetected.
     if _target_essentially_silent(t):
         # A near-silent target sends both SI-SDR arms to the EPS floor; their
         # difference is a fabricated, stable, positive si_sdri (~+15 dB) that
         # would inflate the reported mean. NaN-skip, matching the chunked arms.
         si = si0 = float("nan")
+    elif _essentially_silent(e):
+        # Silent estimate vs a real (non-silent) target: a dropped speaker.
+        # Floor SI-SDR rather than NaN-skip so the failure is scored, and warn
+        # so it is not silent in the logs (SCOPE §4.3).
+        _dlog_silent_estimate(label)
+        si = _SILENCE_FLOOR_DB
+        si0 = scale_invariant_signal_distortion_ratio(m, t_base).item()
     else:
         si = scale_invariant_signal_distortion_ratio(e, t).item()
         si0 = scale_invariant_signal_distortion_ratio(m, t_base).item()
@@ -189,14 +279,15 @@ def compute_intrusive(
     st = stoi_chunked(e, t, sr)
     st0 = stoi_chunked(m, t_base, sr)
 
+    # E3: `pesq_n_skipped_silent` / `pesq_n_errored` were forwarded here but
+    # read by nobody (summary.py uses only `pesq_n_scored`) — dropped. The
+    # chunker still tallies them on its own dict for the layer2 test.
     return {
         "si_sdr": si, "si_sdr_baseline": si0, "si_sdri": si - si0,
         "pesq": pq["median"], "pesq_baseline": pq0["median"],
         "pesqi": pq["median"] - pq0["median"],
         "stoi": st, "stoi_baseline": st0, "stoii": st - st0,
         "pesq_n_scored": pq["n_scored"],
-        "pesq_n_skipped_silent": pq["n_skipped_silent"],
-        "pesq_n_errored": pq["n_errored"],
     }
 
 
@@ -220,17 +311,14 @@ def squim_chunked(
     expensive). Near-silent chunks are skipped because SQUIM is undefined
     on silence.
     """
-    chunk_n = int(chunk_s * sr)
-    min_n = max(int(_MIN_SQUIM_CHUNK_S * sr), 1)   # SQUIM needs >= 1 s
     stoi_vals: list[float] = []
     pesq_vals: list[float] = []
     sisdr_vals: list[float] = []
     with torch.no_grad():
-        for i in range(0, len(audio), chunk_n):
-            c = audio[i:i + chunk_n]
-            if len(c) < min_n:
-                continue
-            if (np.abs(c) > _SILENCE_FLOOR).mean() < min_speech_frac:
+        for reason, c, _ in _iter_speech_chunks(
+            audio, [], sr, chunk_s, _MIN_SQUIM_CHUNK_S, min_speech_frac,
+        ):
+            if reason is not None:        # too short (< 1 s) or silent
                 continue
             x = torch.from_numpy(c.astype(np.float32)).unsqueeze(0).to(device)
             stoi_p, pesq_p, sisdr_p = squim_model(x)
@@ -333,7 +421,9 @@ def compute_layer2(
             target = _load_mono(ref_path, sr)
             est_n, tgt_n = _align_lengths(est, target)
             _, mix_n = _align_lengths(target, mixture)
-            intrusive_out[label] = compute_intrusive(est_n, tgt_n, mix_n[:len(tgt_n)], sr)
+            intrusive_out[label] = compute_intrusive(
+                est_n, tgt_n, mix_n[:len(tgt_n)], sr, label=f"{rec.id}/{label}",
+            )
 
     # SQUIM (non-intrusive) — always.
     owned_model = squim_model is None

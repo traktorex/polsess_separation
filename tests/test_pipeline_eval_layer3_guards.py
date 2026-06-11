@@ -139,3 +139,42 @@ def test_load_recording_discovers_pipeline_minimal(tmp_path):
     assert rec is not None
     assert rec.pipeline_minimal_dir == rec_dir / "pipeline_minimal"
     assert rec.pipeline_dir is None
+
+
+# ---------------------------------------------------------------------------
+# E13 — language resolved from metadata.json for WER normalization
+# ---------------------------------------------------------------------------
+
+
+def _write_metadata(pdir, *, language=None):
+    """Write a minimal metadata.json with config.transcription.language."""
+    import json
+    config = {} if language is None else {"transcription": {"language": language}}
+    (pdir / "metadata.json").write_text(json.dumps({"config": config}))
+
+
+def test_resolve_lang_reads_metadata_language(tmp_path):
+    from asr_pipeline.eval.layer3 import _resolve_lang
+    pdir = tmp_path / "pipeline"
+    pdir.mkdir()
+    _write_metadata(pdir, language="en")
+    rec = _rec(tmp_path, pipeline_dir=pdir)
+    assert _resolve_lang(rec) == "en"
+
+
+def test_resolve_lang_falls_back_to_pl(tmp_path):
+    from asr_pipeline.eval.layer3 import _resolve_lang
+    # No metadata at all → "pl" (project default, pre-E13 behaviour).
+    pdir = tmp_path / "pipeline"
+    pdir.mkdir()
+    rec = _rec(tmp_path, pipeline_dir=pdir)
+    assert _resolve_lang(rec) == "pl"
+    # metadata present but no language key → still "pl".
+    _write_metadata(pdir, language=None)
+    assert _resolve_lang(rec) == "pl"
+
+
+def test_resolve_lang_no_pipeline_dir_is_pl(tmp_path):
+    from asr_pipeline.eval.layer3 import _resolve_lang
+    rec = _rec(tmp_path)
+    assert _resolve_lang(rec) == "pl"

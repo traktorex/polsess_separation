@@ -29,12 +29,18 @@ normalizers either over-strip (`lower,rm([^a-z0-9 ])` removes Polish
 letters) or under-strip (`lower,rm(.?!,)` misses `;:—…`), so we
 pre-normalize the SegLST `words` field ourselves.
 
-We also fold digit tokens to their spoken Polish words (`2024` →
+We also fold digit tokens to their spoken words (`2024` →
 `dwa tysiące dwadzieścia cztery`) so the GT (written as words, the way
 they're spoken) and Whisper (which sometimes emits digits) land in the
 same surface form instead of scoring as substitutions. The conversion is
 cardinal-only — an ordinal written `5.` reads as `pięć`, not `piąty`, so
 the rare cardinal/ordinal mismatch survives; everything else collapses.
+The number speller is **language-aware** (E13): every scoring entry point
+takes `lang` (default `"pl"`), threaded down to `_digits_to_words`, so an
+English hypothesis spells `3` as `three`, not the Polish `trzy`. Layer 3
+resolves `lang` from the pipeline's `metadata.json` config snapshot.
+Known residual (out of scope): mixed alphanumeric tokens like `C3P2` are
+not split, so they won't match a GT `C three P two`.
 
 Finally, following the CHiME normalizer, we drop non-verbal material that
 neither side should be scored on: bracketed non-speech markup (`[śmiech]`,
@@ -82,33 +88,40 @@ _CANON = {"okej": "ok"}
 
 
 @lru_cache(maxsize=4096)
-def _digits_to_words_pl(token: str) -> str:
-    """`'2024'` → `'dwa tysiące dwadzieścia cztery'` (cardinal, Polish).
+def _digits_to_words(token: str, lang: str = "pl") -> str:
+    """`'2024'` → spoken cardinal words in `lang` (e.g. pl: `'dwa tysiące
+    dwadzieścia cztery'`, en: `'two thousand and twenty-four'`).
+
+    `lang` is a num2words language code; it selects the spoken form so a
+    digit hypothesis lands in the same surface form as the words-spelled-out
+    GT for *that* recording's language (E13 — scoring English hypotheses with
+    the Polish number speller turned `3` into `trzy`, a fabricated error).
 
     Returns the token unchanged when num2words is unavailable, or when the
     integer is outside num2words' supported range — including the absurdly
     long digit runs Whisper sometimes hallucinates on silence/music, where
     num2words raises `KeyError`/`IndexError` (not `ValueError`) from its
-    Polish magnitude table. Cached because the same small integers recur
-    across thousands of utterances.
+    magnitude table. Cached because the same small integers recur across
+    thousands of utterances.
     """
     if _num2words is None:
         return token
     try:
-        return _num2words(int(token), lang="pl")
+        return _num2words(int(token), lang=lang)
     except (ValueError, OverflowError, NotImplementedError, KeyError, IndexError):
         return token
 
 
-def _normalize_text(s: str) -> str:
-    """Lowercase, drop non-speech markup + fillers, fold digits to Polish
-    words, strip punctuation, collapse whitespace.
+def _normalize_text(s: str, lang: str = "pl") -> str:
+    """Lowercase, drop non-speech markup + fillers, fold digits to spoken
+    words in `lang`, strip punctuation, collapse whitespace.
 
-    Preserves Polish diacritics (phonemic — `ł` vs `l` is a real
-    substitution and should count as a WER error). Digit tokens become
-    their spoken cardinal form so they match GT written as words;
-    bracketed non-speech and non-lexical fillers are removed from both
-    sides so they never count as errors.
+    Preserves diacritics (phonemic in Polish — `ł` vs `l` is a real
+    substitution and should count as a WER error). Digit tokens become their
+    spoken cardinal form *in `lang`* so they match GT written as words;
+    bracketed non-speech and non-lexical fillers are removed from both sides
+    so they never count as errors. `lang="pl"` (the default) reproduces the
+    pre-E13 behaviour byte-for-byte.
     """
     s = _BRACKET_RE.sub(" ", s.lower())
     tokens = _PUNCT_RE.sub(" ", s).split()
@@ -117,15 +130,18 @@ def _normalize_text(s: str) -> str:
         if _FILLER_RE.fullmatch(tok):
             continue
         tok = _CANON.get(tok, tok)
-        out.append(_digits_to_words_pl(tok) if tok.isdigit() else tok)
+        out.append(_digits_to_words(tok, lang) if tok.isdigit() else tok)
     return " ".join(out)
 
 
-def _seglst_from_dict(utts_by_spk: Dict[str, List[Utterance]], session_id: str):
+def _seglst_from_dict(
+    utts_by_spk: Dict[str, List[Utterance]], session_id: str, lang: str = "pl"
+):
     """SegLST rows from per-speaker utterances, with normalization applied.
 
     Shared by every metric below — one row per non-empty utterance.
-    meeteval is imported lazily so the module stays importable without it.
+    `lang` selects the number speller (see ``_normalize_text``). meeteval is
+    imported lazily so the module stays importable without it.
     """
     from meeteval.io.seglst import SegLST
 
@@ -135,7 +151,7 @@ def _seglst_from_dict(utts_by_spk: Dict[str, List[Utterance]], session_id: str):
             "speaker": spk,
             "start_time": float(u.start),
             "end_time": float(u.end),
-            "words": _normalize_text(u.text),
+            "words": _normalize_text(u.text, lang),
         }
         for spk, utts in utts_by_spk.items()
         for u in utts
@@ -144,10 +160,11 @@ def _seglst_from_dict(utts_by_spk: Dict[str, List[Utterance]], session_id: str):
 
 
 def _seglst_from_list(
-    utterances: List[Utterance], session_id: str, speaker: str = "mixture"
+    utterances: List[Utterance], session_id: str, speaker: str = "mixture",
+    lang: str = "pl",
 ):
     """SegLST rows from a flat utterance list under one pseudo-speaker."""
-    return _seglst_from_dict({speaker: utterances}, session_id)
+    return _seglst_from_dict({speaker: utterances}, session_id, lang)
 
 
 def _rate(obj) -> float:
@@ -174,8 +191,9 @@ def cpwer_meeteval(
     hyp_utts_by_spk: Dict[str, List[Utterance]],
     session_id: str,
     tcp_collar_s: float = 5.0,
+    lang: str = "pl",
 ) -> Dict[str, object]:
-    """cpWER + tcpWER via MeetEval, with Polish-aware text normalization.
+    """cpWER + tcpWER via MeetEval, with language-aware text normalization.
 
     Inputs are dicts mapping speaker label → list of
     `Utterance(start, end, text)` (as produced by
@@ -199,8 +217,8 @@ def cpwer_meeteval(
     """
     from meeteval.wer import cpwer, tcpwer
 
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
-    hyp = _seglst_from_dict(hyp_utts_by_spk, session_id)
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
+    hyp = _seglst_from_dict(hyp_utts_by_spk, session_id, lang)
 
     cp = cpwer(ref, hyp)[session_id]
     tcp = tcpwer(ref, hyp, collar=tcp_collar_s)[session_id]
@@ -222,6 +240,7 @@ def orc_wer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utterances: List[Utterance],
     session_id: str,
+    lang: str = "pl",
 ) -> Dict[str, object]:
     """ORC-WER: best assignment of reference utterances to a single hypothesis.
 
@@ -240,9 +259,9 @@ def orc_wer_meeteval(
     """
     from meeteval.wer import orcwer
 
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
     # One pseudo-speaker for the mixture hypothesis.
-    hyp = _seglst_from_list(hyp_utterances, session_id)
+    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
     orc = orcwer(ref, hyp)[session_id]
     return _wer_result(orc, "orc_wer")
 
@@ -251,6 +270,7 @@ def mimo_wer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utterances: List[Utterance],
     session_id: str,
+    lang: str = "pl",
 ) -> Dict[str, object]:
     """MIMO-WER for the single-stream mixture baseline.
 
@@ -282,8 +302,8 @@ def mimo_wer_meeteval(
     """
     from meeteval.wer import mimower
 
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
-    hyp = _seglst_from_list(hyp_utterances, session_id)
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
+    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
     m = mimower(ref, hyp)[session_id]
     return _wer_result(m, "mimo_wer")
 
@@ -292,6 +312,7 @@ def orc_wer_multistream(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
     session_id: str,
+    lang: str = "pl",
 ) -> Dict[str, object]:
     """ORC-WER on a *multi-stream* hypothesis — attribution-blind WER.
 
@@ -301,13 +322,13 @@ def orc_wer_multistream(
     speaker-attribution penalty — how much error comes from routing words
     to the wrong speaker rather than mis-recognising them.
 
-    Same shape as ``cpwer_meeteval`` inputs; same Polish-aware normalization.
+    Same shape as ``cpwer_meeteval`` inputs; same language-aware normalization.
     """
     from meeteval.wer import orcwer
 
     orc = orcwer(
-        _seglst_from_dict(ref_utts_by_spk, session_id),
-        _seglst_from_dict(hyp_utts_by_spk, session_id),
+        _seglst_from_dict(ref_utts_by_spk, session_id, lang),
+        _seglst_from_dict(hyp_utts_by_spk, session_id, lang),
     )[session_id]
     return _wer_result(orc, "orc_wer")
 
@@ -316,6 +337,7 @@ def cp_cer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
     session_id: str,
+    lang: str = "pl",
 ) -> Dict[str, object]:
     """Character error rate under the cpWER speaker assignment.
 
@@ -333,11 +355,11 @@ def cp_cer_meeteval(
     """
     from rapidfuzz.distance import Levenshtein
 
-    cp = cpwer_meeteval(ref_utts_by_spk, hyp_utts_by_spk, session_id)
+    cp = cpwer_meeteval(ref_utts_by_spk, hyp_utts_by_spk, session_id, lang=lang)
 
     def _concat_norm(utts_by_spk):
         return {
-            spk: _normalize_text(" ".join(u.text for u in utts))
+            spk: _normalize_text(" ".join(u.text for u in utts), lang)
             for spk, utts in utts_by_spk.items()
         }
 
@@ -363,6 +385,7 @@ def mimo_cer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utterances: List[Utterance],
     session_id: str,
+    lang: str = "pl",
 ) -> Dict[str, object]:
     """Character error rate for the single-stream mixture under MIMO's merge.
 
@@ -387,8 +410,8 @@ def mimo_cer_meeteval(
     from rapidfuzz.distance import Levenshtein
     from meeteval.wer import mimower
 
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id)
-    hyp = _seglst_from_list(hyp_utterances, session_id)
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
+    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
     m = mimower(ref, hyp)[session_id]
 
     # Rebuild the reference in MIMO's merge order. `m.assignment` lists one
@@ -410,8 +433,8 @@ def mimo_cer_meeteval(
 
     # Normalize the *joined* text once on each side (identical to the
     # time-ordered mixture CER), so the only difference is the merge order.
-    ref_all = _normalize_text(" ".join(u.text for u in ordered))
-    hyp_all = _normalize_text(" ".join(u.text for u in hyp_utterances))
+    ref_all = _normalize_text(" ".join(u.text for u in ordered), lang)
+    hyp_all = _normalize_text(" ".join(u.text for u in hyp_utterances), lang)
     err = Levenshtein.distance(ref_all, hyp_all)
     length = max(len(ref_all), 1)
     return {"cer": float(err / length), "errors": int(err), "length": int(length)}
