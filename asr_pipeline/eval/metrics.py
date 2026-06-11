@@ -1,9 +1,8 @@
-"""Metrics for the three-layer evaluation.
+"""Metrics for the eval layers (L2 audio quality, L3 ASR error rates).
 
-- **Layer 1 (DER)** — `compute_der`, thin wrapper around
-  `pyannote.metrics.DiarizationErrorRate`. The metric does its own
-  optimal speaker assignment via the Hungarian solver; we don't
-  pre-permute.
+L1/DER is retired (SCOPE §10 q8): no valid reference diarization exists for
+any dataset, so DER is not computed anywhere.
+
 - **Layer 2 (separation)** — no helper here; the notebook uses
   `torchmetrics.functional.audio.*` directly for SI-SDR / PESQ-WB /
   STOI (intrusive) and `torchaudio.pipelines.SQUIM_OBJECTIVE` for the
@@ -42,18 +41,13 @@ neither side should be scored on: bracketed non-speech markup (`[śmiech]`,
 `<muzyka>`) and a conservative list of non-lexical filler vocalizations
 (`yyy`, `eee`, `mmm`, `hmm`, `mhm`, `yhy`). Lexical backchannels that *are*
 words — `no`, `tak`, `aha` — are deliberately kept.
-
-Note: an equivalent pure-numpy DER implementation exists in git history
-(commit before this one) — restore it if pyannote.metrics ever misbehaves
-inside a long-running Jupyter kernel. Numbers agree to within ~0.005 pp
-on real data, so the switch is mechanical.
 """
 
 from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from asr_pipeline.eval.transcript_parser import Utterance
 
@@ -61,59 +55,6 @@ try:
     from num2words import num2words as _num2words
 except ImportError:  # eval-only dep; scorer still runs, digits just stay digits
     _num2words = None
-
-
-# ---------------------------------------------------------------------------
-# Layer 1 — DER (diarization error rate)
-# ---------------------------------------------------------------------------
-
-
-def compute_der(
-    ref_segments: Dict[str, List[Tuple[float, float]]],
-    hyp_segments: Dict[str, List[Tuple[float, float]]],
-    total_duration_s: float,
-    collar: float = 0.0,
-    skip_overlap: bool = False,
-) -> Dict[str, float]:
-    """DER + miss / false-alarm / confusion breakdown.
-
-    `ref_segments`, `hyp_segments` map each speaker label to a list of
-    (start, end) tuples (seconds). DER is reported as a fraction of the
-    reference speech duration; multiply by 100 for a percent.
-
-    `collar` (seconds) optionally forgives boundary mismatches within
-    ±collar/2 of each reference segment edge.
-    """
-    from pyannote.core import Annotation, Segment
-    from pyannote.metrics.diarization import DiarizationErrorRate
-
-    def _to_annotation(per_spk):
-        ann = Annotation()
-        for spk, segs in per_spk.items():
-            for s, e in segs:
-                if e > s:
-                    ann[Segment(s, e)] = spk
-        return ann
-
-    ref = _to_annotation(ref_segments)
-    hyp = _to_annotation(hyp_segments)
-    uem = Segment(0.0, total_duration_s)
-
-    metric = DiarizationErrorRate(collar=collar, skip_overlap=skip_overlap)
-    detailed = metric.compute_components(ref, hyp, uem=uem)
-    total = max(detailed.get("total", 1.0), 1e-9)
-    miss = detailed.get("missed detection", 0.0)
-    fa = detailed.get("false alarm", 0.0)
-    conf = detailed.get("confusion", 0.0)
-    return {
-        "der": (miss + fa + conf) / total,
-        "miss": miss / total,
-        "false_alarm": fa / total,
-        "confusion": conf / total,
-        "total_ref_s": float(total),
-        "collar": collar,
-        "skip_overlap": skip_overlap,
-    }
 
 
 # ---------------------------------------------------------------------------

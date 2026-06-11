@@ -98,7 +98,7 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 **ASR subsystem (`asr/`):** Notebooks driving the productionised CLARIN pipeline. The pre-CLARIN one-shot REAL-M/LibriMix eval flow (`evaluate_asr.py` + intrusive variant + `dataset.py`/`transcribe.py`/`metrics.py` + its `test_asr.py`) is **archived** under `asr/archive/old-asr/`; the original Gradio POC notebook (`asr_pipeline.ipynb`) + early LibriMix-prep scripts sit in `asr/archive/`. Archived code is parked — its imports reference the old top-level `asr.` package layout and would need rewiring to run.
 - `clarin_fragments.ipynb` / `clarin_subset_review.ipynb`: select + review the CLARIN test fragments (uses `scripts/clarin_fragment_finder.py`).
 - `explore_pipeline.ipynb`: interactive frontend for the productionised `asr_pipeline/` package — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
-- `evaluate_pipeline.ipynb`: three-layer evaluation of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
+- `evaluate_pipeline.ipynb`: two-layer evaluation (L2 audio quality + L3 WER) of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
 
 **`asr_pipeline/` package** — productionised pipeline. **Before changing code here, read `asr_pipeline/SCOPE.md`** — the scope contract (purpose, error philosophy, fallback ledger, rules for agents); it overrides reviewer instincts, and its `UNDECIDED` items are reserved for the author. `Pipeline` orchestrator runs seven stages in fixed order:
 1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
@@ -111,12 +111,11 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 
 Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. `PipelineConfig.deterministic` (default `true`) forces deterministic cuDNN algorithms at `Pipeline.__init__` — the enhancement conv stage is otherwise the pipeline's *only* run-to-run nondeterminism source (≈1e-7 float noise in `enhanced_full` that WhisperX can amplify into a flipped token; every other stage is deterministic given fixed input). Costs a ~2× enhancement-stage slowdown (no conv autotuning); set `false` for non-reproducible-but-faster dev runs. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping. Config serializers (`save_pipeline_config_to_yaml`, the `metadata.json` snapshot in `io.write_pipeline_outputs`) mask `diarization.hf_token` as `REDACTED` so live tokens never land in output files.
 
-**`asr_pipeline/eval/`** — three-layer scoring. `evaluate_recording(rec) → ScoreCard` runs all three layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root.
-- **L1 diarization** — DER between `pipeline/diarization.json` and reference RTTM.
+**`asr_pipeline/eval/`** — two-layer scoring (L2 + L3). `evaluate_recording(rec) → ScoreCard` runs both layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root. (L1/DER retired 2026-06-11, SCOPE §10 q8: no valid reference diarization exists — `eval/layer1.py` + the `compute_der`/`parse_rttm` plumbing deleted.)
 - **L2 audio quality** — intrusive SI-SDR / PESQ-WB / STOI (chunked, median-aggregated, speech-presence filtered) when oracle audio is available; non-intrusive TorchAudio-SQUIM (chunked, mean-aggregated) always.
 - **L3 ASR** — cpWER + tcpWER per ablation mode (full / no-sep / no-enh), ORC-WER on the mixture baseline. Backed by `meeteval`.
 
-Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_file`, `parse_rttm`, `compute_der`, `cpwer_meeteval`, `orc_wer_meeteval`.
+Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_file`, `cpwer_meeteval`, `orc_wer_meeteval`.
 
 **ASR datasets**
 - `~/datasets/clarin_gotowy/gotowy/` — CLARIN debleed eval set (oracle per-speaker channels). Root = `<id>.wav` stereo inputs; `debleed/<id>_{L,R}.wav` = oracle channels; `debleed_enhanced/` = MossFormerGAN-enhanced oracles; `after_pipeline/<id>_{s1,s2}.wav` = pipeline outputs; `transcripts/<id>.txt` = pipeline transcripts; `eval_cache/` = cached references.

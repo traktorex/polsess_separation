@@ -15,31 +15,6 @@ from asr_pipeline.eval.run import ScoreCard
 
 
 # ---------------------------------------------------------------------------
-# Layer 1 — DER
-# ---------------------------------------------------------------------------
-
-
-def summarize_layer1(scores: Iterable[ScoreCard]) -> pd.DataFrame:
-    """One row per recording. Columns: DER, miss, false_alarm, confusion (all %)."""
-    rows = []
-    for s in scores:
-        row = {"dataset": s.dataset, "id": s.id}
-        if s.layer1 is None:
-            row.update({"der_pct": None, "miss_pct": None, "fa_pct": None, "conf_pct": None})
-        else:
-            d = s.layer1["der_stage1"]
-            row.update({
-                "der_pct":  100.0 * d["der"],
-                "miss_pct": 100.0 * d["miss"],
-                "fa_pct":   100.0 * d["false_alarm"],
-                "conf_pct": 100.0 * d["confusion"],
-                "total_ref_s": d["total_ref_s"],
-            })
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-# ---------------------------------------------------------------------------
 # Layer 2 — audio quality
 # ---------------------------------------------------------------------------
 
@@ -144,7 +119,7 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
 
 
 def inventory(scores: Iterable[ScoreCard]) -> pd.DataFrame:
-    """What's available per recording — quick triage before running L1/L2/L3."""
+    """What's available per recording — quick triage before running L2/L3."""
     rows = []
     for s in scores:
         rec = s.recording
@@ -152,7 +127,6 @@ def inventory(scores: Iterable[ScoreCard]) -> pd.DataFrame:
             "dataset": s.dataset, "id": s.id,
             "ref_eaf":   rec.reference_eaf is not None,
             "ref_audio": rec.reference_audio is not None,
-            "ref_diar":  rec.reference_diarization is not None,
             "ref_txt_A": "A" in rec.reference_transcripts,
             "ref_txt_B": "B" in rec.reference_transcripts,
             "pipe_full": rec.pipeline_dir is not None,

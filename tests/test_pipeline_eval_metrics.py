@@ -1,10 +1,10 @@
-"""Tests for the Layer-1/Layer-3 scoring logic in asr_pipeline/eval/metrics.py.
+"""Tests for the Layer-3 scoring logic in asr_pipeline/eval/metrics.py.
 
 Covers the Polish-aware text normalization (the part most likely to silently
-change WER numbers), the cpWER/ORC/MIMO wrappers, the CER variants, and DER.
-Heavy deps (meeteval, pyannote.metrics, rapidfuzz, num2words) are lazy inside
-metrics.py, so each test group guards with importorskip — on this machine
-they're all installed and everything runs.
+change WER numbers), the cpWER/ORC/MIMO wrappers, and the CER variants.
+Heavy deps (meeteval, rapidfuzz, num2words) are lazy inside metrics.py, so each
+test group guards with importorskip — on this machine they're all installed and
+everything runs.
 """
 
 import pytest
@@ -12,7 +12,6 @@ import pytest
 from asr_pipeline.eval.metrics import (
     _digits_to_words_pl,
     _normalize_text,
-    compute_der,
     cp_cer_meeteval,
     cpwer_meeteval,
     mimo_cer_meeteval,
@@ -245,58 +244,3 @@ def test_cp_cer_unmatched_reference_speaker_counts_as_deletions():
     assert out["errors"] == 4               # "pies" fully deleted
     assert out["length"] == 7               # "kot" (3) + "pies" (4)
     assert out["cer"] == pytest.approx(4 / 7)
-
-
-# ---------------------------------------------------------------------------
-# DER
-# ---------------------------------------------------------------------------
-
-
-def test_der_perfect_is_zero():
-    pytest.importorskip("pyannote.metrics")
-    ref = {"A": [(0.0, 5.0)], "B": [(5.0, 10.0)]}
-    out = compute_der(ref, ref, total_duration_s=10.0)
-    assert out["der"] == pytest.approx(0.0, abs=1e-9)
-
-
-def test_der_miss():
-    pytest.importorskip("pyannote.metrics")
-    ref = {"A": [(0.0, 10.0)]}
-    hyp = {"A": [(0.0, 5.0)]}               # second half missed
-    out = compute_der(ref, hyp, total_duration_s=10.0)
-    assert out["miss"] == pytest.approx(0.5, abs=1e-6)
-    assert out["false_alarm"] == pytest.approx(0.0, abs=1e-9)
-    assert out["der"] == pytest.approx(0.5, abs=1e-6)
-    assert out["total_ref_s"] == pytest.approx(10.0)
-
-
-def test_der_false_alarm():
-    pytest.importorskip("pyannote.metrics")
-    ref = {"A": [(0.0, 5.0)]}
-    hyp = {"A": [(0.0, 10.0)]}              # 5 s of phantom speech
-    out = compute_der(ref, hyp, total_duration_s=10.0)
-    # Normalised by reference speech (5 s) -> FA fraction 1.0.
-    assert out["false_alarm"] == pytest.approx(1.0, abs=1e-6)
-    assert out["miss"] == pytest.approx(0.0, abs=1e-9)
-
-
-def test_der_confusion():
-    pytest.importorskip("pyannote.metrics")
-    ref = {"A": [(0.0, 10.0)]}
-    hyp = {"X": [(0.0, 5.0)], "Y": [(5.0, 10.0)]}
-    out = compute_der(ref, hyp, total_duration_s=10.0)
-    # Optimal mapping pairs one hyp speaker with A; the other 5 s is confusion.
-    assert out["confusion"] == pytest.approx(0.5, abs=1e-6)
-    assert out["der"] == pytest.approx(0.5, abs=1e-6)
-
-
-def test_der_denominator_sums_per_speaker_speech_over_overlap():
-    # The DER denominator is the sum of per-speaker reference speech, NOT the
-    # union: 10 s of A overlapping 5 s of B totals 15 s of reference, so an
-    # overlap region counts once for each speaker present. Pins the meaning of
-    # the reported total_ref_s (and hence every DER fraction in the thesis).
-    pytest.importorskip("pyannote.metrics")
-    ref = {"A": [(0.0, 10.0)], "B": [(5.0, 10.0)]}
-    out = compute_der(ref, ref, total_duration_s=10.0)
-    assert out["total_ref_s"] == pytest.approx(15.0)
-    assert out["der"] == pytest.approx(0.0, abs=1e-9)

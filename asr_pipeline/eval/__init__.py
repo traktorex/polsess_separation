@@ -1,7 +1,8 @@
-"""Three-layer evaluation for the ASR pipeline.
+"""Two-layer evaluation for the ASR pipeline.
 
-- **Layer 1 — diarization** (`layer1.py`): DER between pipeline stage-1
-  diarization (``pipeline/diarization.json``) and the reference RTTM.
+L1/DER is retired (SCOPE §10 q8): no valid reference diarization exists for
+any dataset, so diarization error rate is not computed anywhere.
+
 - **Layer 2 — audio quality** (`layer2.py`): intrusive SI-SDR / PESQ-WB /
   STOI (chunked, median-aggregated, speech-presence filtered) when oracle
   audio is available; non-intrusive SQUIM (chunked, mean-aggregated)
@@ -17,14 +18,12 @@ under the eval root.
 
 Low-level helpers (kept exported for direct use in notebooks):
 
-- ``compute_der`` + the cpWER / ORC / MIMO WER & CER family
-  (``cpwer_meeteval``, ``orc_wer_meeteval``, ``mimo_wer_meeteval``,
-  ``orc_wer_multistream``, ``cp_cer_meeteval``, ``mimo_cer_meeteval``) from `metrics.py`.
+- the cpWER / ORC / MIMO WER & CER family (``cpwer_meeteval``,
+  ``orc_wer_meeteval``, ``mimo_wer_meeteval``, ``orc_wer_multistream``,
+  ``cp_cer_meeteval``, ``mimo_cer_meeteval``) from `metrics.py`.
 - ``parse_gt_txt``, ``parse_transcript_file`` from `transcript_parser.py`.
-- ``parse_rttm`` from `recordings.py`.
 """
 
-from asr_pipeline.eval.layer1 import compute_layer1
 from asr_pipeline.eval.layer2 import (
     compute_intrusive,
     compute_layer2,
@@ -36,7 +35,6 @@ from asr_pipeline.eval.layer2 import (
 )
 from asr_pipeline.eval.layer3 import compute_layer3
 from asr_pipeline.eval.metrics import (
-    compute_der,
     cp_cer_meeteval,
     cpwer_meeteval,
     mimo_cer_meeteval,
@@ -47,13 +45,11 @@ from asr_pipeline.eval.metrics import (
 from asr_pipeline.eval.recordings import (
     Recording,
     load_recording,
-    parse_rttm,
     walk_eval_tree,
 )
 from asr_pipeline.eval.run import ScoreCard, evaluate_many, evaluate_recording
 from asr_pipeline.eval.summary import (
     inventory,
-    summarize_layer1,
     summarize_layer2_intrusive,
     summarize_layer2_squim,
     summarize_layer3,
@@ -67,13 +63,13 @@ from asr_pipeline.eval.transcript_parser import (
 
 __all__ = [
     # Discovery
-    "Recording", "ScoreCard", "load_recording", "walk_eval_tree", "parse_rttm",
+    "Recording", "ScoreCard", "load_recording", "walk_eval_tree",
     # Orchestration
     "evaluate_recording", "evaluate_many",
     # Layers
-    "compute_layer1", "compute_layer2", "compute_layer3",
+    "compute_layer2", "compute_layer3",
     # Low-level metrics
-    "compute_der", "cpwer_meeteval", "orc_wer_meeteval", "mimo_wer_meeteval",
+    "cpwer_meeteval", "orc_wer_meeteval", "mimo_wer_meeteval",
     "orc_wer_multistream", "cp_cer_meeteval", "mimo_cer_meeteval",
     "compute_intrusive", "pesq_wb_chunked", "stoi_chunked", "squim_chunked",
     "load_squim_model", "unload_squim_model",
@@ -81,6 +77,6 @@ __all__ = [
     "Utterance", "concat_utterances", "parse_gt_txt", "parse_transcript_file",
     # Summaries
     "inventory",
-    "summarize_layer1", "summarize_layer2_intrusive",
+    "summarize_layer2_intrusive",
     "summarize_layer2_squim", "summarize_layer3",
 ]

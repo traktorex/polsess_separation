@@ -3,7 +3,7 @@
 The eval tree (built by ``scripts/prepare_eval_references.py``) puts every
 recording under ``<eval_root>/<dataset>/<recording_id>/`` with a fixed
 layout. This module walks the tree and packages each recording as a
-``Recording`` dataclass the layers (L1/L2/L3) consume.
+``Recording`` dataclass the layers (L2/L3) consume.
 
 Missing optional files are tolerated — the eval layers gracefully skip
 work they can't do (e.g. no oracle audio → only non-intrusive SQUIM in L2).
@@ -28,9 +28,8 @@ class Recording:
     actually been run for that mode (the writer creates the directory).
 
     `reference_eaf` is the hand-corrected GT (ELAN .eaf at the recording
-    root) — the source of truth for both L1 turns and L3 transcripts when
-    present; `reference_transcripts` / `reference_diarization` are the
-    fallback for datasets prepared as .txt + .rttm.
+    root) — the source of truth for L3 transcripts when present;
+    `reference_transcripts` is the fallback for datasets prepared as .txt.
     """
 
     id: str
@@ -38,7 +37,6 @@ class Recording:
     mixture_path: Path
     reference_audio: Optional[dict[str, Path]]      # speaker_label -> wav
     reference_transcripts: dict[str, Path]          # speaker_label -> txt
-    reference_diarization: Optional[Path]           # rttm
     reference_eaf: Optional[Path]                   # hand-corrected GT (.eaf)
     pipeline_dir: Optional[Path]                    # full pipeline
     pipeline_nosep_dir: Optional[Path]              # separation.enabled=false
@@ -84,7 +82,6 @@ def load_recording(recording_dir: Path) -> Optional[Recording]:
                 ref_audio[label] = wav
             if txt.exists():
                 ref_transcripts[label] = txt
-    ref_rttm = _file_if_present(ref_dir / "diarization.rttm") if ref_dir.is_dir() else None
 
     # Hand-corrected GT EAF lives at the recording root, beside the audio.
     ref_eaf = _file_if_present(recording_dir / "annotation.eaf")
@@ -98,7 +95,6 @@ def load_recording(recording_dir: Path) -> Optional[Recording]:
         mixture_path=mixture,
         reference_audio=ref_audio if ref_audio else None,
         reference_transcripts=ref_transcripts,
-        reference_diarization=ref_rttm,
         reference_eaf=ref_eaf,
         pipeline_dir=_dir_if_present(recording_dir / "pipeline"),
         pipeline_nosep_dir=_dir_if_present(recording_dir / "pipeline_nosep"),
@@ -142,24 +138,3 @@ def walk_eval_tree(
             rec = load_recording(rec_dir)
             if rec is not None:
                 yield rec
-
-
-def parse_rttm(path: Path) -> dict[str, list[tuple[float, float]]]:
-    """Parse an RTTM file into ``{speaker: [(start_s, end_s), ...]}``.
-
-    RTTM rows::
-
-        SPEAKER <file_id> 1 <start_s> <duration_s> <NA> <NA> <speaker_label> <NA> <NA>
-
-    Other row types (e.g. ``SPKR-INFO``) are skipped.
-    """
-    out: dict[str, list[tuple[float, float]]] = {}
-    for raw in Path(path).read_text(encoding="utf-8").splitlines():
-        parts = raw.split()
-        if not parts or parts[0] != "SPEAKER" or len(parts) < 8:
-            continue
-        start = float(parts[3])
-        dur = float(parts[4])
-        speaker = parts[7]
-        out.setdefault(speaker, []).append((start, start + dur))
-    return out

@@ -9,7 +9,6 @@ import pytest
 from asr_pipeline.eval.recordings import (
     load_recording,
     load_reference_utterances,
-    parse_rttm,
     walk_eval_tree,
 )
 from asr_pipeline.eval.transcript_parser import parse_gt_txt, parse_transcript_file
@@ -37,12 +36,6 @@ def eval_tree(tmp_path):
     (rec1 / "reference" / "speaker_B.txt").write_text(
         "[  2.00 →   3.00]  druga osoba\n", encoding="utf-8"
     )
-    (rec1 / "reference" / "diarization.rttm").write_text(
-        "SPKR-INFO file1 1 <NA> <NA> <NA> unknown A <NA> <NA>\n"
-        "SPEAKER file1 1 0.50 1.00 <NA> <NA> A <NA> <NA>\n"
-        "SPEAKER file1 1 2.00 0.50 <NA> <NA> B <NA> <NA>\n",
-        encoding="utf-8",
-    )
 
     # rec2 — old layout: only mixture.wav.
     rec2 = root / "clarin" / "rec2"
@@ -68,7 +61,6 @@ def test_load_recording_new_layout(eval_tree):
     assert rec.reference_eaf is not None
     assert set(rec.reference_transcripts) == {"A", "B"}
     assert rec.reference_audio is None          # no reference wavs created
-    assert rec.reference_diarization is not None
     assert rec.pipeline_dir is not None
     assert rec.pipeline_nosep_dir is None and rec.pipeline_noenh_dir is None
 
@@ -113,17 +105,6 @@ def test_reference_txt_fallback(eval_tree):
     utts = load_reference_utterances(rec)
     assert utts["A"][0].text == "z pliku txt"
     assert utts["B"][0].text == "druga osoba"
-
-
-# ---------------------------------------------------------------------------
-# parse_rttm
-# ---------------------------------------------------------------------------
-
-
-def test_parse_rttm(eval_tree):
-    rttm = eval_tree / "clarin" / "rec1" / "reference" / "diarization.rttm"
-    turns = parse_rttm(rttm)
-    assert turns == {"A": [(0.5, 1.5)], "B": [(2.0, 2.5)]}   # start + dur -> end
 
 
 # ---------------------------------------------------------------------------
