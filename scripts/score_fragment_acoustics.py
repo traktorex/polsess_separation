@@ -1063,7 +1063,10 @@ def run_scoring(force: bool, do_brouhaha: bool, limit: Optional[int]) -> tuple:
     frag_ids = discover_fragments()
     if limit:
         frag_ids = frag_ids[:limit]
-    manifest = load_manifest()
+    # NB: the manifest is NOT loaded here — scoring keys off frag_id alone and
+    # never touched it. It is loaded only in run_report (calibration). This lets
+    # --root point at a tree that has no manifest.csv (e.g. a candidate-mining
+    # staging tree scored with --no-report).
 
     # Idempotency: keep existing rows unless --force.
     existing = read_csv(SCORES_CSV) if (SCORES_CSV.exists() and not force) else {}
@@ -1168,7 +1171,37 @@ def main(argv: Optional[list] = None) -> int:
                     help="skip the slow brouhaha subprocess stage")
     ap.add_argument("--limit", type=int, default=None,
                     help="score only the first N fragments (debug)")
+    ap.add_argument("--root", type=Path, default=None,
+                    help="score a DIFFERENT fragment tree than the default eval "
+                         "set (e.g. a candidate-mining staging tree). The tree "
+                         "must still have the <root>/<frag_id>/<frag_id>.wav "
+                         "layout. SCORES_CSV/REPORT_MD default under it unless "
+                         "--csv-out overrides. Default behaviour (no flag) is "
+                         "byte-identical to before.")
+    ap.add_argument("--csv-out", type=Path, default=None,
+                    help="write the scores CSV here instead of "
+                         "<root>/acoustic_scores.csv. Use with --root for a "
+                         "candidate run whose CSV must not collide with the "
+                         "eval set's.")
+    ap.add_argument("--no-report", action="store_true",
+                    help="score only — skip the calibration report. Use for a "
+                         "non-eval tree (e.g. candidate mining) where the "
+                         "grade/manifest calibration assumptions do not hold; "
+                         "the report's composite is re-normalised over whatever "
+                         "set it is given, so it is NOT comparable across trees.")
     args = ap.parse_args(argv)
+
+    # --root / --csv-out override the module path globals BEFORE any scoring or
+    # discovery runs (every function reads these at call time). With no flag,
+    # the globals keep their default values and behaviour is unchanged.
+    global FRAGMENTS_ROOT, MANIFEST_PATH, SCORES_CSV, REPORT_MD
+    if args.root is not None:
+        FRAGMENTS_ROOT = args.root
+        MANIFEST_PATH = FRAGMENTS_ROOT / "manifest.csv"
+        SCORES_CSV = FRAGMENTS_ROOT / "acoustic_scores.csv"
+        REPORT_MD = FRAGMENTS_ROOT / "ACOUSTIC_SCORES_REPORT.md"
+    if args.csv_out is not None:
+        SCORES_CSV = args.csv_out
 
     if args.report:
         run_report([], ["(report-only run — fallbacks from the scoring run not "
@@ -1178,6 +1211,10 @@ def main(argv: Optional[list] = None) -> int:
     rows, failures, fallbacks = run_scoring(
         force=args.force, do_brouhaha=not args.no_brouhaha, limit=args.limit
     )
+    if args.no_report:
+        print(f"[score] --no-report: wrote {SCORES_CSV} ({len(rows)} rows), "
+              f"skipped calibration report.", file=sys.stderr)
+        return 0
     run_report(failures, fallbacks)
     return 0
 

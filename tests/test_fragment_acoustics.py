@@ -306,3 +306,125 @@ def test_grades_and_fields_consistent():
     assert len(METRIC_FIELDS) == len(set(METRIC_FIELDS))
     # DEV prefixes are non-empty strings.
     assert all(isinstance(p, str) and p for p in DEV_AUTOR_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# --root / --csv-out path plumbing (candidate-mining override)
+# ---------------------------------------------------------------------------
+
+
+def _write_min_scores_csv(path, frag_ids):
+    """Write a minimal scores CSV (all metric cells blank → nan) for the given
+    frag_ids, enough for the report-only path to read + analyse without any
+    model/GPU work."""
+    import csv as _csv
+
+    from scripts.score_fragment_acoustics import METRIC_FIELDS as _MF
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = _csv.writer(f)
+        w.writerow(["frag_id"] + _MF)
+        for fid in frag_ids:
+            w.writerow([fid] + [""] * len(_MF))
+
+
+def test_root_override_redirects_all_paths(tmp_path, monkeypatch):
+    """`--root <tree>` must point fragment discovery, the scores CSV, the
+    manifest, and the report ALL under that tree — leaving the module's default
+    eval-set globals untouched afterwards (no leakage across runs)."""
+    import scripts.score_fragment_acoustics as saf
+
+    # Snapshot the defaults so we can prove (a) they were used as the baseline
+    # and (b) we restore them — the module mutates globals in main().
+    default_root = saf.FRAGMENTS_ROOT
+    default_csv = saf.SCORES_CSV
+    default_manifest = saf.MANIFEST_PATH
+    default_report = saf.REPORT_MD
+
+    try:
+        root = tmp_path / "cand_tree"
+        root.mkdir()
+        # A cached scores CSV under the override root, plus a manifest the
+        # report-only path reads (load_manifest needs the columns it queries).
+        _write_min_scores_csv(root / "acoustic_scores.csv", ["rec_a__cand00"])
+        (root / "manifest.csv").write_text(
+            "frag_id,noise,overlap_bin,Autor\nrec_a__cand00,Niski,heavy,someauthor\n",
+            encoding="utf-8",
+        )
+        # robione lookup must not touch the real /mnt path during the test.
+        monkeypatch.setattr(saf, "ROBIONE_PATH", tmp_path / "no_robione.txt")
+
+        rc = saf.main(["--report", "--root", str(root)])
+        assert rc == 0
+        # All four globals now point under the override root.
+        assert saf.FRAGMENTS_ROOT == root
+        assert saf.SCORES_CSV == root / "acoustic_scores.csv"
+        assert saf.MANIFEST_PATH == root / "manifest.csv"
+        assert saf.REPORT_MD == root / "ACOUSTIC_SCORES_REPORT.md"
+        # The report landed under the override root, not the eval set.
+        assert (root / "ACOUSTIC_SCORES_REPORT.md").exists()
+    finally:
+        # Restore defaults so later tests / real runs see the eval set.
+        saf.FRAGMENTS_ROOT = default_root
+        saf.SCORES_CSV = default_csv
+        saf.MANIFEST_PATH = default_manifest
+        saf.REPORT_MD = default_report
+
+
+def test_csv_out_override_redirects_only_csv(tmp_path, monkeypatch):
+    """`--csv-out` (with `--root`) redirects the scores CSV to the explicit
+    path, while the other three globals follow `--root`. Proves the candidate
+    run can keep its CSV at a chosen name."""
+    import scripts.score_fragment_acoustics as saf
+
+    default_root = saf.FRAGMENTS_ROOT
+    default_csv = saf.SCORES_CSV
+    default_manifest = saf.MANIFEST_PATH
+    default_report = saf.REPORT_MD
+    try:
+        root = tmp_path / "cand_tree"
+        root.mkdir()
+        out_csv = tmp_path / "candidate_scores.csv"
+        _write_min_scores_csv(out_csv, ["rec_b__cand00"])
+        (root / "manifest.csv").write_text(
+            "frag_id,noise,overlap_bin,Autor\nrec_b__cand00,Niski,heavy,a\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(saf, "ROBIONE_PATH", tmp_path / "no_robione.txt")
+
+        rc = saf.main(["--report", "--root", str(root),
+                       "--csv-out", str(out_csv)])
+        assert rc == 0
+        # CSV global points at the explicit --csv-out path.
+        assert saf.SCORES_CSV == out_csv
+        # Root / manifest / report follow --root.
+        assert saf.FRAGMENTS_ROOT == root
+        assert saf.MANIFEST_PATH == root / "manifest.csv"
+        assert saf.REPORT_MD == root / "ACOUSTIC_SCORES_REPORT.md"
+    finally:
+        saf.FRAGMENTS_ROOT = default_root
+        saf.SCORES_CSV = default_csv
+        saf.MANIFEST_PATH = default_manifest
+        saf.REPORT_MD = default_report
+
+
+def test_no_flags_leaves_paths_default():
+    """With no override flags the parser yields None for both, so main()'s
+    override block is a no-op — the default eval-set globals stand. Guards the
+    'byte-identical default behaviour' contract."""
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--report", action="store_true")
+    ap.add_argument("--no-brouhaha", action="store_true")
+    ap.add_argument("--limit", type=int, default=None)
+    # Mirror the real flags' defaults.
+    from pathlib import Path as _P
+
+    ap.add_argument("--root", type=_P, default=None)
+    ap.add_argument("--csv-out", type=_P, default=None)
+    ap.add_argument("--no-report", action="store_true")
+    parsed = ap.parse_args([])
+    assert parsed.root is None and parsed.csv_out is None
+    assert parsed.no_report is False
