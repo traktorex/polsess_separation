@@ -110,8 +110,9 @@ OUTPUT_SAMPLE_RATE = 16_000
 # Korpus columns carried onto each candidate row (matches the metadata the
 # author wants in the menu).
 KORPUS_FIELDS = [
-    "Autor", "Poziom szumów", "Środowisko", "Urządzenie nagrywające",
-    "Temat rozmowy", "Liczba mówców", "Nazwa", "Identyfikator nagrania",
+    "Autor", "Poziom szumów", "Typ szumów", "Środowisko", "Sesja",
+    "Urządzenie nagrywające", "Temat rozmowy", "Liczba mówców", "Nazwa",
+    "Identyfikator nagrania",
 ]
 
 
@@ -373,8 +374,9 @@ MANIFEST_COLUMNS = [
     "rec", "cand_id", "start", "end", "duration", "overlap_s",
     "n_overlap_events", "max_event_s", "speaker_balance", "speech_density",
     "finder_score", "Autor", "author_status",
-    "Poziom szumów", "Środowisko", "Urządzenie nagrywające",
-    "Temat rozmowy", "Liczba mówców", "Nazwa", "Identyfikator nagrania",
+    "Poziom szumów", "Typ szumów", "Środowisko", "Sesja",
+    "Urządzenie nagrywające", "Temat rozmowy", "Liczba mówców", "Nazwa",
+    "Identyfikator nagrania",
 ]
 
 

@@ -270,8 +270,8 @@ def build_report(manifest: dict, cand_scores: dict, ref_scores: dict,
       "and within each group by **composite descending** (hardest first). "
       "`ovl` = overlap seconds (floor 3 s); `dur` = fragment seconds.\n")
     a("| # | status | author | cand_id | composite | ovl | dur | noise | "
-      "environment | device | topic |")
-    a("|---|---|---|---|---:|---:|---:|---|---|---|---|")
+      "noise type | environment | device | topic |")
+    a("|---|---|---|---|---:|---:|---:|---|---|---|---|---|")
 
     status_rank = {"new": 0, "unknown": 1, "used": 2}
 
@@ -291,6 +291,7 @@ def build_report(manifest: dict, cand_scores: dict, ref_scores: dict,
           f"{_fmt(comp, 2)} | {_fmt(_to_float(m.get('overlap_s')), 1)} | "
           f"{_fmt(_to_float(m.get('duration')), 1)} | "
           f"{m.get('Poziom szumów', '') or '-'} | "
+          f"{m.get('Typ szumów', '') or '-'} | "
           f"{m.get('Środowisko', '') or '-'} | "
           f"{m.get('Urządzenie nagrywające', '') or '-'} | "
           f"{(m.get('Temat rozmowy', '') or '-')[:36]} |")
@@ -381,7 +382,8 @@ def _suggest_new_authors(a, manifest: dict, cand_comp: dict) -> None:
               f"overlap {_fmt(_to_float(m.get('overlap_s')), 1)}s, "
               f"{m.get('Środowisko', '') or '?'} / "
               f"{m.get('Urządzenie nagrywające', '') or '?'} / "
-              f"noise {m.get('Poziom szumów', '') or '?'}. "
+              f"noise {m.get('Poziom szumów', '') or '?'}"
+              f" ({m.get('Typ szumów', '') or '?'}). "
               f"_New speaker; {_rationale(cand_comp[c])}._")
         a("")
 
@@ -421,6 +423,8 @@ def _suggest_used_standouts(a, manifest: dict, cand_comp: dict,
             tags.append("harder than existing max")
         if is_rare:
             tags.append(f"rare env: {m.get('Środowisko', '')}")
+        if m.get("Typ szumów"):
+            tags.append(f"noise type: {m['Typ szumów']}")
         a(f"- **{c}** ({m['Autor'][:12]}) — composite "
           f"{_fmt(cand_comp[c], 2)}, overlap "
           f"{_fmt(_to_float(m.get('overlap_s')), 1)}s, "
