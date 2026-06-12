@@ -127,6 +127,7 @@ Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_f
 - `enhance_clarin_debleed.py` — batch MossFormerGAN_SE_16K on oracle debleed channels.
 - `diarize_clarin_2speakers.py` — pyannote over the full 2-speaker download → `diarization/<id>.json`.
 - `transcribe_clarin_2speakers.py` — WhisperX over the full 2-speaker download, raw and MossFormerGAN-enhanced.
+- `score_fragment_acoustics.py` — objective acoustic-complexity scorer for the 128 CLARIN eval fragments (SQUIM, DNSMOS ONNX, Brouhaha SNR/C50, WADA-SNR, LUFS, clipping), calibrated vs the author's 16 by-ear grades; writes `acoustic_scores.csv` + `ACOUSTIC_SCORES_REPORT.md` beside the fragments. Brouhaha runs in an isolated venv (`/tmp/brouhaha_venv`, override `BROUHAHA_VENV_PY`/`BROUHAHA_CKPT`) because its pins (numpy 1.x, pyannote.audio ≤3.3.0) conflict with the main venv; if absent, the script falls back to WADA-SNR and says so in the report.
 
 **Training Flow:** `train.py` → config → dataloaders → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning).
 
