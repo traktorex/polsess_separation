@@ -105,7 +105,7 @@ def test_load_signature_is_backend_key():
     # scheduler reloads/reuses the wrong model.
     stage = EnhancementStage(EnhancementConfig(backend="frcrn_se_16k"))
     assert stage.load_signature() == ("frcrn_se_16k",)
-    other = EnhancementStage(EnhancementConfig(backend="mossformer2_se_48k"))
+    other = EnhancementStage(EnhancementConfig(backend="mossformer_gan_se_16k"))
     assert other.load_signature() != stage.load_signature()
 
 
@@ -146,7 +146,6 @@ def test_load_dispatches_to_correct_backend(monkeypatch):
     expected = {
         "frcrn_se_16k": ("FRCRN_SE_16K", 16_000),
         "mossformer_gan_se_16k": ("MossFormerGAN_SE_16K", 16_000),
-        "mossformer2_se_48k": ("MossFormer2_SE_48K", 48_000),
     }
     # Literal pin above is the SR-pairing tripwire; this guard makes a newly
     # added backend row fail here until it is pinned too.
@@ -194,9 +193,11 @@ def test_clearvoice_enhance_before_load_raises():
 
 
 def _stub_clearvoice(cv=None):
-    # MossFormer2_SE_48K: native 48 kHz, so a 16 kHz input exercises the
-    # up/down resample round-trip. _decode_window_s is normally set in load().
-    backend = _ClearVoiceBackend("MossFormer2_SE_48K", 48_000)
+    # A native-48 kHz backend, so a 16 kHz input exercises the generic up/down
+    # resample round-trip of _ClearVoiceBackend (independent of any registered
+    # backend — the registry has no 48 kHz entry, but the resample capability is
+    # generic and must stay tested). _decode_window_s is normally set in load().
+    backend = _ClearVoiceBackend("_stub_48k", 48_000)
     backend._device = torch.device("cpu")
     backend._decode_window_s = 20.0
     backend._cv = cv if cv is not None else (lambda arr: arr)  # arr is (1, T)
@@ -262,3 +263,65 @@ def test_matches_original_clearvoice_loop(n):
     new = _hann_overlap_add(x, 1000, _fake_model)
     assert old.shape == new.shape
     assert np.allclose(old, new, atol=1e-6, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# Observation Adding (OA) / dry-wet mix in EnhancementStage.run
+# ---------------------------------------------------------------------------
+# A stub backend returns a known constant array regardless of input, so the
+# blend `out = (1-r)*enhanced + r*observed` is checkable in closed form.
+
+
+class _ConstBackend:
+    """Stub enhancement backend that ignores its input and returns a fixed
+    constant array of the input length — so OA's convex blend with the observed
+    signal is exactly computable."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
+        return np.full(len(audio_np), self.value, dtype=np.float32)
+
+
+def _stage_with_const_backend(ratio: float, value: float = 2.0) -> EnhancementStage:
+    stage = EnhancementStage(
+        EnhancementConfig(backend="frcrn_se_16k", observation_mix_ratio=ratio)
+    )
+    stage._backend = _ConstBackend(value)
+    return stage
+
+
+def test_oa_blend_is_convex_mix_of_enhanced_and_observed():
+    stage = _stage_with_const_backend(ratio=0.5, value=2.0)
+    ctx = PipelineContext()
+    ctx.sample_rate = 16_000
+    ctx.audio = _noise(4000)  # observed (dry)
+    stage.run(ctx)
+    enhanced = np.full(4000, 2.0, dtype=np.float32)
+    expected = 0.5 * enhanced + 0.5 * ctx.audio.astype(np.float32)
+    assert np.allclose(ctx.enhanced_full, expected, atol=1e-6)
+    assert ctx.enhanced_full.dtype == np.float32
+
+
+def test_oa_ratio_zero_is_byte_identical_to_no_oa():
+    # r=0 must be a strict no-op: the stored array equals the backend output
+    # byte-for-byte (the observed signal never enters the arithmetic).
+    observed = _noise(4000)
+    stage_oa0 = _stage_with_const_backend(ratio=0.0, value=2.0)
+    ctx0 = PipelineContext()
+    ctx0.sample_rate = 16_000
+    ctx0.audio = observed.copy()
+    stage_oa0.run(ctx0)
+
+    raw_enhanced = _ConstBackend(2.0).enhance(observed, 16_000)
+    assert np.array_equal(ctx0.enhanced_full, raw_enhanced)
+
+
+def test_oa_ratio_one_returns_observed():
+    stage = _stage_with_const_backend(ratio=1.0, value=2.0)
+    ctx = PipelineContext()
+    ctx.sample_rate = 16_000
+    ctx.audio = _noise(4000)
+    stage.run(ctx)
+    assert np.allclose(ctx.enhanced_full, ctx.audio.astype(np.float32), atol=1e-6)

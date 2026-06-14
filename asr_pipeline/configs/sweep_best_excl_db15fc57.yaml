@@ -1,5 +1,22 @@
-# Default pipeline config — POC-equivalent values.
-# Loaded by `asr_pipeline.config.load_pipeline_config_from_yaml()`.
+# Best config EXCLUDING the db15fc57 outlier (2026-06-14) — the "dual-objective"
+# winner. db15fc57 is a recurring pathological fragment: FRCRN enhancement makes
+# WhisperX hallucinate (and Observation-Adding re-injects the bad signal, making
+# it worse). With that one fragment set aside, this config beats every other on
+# BOTH transcripts and audio.
+#
+# Deltas from default.yaml:
+#   enhancement.backend: frcrn_se_16k          (kept on — see OA below)
+#   enhancement.observation_mix_ratio: 0.5     (Iwamoto-2022 dry/wet: half raw, half enhanced)
+#   post_separation_processing.backend: naive  (ap_bwe/flowhigh carry single-fragment tail risk)
+#   transcription.no_repeat_ngram_size: 3      (repetition-catastrophe guard)
+#
+# Dev numbers will be REGENERATED on the e31 separator (a full re-sweep is under
+# way). On the prior e23 separator + updated GT, with detect-and-retry ON, this
+# config TIES `sweep_best.yaml` (enh OFF) on cpWER (~21.6 vs 21.3 all-23; 20.5 vs
+# 20.7 excl-db15) and BEATS it on CER (14.3 vs 15.1) + audio — the dual-objective
+# pick. OFF stays marginally ahead on all-23 cpWER purely via db15fc57. Earlier
+# "Pareto-DOMINATES" framing was on older GT/pre-retry and no longer holds. Full
+# history: asr_pipeline/SWEEP_RUNLOG.md. Not yet validated on the held-out test set.
 
 sample_rate: 16000
 device: cuda
@@ -28,11 +45,15 @@ routing:
 
 enhancement:
   enabled: true
-  # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is the
-  # evidence leader). Final default ruling deferred pending substantive data.
+  # FRCRN denoiser kept ON; the observation_mix_ratio below dilutes its ASR-
+  # harmful artifacts by blending the raw observed signal back in.
   backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k
   max_segment_length_s: 8.0    # solos longer than this get Hann overlap-add chunked
-  observation_mix_ratio: 0.0   # OA dry-wet mix (Iwamoto/Wang): out=(1-r)*enh+r*observed; 0=pure enhanced
+  # Observation Adding (Iwamoto et al. 2022): out = (1-r)*enhanced + r*observed,
+  # applied to the enhanced solo regions. r=0.5 was the dev sweet spot (excl
+  # db15fc57); recovers most of enhancement's audio gain while cutting the
+  # SE-artifact WER penalty.
+  observation_mix_ratio: 0.5
 
 separation:
   enabled: true
@@ -57,7 +78,7 @@ post_separation_processing:
   # Stage 4 depends on the masked `_gated` arrays this stage writes,
   # so there's no `enabled` knob. Set `backend: naive` to apply only
   # the mask (no neural BWE).
-  backend: ap_bwe                       # naive | ap_bwe | flowhigh
+  backend: naive                           # naive | ap_bwe | flowhigh
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
   # (extension is ignored by torch.load).
@@ -72,7 +93,7 @@ assembly:
   enabled: true
   min_solo_for_anchor_s: 3.0
   anchor_max_duration_s: 240.0            # cap solo audio fed to ECAPA for the anchor
-  output_mode: shortened
+  output_mode: full_length
   silence_separator_s: 0.3
   crossfade_ms: 5.0                       # internal piece-to-piece seam fade
   edge_fade_ms: 2.0                       # stream's outermost edge fade
@@ -104,24 +125,15 @@ transcription:
   no_speech_threshold: 0.6                # silence prob cutoff
   compression_ratio_threshold: 2.4        # hallucination/fallback trigger
   patience: 1.0                           # beam-search patience (> 0)
-  # Anti-hallucination knobs (faster-whisper / whisperx backend only; a
-  # non-default value with backend=whisper is rejected loud). Defaults match
-  # WhisperX's default_asr_options exactly → current behaviour unchanged.
-  no_repeat_ngram_size: 0                 # 0 = disabled; >0 blocks repeating N-grams (int >= 0)
-  repetition_penalty: 1.0                 # 1.0 = none; >1 penalizes repeats (> 0)
-  hallucination_silence_threshold: null   # null = off; secs: skip silent gaps where hallucinations cluster
-  # WhisperX VAD chunk size (secs; whisperx-only). 30 = WhisperX default = current
-  # behaviour. Lower (e.g. 15) splits over-long VAD segments that make Whisper
-  # collapse and drop ~30 s of speech (see db15fc57). int >= 1.
-  chunk_size: 30
-  # Detect-and-retry for collapsed WhisperX windows (whisperx-only). After the
-  # cs30 pass, re-transcribe ONLY the windows that collapsed (long + near-empty)
-  # at a small chunk and splice — fixes db15fc57/fe65d170/72ca135e collapses with
-  # near-zero collateral, unlike lowering chunk_size globally. Ignored (with a
-  # one-time log) on backend=whisper. 0 = disabled; 8 = on (shipped). int >= 0.
+  # Repetition-catastrophe guard: blocks repeating 3-grams. Fixes the WhisperX
+  # repetition blowups that FRCRN enhancement can trigger (free, decode-time).
+  no_repeat_ngram_size: 3
+  # Detect-and-retry for WhisperX VAD over-merge collapses: re-transcribe only
+  # near-empty long windows at a small chunk (on by default; 0 = off). Matters
+  # most for enhancement/OA configs, which over-merge more.
   retry_collapsed_chunk_size: 8
-  collapse_min_duration_s: 18.0          # only windows this long are collapse-eligible (> 0)
-  collapse_max_wps: 0.7                   # long window below this words/sec = collapsed (> 0; normal Polish ~2-4 w/s)
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7
   # wav2vec2 forced-alignment model (WhisperX only). Omitted → WhisperX picks
   # its per-language default; for language: pl that is exactly
   # jonatasgrosman/wav2vec2-large-xlsr-53-polish (the previously-pinned value).

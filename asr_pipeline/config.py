@@ -9,10 +9,11 @@ only the one separator-loading seam in `stages/separation.py` to edit.
 """
 
 import json
+import math
 import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Union
 
 import yaml
 
@@ -98,12 +99,12 @@ class EnhancementConfig:
     """
 
     enabled: bool = True
-    # Backend selector (all ClearerVoice-Studio, self-downloading):
-    #   - "frcrn_se_16k": FRCRN, DNS-2020 winner, native 16k
-    #   - "mossformer_gan_se_16k": MossFormer + GAN losses, 16k
-    #   - "mossformer2_se_48k": MossFormer2, native 48k
-    #     (pipeline at 16k → upsample/downsample handled internally by the
-    #     backend; expect modest extra compute)
+    # Backend selector:
+    #   - "frcrn_se_16k": FRCRN, DNS-2020 winner, native 16k (ClearerVoice)
+    #   - "mossformer_gan_se_16k": MossFormer + GAN losses, 16k (ClearerVoice)
+    #   - "zipenhancer_16k": ZipEnhancer, native 16k (ModelScope
+    #     iic/speech_zipenhancer_ans_multiloss_16k_base; needs `modelscope`).
+    #     DNS-2020 PESQ leader; run via ModelScope ANS pipeline.
     # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is
     # the evidence leader). The *final* default ruling is deferred until there
     # is substantive testing data.
@@ -113,6 +114,16 @@ class EnhancementConfig:
     # head/tail divided by actual weights). 8 s chunks were verified by ear on
     # long Polish recordings.
     max_segment_length_s: float = 8.0
+    # Observation Adding (OA) / dry-wet mix per Iwamoto et al. 2022
+    # (arXiv:2201.06685) and Wang et al. 2024 (arXiv:2406.12699): convexly
+    # blend the original observed (dry) signal back into the enhanced (wet)
+    # output —  `out = (1 - r)*enhanced + r*observed`. 0.0 = pure enhanced
+    # (current behaviour); higher r dilutes SE artifacts that hurt ASR at the
+    # cost of output audio quality (moves the WER↔SQUIM frontier). Solo-scoped
+    # automatically: `enhanced_full` feeds only the per-speaker solo regions
+    # (overlaps separate from the original audio), so OA never touches the
+    # overlap path — exactly where the papers warn it harms.
+    observation_mix_ratio: float = 0.0
 
 
 @dataclass
@@ -128,7 +139,7 @@ class SeparationConfig:
 
     enabled: bool = True
     checkpoint_path: str = (
-        "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"
+        "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt"
     )
     separator_sample_rate: int = 8_000   # SR the separator was trained at
     # Audio duration (seconds) the separator was trained on. Used as the
@@ -264,13 +275,15 @@ class AssemblyConfig:
 
     enabled: bool = True
     min_solo_for_anchor_s: float = 3.0
-    # ECAPA only needs a few seconds of audio for a stable speaker embedding.
-    # On a long recording (e.g. 15 min), the per-speaker solo concat can grow
-    # to hundreds of seconds; feeding that to ECAPA in a single forward either
-    # OOMs the GPU or stalls the kernel. We cap the concat at this length
-    # (taking a uniformly-strided sample so we don't bias toward the start).
-    # Set to None to disable the cap.
-    anchor_max_duration_s: Optional[float] = 30.0
+    # ECAPA only needs a few seconds of audio for a stable speaker embedding,
+    # but a richer anchor sharpens overlap speaker-assignment, so we feed as
+    # much solo as is safe. On a long recording (e.g. 15 min) the per-speaker
+    # solo concat can grow to hundreds of seconds; feeding 400 s+ to ECAPA in a
+    # single forward OOMs the GPU or stalls the kernel, so we still cap (taking
+    # a uniformly-strided sample so we don't bias toward the start). 240 s fully
+    # covers our ≤90 s eval fragments (no clipping) and stays under the ~400 s
+    # OOM zone. Set to None to disable the cap.
+    anchor_max_duration_s: Optional[float] = 240.0
     # Output mode for the assembled per-speaker streams:
     #   "shortened"    -> speech-only concat with `silence_separator_s` between pieces
     #   "full_length"  -> total stream length = input length; gaps filled with silence
@@ -330,6 +343,80 @@ class TranscriptionConfig:
     language: str = "pl"
     initial_prompt: str = "Rozmowa po polsku."
     word_timestamps: bool = True
+
+    # --- Whisper decode knobs (both backends) -------------------------------
+    # Exposed so a config sweep can vary decoding. Defaults reproduce the
+    # CURRENT pipeline behaviour exactly — i.e. WhisperX's own
+    # ``default_asr_options`` (whisperx/asr.py ``load_model``), which is the
+    # default/eval backend. Note WhisperX overrides several faster-whisper
+    # signature defaults (most notably ``condition_on_previous_text``), so
+    # these defaults are taken from WhisperX, not from faster-whisper.
+    #
+    # Beam width for beam search. WhisperX default = 5 (asr.py
+    # ``default_asr_options["beam_size"]``). Must be >= 1.
+    beam_size: int = 5
+    # Temperature fallback schedule. A single float means "no fallback"; a
+    # list is the descending schedule Whisper retries when a decode trips the
+    # compression-ratio / logprob gate (openai-whisper / faster-whisper
+    # fallback semantics). WhisperX default = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # (asr.py ``temperatures``). Each value must lie in [0, 1]. A list default
+    # (via default_factory) so it stays YAML/JSON round-trippable as a plain
+    # sequence; YAML may supply a scalar or a list.
+    temperature: Union[float, List[float]] = field(
+        default_factory=lambda: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    )
+    # Feed the previous window's text as the next window's prompt. WhisperX
+    # default = False (asr.py ``condition_on_previous_text``) — this DIFFERS
+    # from faster-whisper's signature default of True, so the WhisperX value
+    # is the one that reproduces current behaviour.
+    condition_on_previous_text: bool = False
+    # No-speech probability above which a segment is treated as silence.
+    # WhisperX default = 0.6 (asr.py ``no_speech_threshold``). Finite.
+    no_speech_threshold: float = 0.6
+    # gzip compression ratio above which a decode is treated as a
+    # hallucination and the temperature fallback fires. WhisperX default =
+    # 2.4 (asr.py ``compression_ratio_threshold``). Finite.
+    compression_ratio_threshold: float = 2.4
+    # Beam-search patience (Kasai et al. 2021). WhisperX default = 1
+    # (asr.py ``patience``); stored as float here, numerically identical.
+    # Must be > 0.
+    patience: float = 1.0
+
+    # --- Anti-hallucination decode knobs (faster-whisper / WhisperX only) ----
+    # These three live in faster-whisper's ``transcribe`` signature, and
+    # WhisperX's ``default_asr_options`` carries each at the SAME value as the
+    # faster-whisper signature default — so the defaults below reproduce current
+    # behaviour exactly (a baseline run stays byte-identical). Evidence
+    # (verified 2026-06-14 against the pinned venv): faster-whisper signature
+    # defaults / WhisperX default_asr_options — ``no_repeat_ngram_size`` 0 / 0,
+    # ``repetition_penalty`` 1.0 / 1, ``hallucination_silence_threshold``
+    # None / None. All three agree, so unlike the six knobs above there is no
+    # WhisperX-vs-faster-whisper override to reconcile.
+    #
+    # openai-whisper (the ``whisper`` backend) does NOT support these as
+    # faster-whisper does: ``no_repeat_ngram_size`` / ``repetition_penalty``
+    # are absent from its decode surface entirely, and while its ``transcribe``
+    # has a param literally named ``hallucination_silence_threshold`` it is a
+    # different feature (a different silence-skip algorithm). Forwarding any of
+    # them to openai-whisper would either crash or silently substitute a
+    # different behaviour — SCOPE §4.1 forbids the latter. So the defaults below
+    # (0 / 1.0 / None) are a no-op for the ``whisper`` backend (never passed),
+    # and a non-default value with ``backend == "whisper"`` is a loud error
+    # (see ``_WhisperBackend.transcribe``).
+    #
+    # Block any N-gram of this size from repeating in the decode. WhisperX /
+    # faster-whisper default = 0 (disabled). Must be an int >= 0.
+    no_repeat_ngram_size: int = 0
+    # Penalty applied to already-emitted tokens (> 1 discourages repeats).
+    # WhisperX / faster-whisper default = 1.0 (no penalty). Must be > 0 and
+    # finite.
+    repetition_penalty: float = 1.0
+    # When set, faster-whisper skips silent gaps longer than this many seconds
+    # where hallucinations cluster (requires ``word_timestamps=True``, which the
+    # pipeline already sets). WhisperX / faster-whisper default = None (off).
+    # None = off, or a positive finite number of seconds.
+    hallucination_silence_threshold: Optional[float] = None
+
     # WhisperX-only knobs (ignored when ``backend != whisperx``):
     # the wav2vec2 model used for forced alignment.
     #   None = WhisperX picks its per-language default
@@ -338,6 +425,48 @@ class TranscriptionConfig:
     #   Set explicitly to override (e.g. the English XLSR-53 aligner — see
     #   configs/english.yaml).
     align_model_name: Optional[str] = None
+    # WhisperX VAD chunk size (seconds): the max length of a merged VAD
+    # speech segment fed to Whisper in one window. WhisperX default = 30
+    # (= Whisper's receptive field). At 30 a long unbroken VAD segment can hit
+    # the window ceiling and make Whisper collapse — emit ~nothing for ~30 s of
+    # clear speech (observed on db15fc57: 39-68 s dropped). A smaller value
+    # forces WhisperX to split such segments, recovering the dropped speech, at
+    # the cost of slightly less decode context. Must be an int >= 1. 30 = current
+    # behaviour (byte-identical baseline). Ignored by the ``whisper`` backend
+    # (openai-whisper has no VAD chunking) — a non-default value there is a loud
+    # error, like the anti-hallucination knobs above.
+    chunk_size: int = 30
+
+    # --- Detect-and-retry for collapsed WhisperX windows (WhisperX only) ------
+    # The same over-merge failure that ``chunk_size`` addresses, but fixed
+    # surgically instead of globally. WhisperX merges VAD speech into windows up
+    # to ``chunk_size`` (=30 s); a long (~18-30 s) merged window can make Whisper
+    # *collapse* — emit ~nothing for the whole window, dropping ~all of that
+    # speech (observed on db15fc57, fe65d170, 72ca135e). Lowering ``chunk_size``
+    # globally fixes the collapses but re-splits clean windows too, adding broad
+    # collateral on configs that never collapse. Detect-and-retry instead runs
+    # the normal ``chunk_size`` pass, detects only the collapsed windows, and
+    # re-transcribes *just those* at a small chunk — near-zero collateral.
+    #
+    # These three knobs are WhisperX-only (the ``whisper`` backend does its own
+    # internal windowing and does not exhibit this exact failure). Unlike
+    # ``chunk_size``, the retry default is ON (8), so a non-default value with
+    # backend="whisper" is NOT a hard error — it is simply not applicable there
+    # and is ignored with a visible one-time log (SCOPE §4.1), never silently.
+    #
+    # Re-transcribe each detected collapsed window at this chunk size (seconds).
+    # 0 = disabled (no retry pass; pure ``chunk_size`` behaviour). 8 = shipped
+    # behaviour (a small chunk reliably breaks the over-merge). Must be an int
+    # >= 0.
+    retry_collapsed_chunk_size: int = 8
+    # A window is collapse-eligible only if it is at least this long (seconds).
+    # Collapsed windows always sit near the ``chunk_size`` ceiling; this floor
+    # keeps the detector off normal short windows. Must be positive and finite.
+    collapse_min_duration_s: float = 18.0
+    # A long window counts as collapsed if its word density (words / second) is
+    # below this. Normal Polish speech is ~2-4 w/s, so a long window emitting
+    # < 0.7 w/s has effectively dropped its speech. Must be positive and finite.
+    collapse_max_wps: float = 0.7
     # When True, additionally run the same backend on the whole mixture
     # (``ctx.audio``) as a single stream, writing the result to
     # ``ctx.mixture_transcript``. Used for the thesis ablation table
@@ -400,7 +529,7 @@ class PipelineConfig:
         _one_of(self.assembly.output_mode, "output_mode",
                 ("shortened", "full_length"))
         _one_of(self.enhancement.backend, "enhancement.backend",
-                ("frcrn_se_16k", "mossformer_gan_se_16k", "mossformer2_se_48k"))
+                ("frcrn_se_16k", "mossformer_gan_se_16k", "zipenhancer_16k"))
         _one_of(self.post_separation_processing.backend,
                 "post_separation_processing.backend",
                 ("naive", "ap_bwe", "flowhigh"))
@@ -429,6 +558,96 @@ class PipelineConfig:
             raise ValueError(
                 f"flowhigh_input_sr must be positive, got "
                 f"{self.post_separation_processing.flowhigh_input_sr}"
+            )
+
+        omr = self.enhancement.observation_mix_ratio
+        if not math.isfinite(omr) or not (0.0 <= omr <= 1.0):
+            raise ValueError(
+                f"enhancement.observation_mix_ratio must be a finite value in "
+                f"[0, 1] (convex dry-wet weight; 0 = pure enhanced), got {omr}"
+            )
+
+        # --- Transcription decode knobs ---
+        tcfg = self.transcription
+        if tcfg.beam_size < 1:
+            raise ValueError(
+                f"transcription.beam_size must be >= 1, got {tcfg.beam_size}"
+            )
+        if tcfg.patience <= 0 or not math.isfinite(tcfg.patience):
+            raise ValueError(
+                f"transcription.patience must be a positive finite number, got "
+                f"{tcfg.patience}"
+            )
+        if not math.isfinite(tcfg.no_speech_threshold):
+            raise ValueError(
+                f"transcription.no_speech_threshold must be finite, got "
+                f"{tcfg.no_speech_threshold}"
+            )
+        if not math.isfinite(tcfg.compression_ratio_threshold):
+            raise ValueError(
+                f"transcription.compression_ratio_threshold must be finite, got "
+                f"{tcfg.compression_ratio_threshold}"
+            )
+        # temperature: scalar or schedule, each entry a finite value in [0, 1].
+        temps = (
+            tcfg.temperature
+            if isinstance(tcfg.temperature, (list, tuple))
+            else [tcfg.temperature]
+        )
+        if len(temps) == 0:
+            raise ValueError(
+                "transcription.temperature must be a float or a non-empty "
+                "list of floats, got an empty sequence."
+            )
+        for t in temps:
+            if not math.isfinite(t) or not (0.0 <= t <= 1.0):
+                raise ValueError(
+                    f"transcription.temperature values must each be in [0, 1], "
+                    f"got {tcfg.temperature!r}"
+                )
+        # Anti-hallucination knobs (faster-whisper / WhisperX backend).
+        if tcfg.no_repeat_ngram_size < 0:
+            raise ValueError(
+                f"transcription.no_repeat_ngram_size must be >= 0 (0 = disabled), "
+                f"got {tcfg.no_repeat_ngram_size}"
+            )
+        if tcfg.repetition_penalty <= 0 or not math.isfinite(tcfg.repetition_penalty):
+            raise ValueError(
+                f"transcription.repetition_penalty must be a positive finite "
+                f"number (1.0 = no penalty), got {tcfg.repetition_penalty}"
+            )
+        if tcfg.hallucination_silence_threshold is not None and (
+            tcfg.hallucination_silence_threshold <= 0
+            or not math.isfinite(tcfg.hallucination_silence_threshold)
+        ):
+            raise ValueError(
+                f"transcription.hallucination_silence_threshold must be None "
+                f"(off) or a positive finite number of seconds, got "
+                f"{tcfg.hallucination_silence_threshold}"
+            )
+        if tcfg.chunk_size < 1:
+            raise ValueError(
+                f"transcription.chunk_size must be an int >= 1 (seconds; "
+                f"30 = WhisperX default), got {tcfg.chunk_size}"
+            )
+        # Detect-and-retry knobs (WhisperX-only collapse recovery).
+        if tcfg.retry_collapsed_chunk_size < 0:
+            raise ValueError(
+                f"transcription.retry_collapsed_chunk_size must be an int >= 0 "
+                f"(0 = disabled; 8 = default), got "
+                f"{tcfg.retry_collapsed_chunk_size}"
+            )
+        if (tcfg.collapse_min_duration_s <= 0
+                or not math.isfinite(tcfg.collapse_min_duration_s)):
+            raise ValueError(
+                f"transcription.collapse_min_duration_s must be a positive "
+                f"finite number of seconds, got {tcfg.collapse_min_duration_s}"
+            )
+        if (tcfg.collapse_max_wps <= 0
+                or not math.isfinite(tcfg.collapse_max_wps)):
+            raise ValueError(
+                f"transcription.collapse_max_wps must be a positive finite "
+                f"words/second threshold, got {tcfg.collapse_max_wps}"
             )
 
         if self.spill_intermediate and self.artifact_dir is None:

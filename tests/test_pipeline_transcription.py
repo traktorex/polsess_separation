@@ -24,6 +24,7 @@ from asr_pipeline.stages.transcription import (
     _ensure_ct2_model,
     _finite_or_zero,
     _normalise_result,
+    _temperature_schedule,
 )
 
 
@@ -355,6 +356,358 @@ def test_ensure_ct2_subprocess_failure_cleans_cache(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="ct2-transformers-converter failed"):
         _ensure_ct2_model("org/model")
     assert not cache_dir.exists()      # poisoned cache removed
+
+
+# ---------------------------------------------------------------------------
+# Decode knobs reach the backends (the sweep relies on this)
+# ---------------------------------------------------------------------------
+
+
+def test_temperature_schedule_normalisation():
+    """Scalar → single-element list (no-fallback); list/tuple → list."""
+    assert _temperature_schedule(0.3) == [0.3]
+    assert _temperature_schedule([0.0, 0.5]) == [0.0, 0.5]
+    assert _temperature_schedule((0.0, 0.5)) == [0.0, 0.5]
+
+
+class _FakeWhisperModel:
+    """Captures the kwargs the whisper backend passes to transcribe()."""
+
+    def __init__(self) -> None:
+        self.kwargs: dict | None = None
+
+    def transcribe(self, audio, **kwargs):
+        self.kwargs = kwargs
+        return {"text": "x", "segments": [], "language": "pl"}
+
+
+def test_whisper_backend_passes_decode_knobs():
+    """openai-whisper backend forwards every decode knob to model.transcribe()
+    with the configured values."""
+    cfg = TranscriptionConfig(
+        backend="whisper", beam_size=3, temperature=[0.0, 0.4],
+        condition_on_previous_text=True, no_speech_threshold=0.5,
+        compression_ratio_threshold=2.0, patience=1.5,
+    )
+    backend = _WhisperBackend(cfg)
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))
+
+    kw = fake.kwargs
+    assert kw["beam_size"] == 3
+    assert kw["patience"] == 1.5
+    assert kw["temperature"] == (0.0, 0.4)        # scheduled as a tuple
+    assert kw["condition_on_previous_text"] is True
+    assert kw["no_speech_threshold"] == 0.5
+    assert kw["compression_ratio_threshold"] == 2.0
+
+
+def test_whisper_backend_default_knobs_reproduce_current_behaviour():
+    """With default config the whisper backend forwards the WhisperX-matched
+    defaults — the values that make a baseline run byte-identical."""
+    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))
+    kw = fake.kwargs
+    assert kw["beam_size"] == 5
+    assert kw["patience"] == 1.0
+    assert kw["temperature"] == (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+    assert kw["condition_on_previous_text"] is False
+    assert kw["no_speech_threshold"] == 0.6
+    assert kw["compression_ratio_threshold"] == 2.4
+
+
+# ---------------------------------------------------------------------------
+# Anti-hallucination knobs: faster-whisper-only, guarded on the whisper backend
+# ---------------------------------------------------------------------------
+
+
+def test_whisper_backend_default_antihallucination_knobs_are_noop():
+    """Default config (0 / 1.0 / None) must NOT forward the faster-whisper-only
+    knobs to openai-whisper — they have no equivalent there, so passing them
+    would crash or silently substitute behaviour. Default = byte-identical."""
+    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
+    kw = fake.kwargs
+    assert "no_repeat_ngram_size" not in kw
+    assert "repetition_penalty" not in kw
+    assert "hallucination_silence_threshold" not in kw
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("no_repeat_ngram_size", 3, "no_repeat_ngram_size"),
+    ("repetition_penalty", 1.2, "repetition_penalty"),
+    ("hallucination_silence_threshold", 2.0, "hallucination_silence_threshold"),
+    ("chunk_size", 15, "chunk_size"),   # WhisperX-only VAD knob; no-op for whisper
+])
+def test_whisper_backend_rejects_nondefault_antihallucination_knob(field, value, token):
+    """A WhisperX-only knob set to a non-default value with the openai-whisper
+    backend fails loud (SCOPE §4.1: no silent substitution) — and the model's
+    transcribe() is never reached."""
+    cfg = TranscriptionConfig(backend="whisper", **{field: value})
+    backend = _WhisperBackend(cfg)
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    with pytest.raises(ValueError, match=token):
+        backend.transcribe(np.zeros(16_000, dtype=np.float32))
+    assert fake.kwargs is None       # never reached openai-whisper
+
+
+def test_whisper_backend_retry_knob_does_not_raise_and_is_ignored():
+    """Unlike chunk_size (a hard reject), retry_collapsed_chunk_size defaults to
+    8 (ON), so the openai-whisper backend must NOT reject it — it logs that the
+    knob is WhisperX-only and ignored, then transcribes normally (SCOPE §4.1: a
+    visible no-op, not a silent one). Contrast with chunk_size, which raises."""
+    cfg = TranscriptionConfig(backend="whisper")     # default retry=8
+    assert cfg.retry_collapsed_chunk_size == 8
+    backend = _WhisperBackend(cfg)
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
+    assert fake.kwargs is not None                    # reached openai-whisper
+    # The retry knob is never forwarded to openai-whisper (no equivalent).
+    assert "retry_collapsed_chunk_size" not in fake.kwargs
+
+
+def test_whisperx_backend_passes_chunk_size_to_transcribe(monkeypatch):
+    """The WhisperX backend forwards transcription.chunk_size to the faster-
+    whisper pipeline's transcribe() — the knob that bounds the max merged VAD
+    segment length (default 30; lower splits over-long segments)."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(backend="whisperx", chunk_size=15, word_timestamps=False)
+    backend = _WhisperXBackend(cfg)
+
+    captured = {}
+
+    class _FakeASR:
+        def transcribe(self, audio, language, chunk_size):
+            captured["chunk_size"] = chunk_size
+            captured["language"] = language
+            return {"segments": [], "language": language}
+
+    backend._asr = _FakeASR()
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))
+    assert captured["chunk_size"] == 15
+    assert captured["language"] == cfg.language
+
+
+# ---------------------------------------------------------------------------
+# Detect-and-retry for collapsed WhisperX windows
+# ---------------------------------------------------------------------------
+
+
+class _RetryFakeASR:
+    """Fake faster-whisper pipeline for the WhisperX retry path.
+
+    The first ``transcribe`` (chunk_size = the configured cs30 pass) returns
+    ``first_segments``; every subsequent call (the per-window retry at the small
+    chunk) returns ``retry_segments`` and records the sub-clip length so the test
+    can confirm the right audio span was sliced.
+    """
+
+    def __init__(self, first_segments, retry_segments) -> None:
+        self.first_segments = first_segments
+        self.retry_segments = retry_segments
+        self.calls: list[dict] = []
+
+    def transcribe(self, audio, language, chunk_size):
+        self.calls.append({"chunk_size": chunk_size, "n_samples": len(audio)})
+        segs = self.first_segments if len(self.calls) == 1 else self.retry_segments
+        return {"segments": [dict(s) for s in segs], "language": language}
+
+
+def _retry_backend(monkeypatch, first_segments, retry_segments, **cfg_kwargs):
+    """A _WhisperXBackend wired to a _RetryFakeASR, whisperx import stubbed."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(backend="whisperx", word_timestamps=False, **cfg_kwargs)
+    backend = _WhisperXBackend(cfg)
+    backend._asr = _RetryFakeASR(first_segments, retry_segments)
+    return backend
+
+
+def test_retry_does_not_fire_on_normal_segment(monkeypatch):
+    """A normal multi-word segment is not collapse-eligible: the retry never
+    runs (only the one cs30 pass) and the segment passes through unchanged."""
+    normal = [{"start": 0.0, "end": 5.0, "text": "to jest zwykłe zdanie po polsku"}]
+    backend = _retry_backend(monkeypatch, normal, retry_segments=[])
+    out = backend.transcribe(np.zeros(30 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 1                  # no retry pass
+    assert out["segments"][0]["text"] == "to jest zwykłe zdanie po polsku"
+    assert out["segments"][0]["start"] == 0.0 and out["segments"][0]["end"] == 5.0
+
+
+def test_retry_fires_and_splices_with_offset_timestamps(monkeypatch):
+    """A long near-empty window (25 s, 1 word → 0.04 w/s) collapses: the retry
+    fires, its richer output is spliced in, and the recovered timestamps are
+    offset by the collapsed window's start."""
+    # Window 10.0-35.0 s (dur=25 s) with a single word → collapsed.
+    collapsed = [{"start": 10.0, "end": 35.0, "text": "x"}]
+    # Retry returns local timestamps (relative to the sub-clip start).
+    recovered = [
+        {"start": 0.0, "end": 3.0, "text": "odzyskane słowa jeden"},
+        {"start": 3.0, "end": 6.0, "text": "odzyskane słowa dwa"},
+    ]
+    backend = _retry_backend(monkeypatch, collapsed, recovered)
+    out = backend.transcribe(np.zeros(40 * 16_000, dtype=np.float32))
+
+    # One cs30 pass + one retry pass.
+    assert len(backend._asr.calls) == 2
+    assert backend._asr.calls[0]["chunk_size"] == 30          # initial cs30
+    assert backend._asr.calls[1]["chunk_size"] == 8           # retry chunk
+    # The retry was fed exactly the collapsed window's audio span (10-35 s).
+    assert backend._asr.calls[1]["n_samples"] == int(35.0 * 16_000) - int(10.0 * 16_000)
+
+    # Spliced result carries the recovered words, with timestamps offset by 10 s.
+    texts = [s["text"] for s in out["segments"]]
+    assert texts == ["odzyskane słowa jeden", "odzyskane słowa dwa"]
+    assert out["segments"][0]["start"] == 10.0 and out["segments"][0]["end"] == 13.0
+    assert out["segments"][1]["start"] == 13.0 and out["segments"][1]["end"] == 16.0
+
+
+def test_retry_guard_keeps_original_when_not_more_words(monkeypatch):
+    """The guard: if the retry yields FEWER/equal words than the collapsed
+    original, the original window is kept (a window can't get emptier)."""
+    # 4 words over 25 s → 0.16 w/s, still below 0.7 → collapse-eligible.
+    collapsed = [{"start": 0.0, "end": 25.0, "text": "cztery słowa oryginalne tu"}]
+    # Retry recovers only 2 words (fewer) → guard keeps the original.
+    fewer = [{"start": 0.0, "end": 2.0, "text": "dwa słowa"}]
+    backend = _retry_backend(monkeypatch, collapsed, fewer)
+    out = backend.transcribe(np.zeros(30 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                  # retry ran
+    # ...but its output was rejected; the original survives unchanged.
+    assert out["segments"] == [
+        {"start": 0.0, "end": 25.0, "text": "cztery słowa oryginalne tu"}
+    ]
+
+
+def test_retry_disabled_when_chunk_size_zero(monkeypatch):
+    """retry_collapsed_chunk_size=0 disables the retry entirely: even a collapsed
+    window passes straight through (no second transcribe call)."""
+    collapsed = [{"start": 0.0, "end": 25.0, "text": "x"}]
+    backend = _retry_backend(
+        monkeypatch, collapsed, retry_segments=[], retry_collapsed_chunk_size=0
+    )
+    out = backend.transcribe(np.zeros(30 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 1                  # no retry pass
+    assert out["segments"][0]["text"] == "x"
+
+
+def test_retry_resorts_spliced_segments_by_start(monkeypatch):
+    """After splicing, segments are re-sorted by start time so a later-window
+    splice can't leave the list out of order."""
+    # Two windows: a normal one at 30-33 s and a collapsed one at 0-25 s. The
+    # collapsed (earlier) window is listed second to force a re-sort.
+    first = [
+        {"start": 30.0, "end": 33.0, "text": "późne zwykłe zdanie tutaj"},
+        {"start": 0.0, "end": 25.0, "text": "x"},
+    ]
+    recovered = [{"start": 0.0, "end": 4.0, "text": "wcześnie odzyskane słowa pięć sześć"}]
+    backend = _retry_backend(monkeypatch, first, recovered)
+    out = backend.transcribe(np.zeros(40 * 16_000, dtype=np.float32))
+    starts = [s["start"] for s in out["segments"]]
+    assert starts == sorted(starts)
+    assert out["segments"][0]["text"] == "wcześnie odzyskane słowa pięć sześć"
+    assert out["segments"][-1]["text"] == "późne zwykłe zdanie tutaj"
+
+
+def test_whisperx_backend_builds_asr_options(monkeypatch):
+    """WhisperX backend merges the decode knobs into asr_options, mapping the
+    temperature schedule onto the `temperatures` (plural) key WhisperX/
+    faster-whisper expect. Captures the dict passed to whisperx.load_model."""
+    import sys
+    import types
+
+    captured = {}
+
+    fake_whisperx = types.ModuleType("whisperx")
+
+    def fake_load_model(model_path, device, compute_type, language, asr_options):
+        captured["asr_options"] = asr_options
+        return object()    # stand-in ASR pipeline; load() doesn't call it
+
+    def fake_load_align_model(language_code, device, model_name):
+        return object(), {"meta": True}
+
+    fake_whisperx.load_model = fake_load_model
+    fake_whisperx.load_align_model = fake_load_align_model
+    # _WhisperXBackend.load reads DEFAULT_ALIGN_MODELS_* from this submodule
+    # when align_model_name is None (to log the resolved aligner).
+    fake_alignment = types.ModuleType("whisperx.alignment")
+    fake_alignment.DEFAULT_ALIGN_MODELS_TORCH = {}
+    fake_alignment.DEFAULT_ALIGN_MODELS_HF = {"pl": "jonatasgrosman/x"}
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.alignment", fake_alignment)
+
+    cfg = TranscriptionConfig(
+        backend="whisperx", beam_size=2, temperature=0.0,
+        condition_on_previous_text=True, no_speech_threshold=0.4,
+        compression_ratio_threshold=1.8, patience=1.2,
+        no_repeat_ngram_size=3, repetition_penalty=1.2,
+        hallucination_silence_threshold=2.0,
+    )
+    backend = _WhisperXBackend(cfg)
+    backend.load(torch_cpu())
+
+    opts = captured["asr_options"]
+    assert opts["beam_size"] == 2
+    assert opts["patience"] == 1.2
+    assert opts["temperatures"] == [0.0]          # plural key, scalar→[scalar]
+    assert "temperature" not in opts              # never the singular key
+    assert opts["condition_on_previous_text"] is True
+    assert opts["no_speech_threshold"] == 0.4
+    assert opts["compression_ratio_threshold"] == 1.8
+    assert opts["initial_prompt"] == cfg.initial_prompt
+    # Anti-hallucination knobs reach the dict under their faster-whisper names.
+    assert opts["no_repeat_ngram_size"] == 3
+    assert opts["repetition_penalty"] == 1.2
+    assert opts["hallucination_silence_threshold"] == 2.0
+
+
+def test_whisperx_backend_default_asr_options_match_whisperx_defaults(monkeypatch):
+    """Default config → asr_options whose values equal WhisperX's own
+    default_asr_options, so merging them changes nothing (byte-identical
+    baseline). Evidence: whisperx/asr.py load_model default_asr_options."""
+    import sys
+    import types
+
+    captured = {}
+    fake_whisperx = types.ModuleType("whisperx")
+    fake_whisperx.load_model = lambda model_path, device, compute_type, language, asr_options: (
+        captured.__setitem__("asr_options", asr_options) or object()
+    )
+    fake_whisperx.load_align_model = lambda language_code, device, model_name: (object(), {})
+    fake_alignment = types.ModuleType("whisperx.alignment")
+    fake_alignment.DEFAULT_ALIGN_MODELS_TORCH = {}
+    fake_alignment.DEFAULT_ALIGN_MODELS_HF = {"pl": "jonatasgrosman/x"}
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.alignment", fake_alignment)
+
+    backend = _WhisperXBackend(TranscriptionConfig(backend="whisperx"))
+    backend.load(torch_cpu())
+
+    opts = captured["asr_options"]
+    assert opts["beam_size"] == 5
+    assert opts["patience"] == 1.0
+    assert opts["temperatures"] == [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    assert opts["condition_on_previous_text"] is False
+    assert opts["no_speech_threshold"] == 0.6
+    assert opts["compression_ratio_threshold"] == 2.4
+    # Anti-hallucination knobs at their defaults equal WhisperX's own
+    # default_asr_options values, so merging them is a no-op (byte-identical).
+    assert opts["no_repeat_ngram_size"] == 0
+    assert opts["repetition_penalty"] == 1.0
+    assert opts["hallucination_silence_threshold"] is None
 
 
 # ---------------------------------------------------------------------------

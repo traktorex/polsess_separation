@@ -18,9 +18,6 @@ Backends are selected via `EnhancementConfig.backend`:
                            training but deterministic discriminative
                            inference (same category as CMGAN). Native 16
                            kHz.
-  - `mossformer2_se_48k` : ClearerVoice MossFormer2_SE_48K. Strongest of
-                           the three but pays a 16↔48 kHz resampling
-                           round-trip when the pipeline runs at 16 kHz.
 
 Each backend encapsulates its own chunking and SR handling; the stage
 just dispatches. ClearerVoice checkpoints self-download on first use
@@ -212,6 +209,101 @@ class _ClearVoiceBackend:
         return _hann_overlap_add(x, window, self._cv_call)
 
 
+class _ZipEnhancerBackend:
+    """ZipEnhancer — ModelScope ``iic/speech_zipenhancer_ans_multiloss_16k_base``,
+    a native-16 kHz monaural speech-enhancement model, run via ModelScope's
+    ``acoustic-noise-suppression`` pipeline.
+
+    Unlike :class:`_ClearVoiceBackend`, the ModelScope pipeline does its own
+    internal segmented decode for long audio, so we do NOT overlap-add here.
+    I/O follows the pipeline's tested path: write the native-rate mono signal
+    to a temp wav, call the pipeline, read ``result['output_pcm']`` (int16 PCM).
+    """
+
+    native_sample_rate = 16_000
+
+    def __init__(
+        self, model_id: str = "iic/speech_zipenhancer_ans_multiloss_16k_base"
+    ) -> None:
+        self.model_id = model_id
+        self._device: torch.device | None = None
+        self._worker = None
+
+    def load(self, device: torch.device) -> None:
+        # Run via a subprocess worker (scripts/zipenhancer_worker.py). The repo
+        # has a local top-level `datasets/` package that shadows the HF
+        # `datasets` modelscope's pipeline framework imports, so the modelscope
+        # call is isolated in a process whose sys.path excludes the repo root.
+        from pathlib import Path
+
+        self._device = device
+        self._worker = (
+            Path(__file__).resolve().parents[2] / "scripts" / "zipenhancer_worker.py"
+        )
+        if not self._worker.exists():
+            raise FileNotFoundError(f"ZipEnhancer worker missing: {self._worker}")
+
+    def unload(self) -> None:
+        self._device = None
+        self._worker = None
+
+    @torch.no_grad()
+    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
+        if self._worker is None:
+            raise RuntimeError("ZipEnhancerBackend.enhance called before load().")
+        if len(audio_np) < _MIN_ENHANCE_SAMPLES:
+            return audio_np.astype(np.float32)
+
+        orig_len = len(audio_np)
+        x = audio_np.astype(np.float32)
+        if sample_rate != self.native_sample_rate:
+            x = librosa.resample(
+                x, orig_sr=sample_rate, target_sr=self.native_sample_rate,
+                res_type="soxr_hq",
+            )
+
+        out = self._run(x)
+
+        if sample_rate != self.native_sample_rate:
+            out = librosa.resample(
+                out, orig_sr=self.native_sample_rate, target_sr=sample_rate,
+                res_type="soxr_hq",
+            )
+
+        if len(out) > orig_len:
+            out = out[:orig_len]
+        elif len(out) < orig_len:
+            out = np.pad(out, (0, orig_len - len(out)))
+        return out.astype(np.float32)
+
+    def _run(self, x_16k: np.ndarray) -> np.ndarray:
+        """One ModelScope ANS forward via the subprocess worker → mono float."""
+        import os
+        import subprocess
+        import sys
+        import tempfile
+
+        import soundfile as sf
+
+        fd_i, tin = tempfile.mkstemp(suffix=".wav"); os.close(fd_i)
+        fd_o, tout = tempfile.mkstemp(suffix=".wav"); os.close(fd_o)
+        try:
+            sf.write(tin, x_16k, self.native_sample_rate)
+            subprocess.run(
+                [sys.executable, str(self._worker), "--in", tin, "--out", tout,
+                 "--model", self.model_id, "--sr", str(self.native_sample_rate)],
+                check=True, capture_output=True, cwd="/tmp",
+            )
+            out, _ = sf.read(tout, dtype="float32")
+        finally:
+            for p in (tin, tout):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        return np.asarray(out, dtype=np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Stage dispatcher
 # ---------------------------------------------------------------------------
@@ -222,7 +314,6 @@ class _ClearVoiceBackend:
 _CLEARVOICE_BACKENDS = {
     "frcrn_se_16k": ("FRCRN_SE_16K", 16_000),
     "mossformer_gan_se_16k": ("MossFormerGAN_SE_16K", 16_000),
-    "mossformer2_se_48k": ("MossFormer2_SE_48K", 48_000),
 }
 
 
@@ -232,12 +323,14 @@ class EnhancementStage(Stage):
     def __init__(self, config: EnhancementConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: _ClearVoiceBackend | None = None
+        self._backend: "_ClearVoiceBackend | _ZipEnhancerBackend | None" = None
 
     def load(self, device: torch.device) -> None:
         if self.config.backend in _CLEARVOICE_BACKENDS:
             model_name, native_sr = _CLEARVOICE_BACKENDS[self.config.backend]
             backend = _ClearVoiceBackend(model_name, native_sr)
+        elif self.config.backend == "zipenhancer_16k":
+            backend = _ZipEnhancerBackend()
         else:
             raise ValueError(
                 f"Unknown enhancement backend: {self.config.backend!r}"
@@ -263,9 +356,24 @@ class EnhancementStage(Stage):
             raise RuntimeError("EnhancementStage.run called before load().")
         if ctx.audio is None:
             raise RuntimeError("PipelineContext.audio is None.")
-        ctx.enhanced_full = self._backend.enhance(
-            ctx.audio.astype(np.float32), ctx.sample_rate
-        )
+        observed = ctx.audio.astype(np.float32)
+        enhanced = self._backend.enhance(observed, ctx.sample_rate)
+        # Observation Adding (OA) / dry-wet mix (Iwamoto et al. 2022; Wang et al.
+        # 2024): convexly blend the observed (dry) signal back into the enhanced
+        # (wet) output to dilute SE artifacts that hurt ASR. r=0 is a strict
+        # no-op — the array is left untouched. This is solo-scoped for free:
+        # `enhanced_full` feeds only the per-speaker solo regions (overlaps are
+        # separated from the original `ctx.audio`), so OA never touches the
+        # overlap path, exactly where the papers warn it harms.
+        r = self.config.observation_mix_ratio
+        if r > 0:
+            # Defensive length-align like the backends do (enhance() already
+            # returns input length, but be robust to any backend drift).
+            n = min(len(enhanced), len(observed))
+            enhanced = ((1.0 - r) * enhanced[:n] + r * observed[:n]).astype(
+                np.float32
+            )
+        ctx.enhanced_full = enhanced
 
     def spill(self, ctx: PipelineContext, artifact_dir: Path) -> None:
         if ctx.enhanced_full is None:

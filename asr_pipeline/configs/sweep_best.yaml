@@ -1,3 +1,10 @@
+# Sweep finalist (2026-06-14): default.yaml + the two robust dev-sweep wins —
+#   enhancement.enabled: false   (FRCRN enhancement is a net liability; can blow up cpWER)
+#   post_separation_processing.backend: naive   (ap_bwe hurt; naive is best & free)
+# Everything else stays at baseline (model large-v2, beam 5, rms-match on, sep on) —
+# those knobs were within dev noise. ~21.9 cpWER vs 26.0 baseline on the 23-frag dev.
+# NOT yet validated on the held-out test set.
+
 # Default pipeline config — POC-equivalent values.
 # Loaded by `asr_pipeline.config.load_pipeline_config_from_yaml()`.
 
@@ -27,12 +34,11 @@ routing:
   merge_gap: 0.50            # merge overlap regions closer than this
 
 enhancement:
-  enabled: true
+  enabled: false
   # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is the
   # evidence leader). Final default ruling deferred pending substantive data.
   backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k
   max_segment_length_s: 8.0    # solos longer than this get Hann overlap-add chunked
-  observation_mix_ratio: 0.0   # OA dry-wet mix (Iwamoto/Wang): out=(1-r)*enh+r*observed; 0=pure enhanced
 
 separation:
   enabled: true
@@ -57,7 +63,7 @@ post_separation_processing:
   # Stage 4 depends on the masked `_gated` arrays this stage writes,
   # so there's no `enabled` knob. Set `backend: naive` to apply only
   # the mask (no neural BWE).
-  backend: ap_bwe                       # naive | ap_bwe | flowhigh
+  backend: naive                           # naive | ap_bwe | flowhigh
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
   # (extension is ignored by torch.load).
@@ -104,24 +110,6 @@ transcription:
   no_speech_threshold: 0.6                # silence prob cutoff
   compression_ratio_threshold: 2.4        # hallucination/fallback trigger
   patience: 1.0                           # beam-search patience (> 0)
-  # Anti-hallucination knobs (faster-whisper / whisperx backend only; a
-  # non-default value with backend=whisper is rejected loud). Defaults match
-  # WhisperX's default_asr_options exactly → current behaviour unchanged.
-  no_repeat_ngram_size: 0                 # 0 = disabled; >0 blocks repeating N-grams (int >= 0)
-  repetition_penalty: 1.0                 # 1.0 = none; >1 penalizes repeats (> 0)
-  hallucination_silence_threshold: null   # null = off; secs: skip silent gaps where hallucinations cluster
-  # WhisperX VAD chunk size (secs; whisperx-only). 30 = WhisperX default = current
-  # behaviour. Lower (e.g. 15) splits over-long VAD segments that make Whisper
-  # collapse and drop ~30 s of speech (see db15fc57). int >= 1.
-  chunk_size: 30
-  # Detect-and-retry for collapsed WhisperX windows (whisperx-only). After the
-  # cs30 pass, re-transcribe ONLY the windows that collapsed (long + near-empty)
-  # at a small chunk and splice — fixes db15fc57/fe65d170/72ca135e collapses with
-  # near-zero collateral, unlike lowering chunk_size globally. Ignored (with a
-  # one-time log) on backend=whisper. 0 = disabled; 8 = on (shipped). int >= 0.
-  retry_collapsed_chunk_size: 8
-  collapse_min_duration_s: 18.0          # only windows this long are collapse-eligible (> 0)
-  collapse_max_wps: 0.7                   # long window below this words/sec = collapsed (> 0; normal Polish ~2-4 w/s)
   # wav2vec2 forced-alignment model (WhisperX only). Omitted → WhisperX picks
   # its per-language default; for language: pl that is exactly
   # jonatasgrosman/wav2vec2-large-xlsr-53-polish (the previously-pinned value).

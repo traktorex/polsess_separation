@@ -189,6 +189,47 @@ def test_flowhigh_input_sr_must_be_positive():
 
 
 # ---------------------------------------------------------------------------
+# Observation Adding (OA) / dry-wet mix (enhancement.observation_mix_ratio)
+# ---------------------------------------------------------------------------
+
+
+def test_observation_mix_ratio_default_is_zero():
+    """OA is off by default in both the dataclass and the shipped YAML, so a
+    baseline run stays pure-enhanced (current behaviour)."""
+    assert PipelineConfig().enhancement.observation_mix_ratio == 0.0
+    yaml_cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML))
+    assert yaml_cfg.enhancement.observation_mix_ratio == 0.0
+
+
+def test_observation_mix_ratio_loads_from_dict():
+    """The knob round-trips through the nested-dict loader."""
+    cfg = load_pipeline_config_from_dict(
+        {"enhancement": {"observation_mix_ratio": 0.4}}
+    )
+    assert cfg.enhancement.observation_mix_ratio == 0.4
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf")])
+def test_observation_mix_ratio_out_of_range_rejected(value):
+    """Outside the convex [0, 1] range (or non-finite) fails at config time,
+    naming the knob — a YAML typo can't silently scale the dry/wet mix."""
+    with pytest.raises(ValueError, match="observation_mix_ratio"):
+        cfg = PipelineConfig()
+        cfg.enhancement.observation_mix_ratio = value
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("value", [0.0, 1.0, 0.5])
+def test_observation_mix_ratio_valid_values_accepted(value):
+    """The edges 0.0 (pure enhanced) and 1.0 (pure observed) plus an interior
+    value are all accepted."""
+    cfg = PipelineConfig()
+    cfg.enhancement.observation_mix_ratio = value
+    cfg.__post_init__()  # must not raise
+    assert cfg.enhancement.observation_mix_ratio == value
+
+
+# ---------------------------------------------------------------------------
 # Per-language alignment model (SCOPE §9 "Not Polish-only")
 # ---------------------------------------------------------------------------
 
@@ -264,3 +305,284 @@ def test_unknown_stage_level_key_rejected():
     splat is strict)."""
     with pytest.raises(TypeError):
         load_pipeline_config_from_dict({"separation": {"vad_treshold": 0.5}})
+
+
+# ---------------------------------------------------------------------------
+# Transcription decode knobs (sweepable Whisper hyperparameters)
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_decode_defaults_match_whisperx():
+    """Defaults reproduce WhisperX's own default_asr_options exactly, so a
+    baseline run with default config is byte-identical to before the knobs
+    existed. Evidence: whisperx/asr.py load_model's default_asr_options."""
+    t = PipelineConfig().transcription
+    assert t.beam_size == 5
+    assert t.temperature == [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # WhisperX overrides faster-whisper's signature default of True here.
+    assert t.condition_on_previous_text is False
+    assert t.no_speech_threshold == 0.6
+    assert t.compression_ratio_threshold == 2.4
+    assert t.patience == 1.0
+
+
+def test_default_yaml_decode_knobs_match_dataclass():
+    """Pin: default.yaml ships the same decode knobs as the dataclass, so YAML
+    users and programmatic callers decode identically."""
+    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).transcription
+    d = PipelineConfig().transcription
+    assert y.beam_size == d.beam_size
+    assert y.temperature == d.temperature
+    assert y.condition_on_previous_text == d.condition_on_previous_text
+    assert y.no_speech_threshold == d.no_speech_threshold
+    assert y.compression_ratio_threshold == d.compression_ratio_threshold
+    assert y.patience == d.patience
+
+
+def test_decode_knobs_load_from_yaml_dict():
+    """All six knobs load from a config dict (the sweep path overrides them)."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {
+            "beam_size": 1,
+            "temperature": 0.0,
+            "condition_on_previous_text": True,
+            "no_speech_threshold": 0.3,
+            "compression_ratio_threshold": 3.0,
+            "patience": 2.0,
+        }}
+    )
+    t = cfg.transcription
+    assert t.beam_size == 1
+    assert t.temperature == 0.0          # scalar accepted (no-fallback decode)
+    assert t.condition_on_previous_text is True
+    assert t.no_speech_threshold == 0.3
+    assert t.compression_ratio_threshold == 3.0
+    assert t.patience == 2.0
+
+
+def test_temperature_schedule_list_round_trips(tmp_path):
+    """A list temperature survives save→load (the tuple default would have
+    serialised as !!python/tuple and broken safe_load — guard against a
+    regression to a tuple default)."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {"temperature": [0.0, 0.5, 1.0]}}
+    )
+    out = tmp_path / "c.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out))
+    assert "!!python/tuple" not in out.read_text()
+    again = load_pipeline_config_from_yaml(str(out))
+    assert again.transcription.temperature == [0.0, 0.5, 1.0]
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("beam_size", 0, "beam_size"),
+    ("beam_size", -1, "beam_size"),
+    ("patience", 0.0, "patience"),
+    ("patience", -1.0, "patience"),
+    ("patience", float("inf"), "patience"),
+    ("no_speech_threshold", float("nan"), "no_speech_threshold"),
+    ("compression_ratio_threshold", float("inf"), "compression_ratio_threshold"),
+    ("temperature", 1.5, "temperature"),
+    ("temperature", -0.1, "temperature"),
+    ("temperature", [0.0, 2.0], "temperature"),
+    ("temperature", [], "temperature"),
+    ("chunk_size", 0, "chunk_size"),
+    ("chunk_size", -5, "chunk_size"),
+])
+def test_invalid_decode_knobs_raise(field, value, token):
+    """Out-of-range decode knobs fail loud at config time, naming the offending
+    knob — a sweep YAML typo can't silently produce a degenerate decode."""
+    with pytest.raises(ValueError, match=token):
+        cfg = PipelineConfig()
+        setattr(cfg.transcription, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("beam_size", 1),
+    ("patience", 0.5),
+    ("temperature", 0.0),
+    ("temperature", 1.0),
+    ("temperature", [0.0]),
+    ("temperature", [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]),
+    ("no_speech_threshold", 0.0),
+    ("compression_ratio_threshold", 2.4),
+    ("chunk_size", 1),
+])
+def test_valid_decode_knob_edges_accepted(field, value):
+    """Boundary-valid values are accepted (beam_size=1, temperature in {0,1},
+    single-element schedule)."""
+    cfg = PipelineConfig()
+    setattr(cfg.transcription, field, value)
+    cfg.__post_init__()      # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Anti-hallucination decode knobs (faster-whisper / WhisperX only)
+# ---------------------------------------------------------------------------
+
+
+def test_antihallucination_defaults_match_faster_whisper():
+    """Defaults equal faster-whisper's signature defaults, which are exactly
+    what WhisperX's default_asr_options also carry — so a baseline run is
+    byte-identical. Evidence (pinned venv 2026-06-14): faster-whisper
+    WhisperModel.transcribe → no_repeat_ngram_size=0, repetition_penalty=1,
+    hallucination_silence_threshold=None; whisperx/asr.py default_asr_options
+    carries the same three values."""
+    t = PipelineConfig().transcription
+    assert t.no_repeat_ngram_size == 0
+    assert t.repetition_penalty == 1.0
+    assert t.hallucination_silence_threshold is None
+
+
+def test_chunk_size_default_and_yaml():
+    """chunk_size defaults to 30 (= WhisperX default → byte-identical baseline);
+    default.yaml ships the same value."""
+    assert PipelineConfig().transcription.chunk_size == 30
+    assert load_pipeline_config_from_yaml(str(DEFAULT_YAML)).transcription.chunk_size == 30
+
+
+def test_default_yaml_antihallucination_knobs_match_dataclass():
+    """Pin: default.yaml ships the same anti-hallucination knobs as the
+    dataclass, so YAML users and programmatic callers decode identically."""
+    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).transcription
+    d = PipelineConfig().transcription
+    assert y.no_repeat_ngram_size == d.no_repeat_ngram_size
+    assert y.repetition_penalty == d.repetition_penalty
+    assert y.hallucination_silence_threshold == d.hallucination_silence_threshold
+
+
+def test_antihallucination_knobs_load_from_yaml_dict():
+    """The three knobs load from a config dict (the sweep path overrides
+    them)."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {
+            "no_repeat_ngram_size": 3,
+            "repetition_penalty": 1.2,
+            "hallucination_silence_threshold": 2.0,
+        }}
+    )
+    t = cfg.transcription
+    assert t.no_repeat_ngram_size == 3
+    assert t.repetition_penalty == 1.2
+    assert t.hallucination_silence_threshold == 2.0
+
+
+def test_antihallucination_yaml_null_threshold_round_trips_to_none():
+    """`hallucination_silence_threshold: null` loads as Python None (off),
+    not the string 'null'."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {"hallucination_silence_threshold": None}}
+    )
+    assert cfg.transcription.hallucination_silence_threshold is None
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("no_repeat_ngram_size", -1, "no_repeat_ngram_size"),
+    ("repetition_penalty", 0.0, "repetition_penalty"),
+    ("repetition_penalty", -1.0, "repetition_penalty"),
+    ("repetition_penalty", float("inf"), "repetition_penalty"),
+    ("repetition_penalty", float("nan"), "repetition_penalty"),
+    ("hallucination_silence_threshold", 0.0, "hallucination_silence_threshold"),
+    ("hallucination_silence_threshold", -1.0, "hallucination_silence_threshold"),
+    ("hallucination_silence_threshold", float("inf"), "hallucination_silence_threshold"),
+    ("hallucination_silence_threshold", float("nan"), "hallucination_silence_threshold"),
+])
+def test_invalid_antihallucination_knobs_raise(field, value, token):
+    """Out-of-range anti-hallucination knobs fail loud at config time, naming
+    the offending knob."""
+    with pytest.raises(ValueError, match=token):
+        cfg = PipelineConfig()
+        setattr(cfg.transcription, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("no_repeat_ngram_size", 0),       # default / disabled
+    ("no_repeat_ngram_size", 2),
+    ("repetition_penalty", 1.0),       # default / no penalty
+    ("repetition_penalty", 1.5),
+    ("hallucination_silence_threshold", None),   # default / off
+    ("hallucination_silence_threshold", 0.5),
+])
+def test_valid_antihallucination_knob_edges_accepted(field, value):
+    """Boundary-valid anti-hallucination values are accepted (the defaults
+    plus a representative enabled value for each)."""
+    cfg = PipelineConfig()
+    setattr(cfg.transcription, field, value)
+    cfg.__post_init__()      # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Detect-and-retry for collapsed WhisperX windows (WhisperX-only)
+# ---------------------------------------------------------------------------
+
+
+def test_retry_collapsed_defaults():
+    """Retry ships ON: re-chunk 8 s, collapse filter 18 s / 0.7 w/s."""
+    t = PipelineConfig().transcription
+    assert t.retry_collapsed_chunk_size == 8
+    assert t.collapse_min_duration_s == 18.0
+    assert t.collapse_max_wps == 0.7
+
+
+def test_retry_collapsed_default_yaml_matches_dataclass():
+    """Pin: default.yaml ships the same retry knobs as the dataclass, so YAML
+    users and programmatic callers get the same collapse-recovery behaviour."""
+    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).transcription
+    d = PipelineConfig().transcription
+    assert y.retry_collapsed_chunk_size == d.retry_collapsed_chunk_size
+    assert y.collapse_min_duration_s == d.collapse_min_duration_s
+    assert y.collapse_max_wps == d.collapse_max_wps
+
+
+def test_retry_collapsed_knobs_load_from_yaml_dict():
+    """The three retry knobs load from a config dict (the sweep override path)."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {
+            "retry_collapsed_chunk_size": 0,    # disabled
+            "collapse_min_duration_s": 20.0,
+            "collapse_max_wps": 1.0,
+        }}
+    )
+    t = cfg.transcription
+    assert t.retry_collapsed_chunk_size == 0
+    assert t.collapse_min_duration_s == 20.0
+    assert t.collapse_max_wps == 1.0
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("retry_collapsed_chunk_size", -1, "retry_collapsed_chunk_size"),
+    ("collapse_min_duration_s", 0.0, "collapse_min_duration_s"),
+    ("collapse_min_duration_s", -1.0, "collapse_min_duration_s"),
+    ("collapse_min_duration_s", float("inf"), "collapse_min_duration_s"),
+    ("collapse_min_duration_s", float("nan"), "collapse_min_duration_s"),
+    ("collapse_max_wps", 0.0, "collapse_max_wps"),
+    ("collapse_max_wps", -1.0, "collapse_max_wps"),
+    ("collapse_max_wps", float("inf"), "collapse_max_wps"),
+    ("collapse_max_wps", float("nan"), "collapse_max_wps"),
+])
+def test_invalid_retry_collapsed_knobs_raise(field, value, token):
+    """Out-of-range retry knobs fail loud at config time, naming the offending
+    knob — a sweep YAML typo can't silently disable or break the retry."""
+    with pytest.raises(ValueError, match=token):
+        cfg = PipelineConfig()
+        setattr(cfg.transcription, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("retry_collapsed_chunk_size", 0),    # disabled
+    ("retry_collapsed_chunk_size", 1),    # min enabled
+    ("retry_collapsed_chunk_size", 8),    # default
+    ("collapse_min_duration_s", 0.1),     # any positive
+    ("collapse_min_duration_s", 18.0),    # default
+    ("collapse_max_wps", 0.1),            # any positive
+    ("collapse_max_wps", 0.7),            # default
+])
+def test_valid_retry_collapsed_knob_edges_accepted(field, value):
+    """Boundary-valid retry values are accepted (disabled, min-enabled, default,
+    and a small positive for each float filter)."""
+    cfg = PipelineConfig()
+    setattr(cfg.transcription, field, value)
+    cfg.__post_init__()      # must not raise

@@ -51,6 +51,20 @@ def _log(msg: str) -> None:
     dlog("transcription", msg)
 
 
+def _temperature_schedule(temperature) -> list:
+    """Normalise the config temperature into the list form Whisper expects.
+
+    Both backends ultimately want a sequence: openai-whisper's ``transcribe``
+    accepts a scalar or tuple, while WhisperX's ``TranscriptionOptions`` field
+    is ``temperatures`` (plural, always a list). A bare float means "no
+    fallback" → a single-element schedule, matching openai-whisper /
+    faster-whisper fallback semantics.
+    """
+    if isinstance(temperature, (list, tuple)):
+        return list(temperature)
+    return [temperature]
+
+
 # ---------------------------------------------------------------------------
 # Output formatting helpers (shared by both backends)
 # ---------------------------------------------------------------------------
@@ -128,6 +142,7 @@ class _WhisperBackend:
         self.cfg = cfg
         self._model = None
         self._device: Optional[torch.device] = None
+        self._retry_ignored_logged = False
 
     def load(self, device: torch.device) -> None:
         import whisper
@@ -135,14 +150,90 @@ class _WhisperBackend:
         self._device = device
 
     def transcribe(self, audio: np.ndarray) -> dict:
+        # Decode knobs route into openai-whisper's transcribe(): temperature /
+        # no_speech_threshold / compression_ratio_threshold /
+        # condition_on_previous_text are named params; beam_size / patience
+        # fall through transcribe()'s **decode_options into DecodingOptions.
+        #
+        # The three anti-hallucination knobs are faster-whisper-only. openai-
+        # whisper has no equivalent for no_repeat_ngram_size / repetition_penalty
+        # (they'd crash DecodingOptions), and its hallucination_silence_threshold
+        # is a DIFFERENT algorithm — forwarding it would silently substitute one
+        # behaviour for another (SCOPE §4.1). So they are never passed here; a
+        # non-default value with backend="whisper" is a loud configuration error,
+        # not a quiet downgrade. Defaults (0 / 1.0 / None) are a no-op.
+        self._reject_unsupported_knobs()
+        self._warn_retry_ignored()
         result = self._model.transcribe(
             audio.astype(np.float32),
             language=self.cfg.language,
             initial_prompt=self.cfg.initial_prompt,
             word_timestamps=self.cfg.word_timestamps,
+            beam_size=self.cfg.beam_size,
+            patience=self.cfg.patience,
+            temperature=tuple(_temperature_schedule(self.cfg.temperature)),
+            condition_on_previous_text=self.cfg.condition_on_previous_text,
+            no_speech_threshold=self.cfg.no_speech_threshold,
+            compression_ratio_threshold=self.cfg.compression_ratio_threshold,
             verbose=False,
         )
         return _normalise_result(result, self.cfg.language)
+
+    def _reject_unsupported_knobs(self) -> None:
+        """Fail loud if a faster-whisper-only anti-hallucination knob is set
+        while running the openai-whisper backend (SCOPE §4.1: no silent
+        substitution). Defaults (0 / 1.0 / None) pass silently — they're a
+        no-op and never reach openai-whisper."""
+        unsupported = []
+        if self.cfg.no_repeat_ngram_size != 0:
+            unsupported.append(
+                f"no_repeat_ngram_size={self.cfg.no_repeat_ngram_size}"
+            )
+        if self.cfg.repetition_penalty != 1.0:
+            unsupported.append(
+                f"repetition_penalty={self.cfg.repetition_penalty}"
+            )
+        if self.cfg.hallucination_silence_threshold is not None:
+            unsupported.append(
+                "hallucination_silence_threshold="
+                f"{self.cfg.hallucination_silence_threshold}"
+            )
+        # chunk_size is a WhisperX VAD-pipeline knob; openai-whisper does its own
+        # internal 30 s windowing and has no equivalent, so a non-default value
+        # would silently no-op (SCOPE §4.1). 30 = WhisperX default = no-op here.
+        if self.cfg.chunk_size != 30:
+            unsupported.append(f"chunk_size={self.cfg.chunk_size}")
+        if unsupported:
+            raise ValueError(
+                "transcription.backend='whisper' (openai-whisper) does not "
+                "support the WhisperX-only knobs "
+                f"{', '.join(unsupported)} — they only take effect with "
+                "backend='whisperx'. Either switch to backend='whisperx' or "
+                "leave these at their defaults (no_repeat_ngram_size=0, "
+                "repetition_penalty=1.0, hallucination_silence_threshold=None, "
+                "chunk_size=30)."
+            )
+
+    def _warn_retry_ignored(self) -> None:
+        """Visibly note (once) that the collapsed-window detect-and-retry is
+        WhisperX-only and is ignored on the openai-whisper backend.
+
+        Unlike the hard-rejected WhisperX-only knobs above, retry defaults to ON
+        (retry_collapsed_chunk_size=8), so a hard error would break this backend
+        out of the box. openai-whisper does its own internal windowing and does
+        not exhibit the WhisperX over-merge collapse, so retry simply does not
+        apply — but per SCOPE §4.1 the no-op must be visible, not silent."""
+        if self.cfg.retry_collapsed_chunk_size != 0 and not self._retry_ignored_logged:
+            _log(
+                "retry_collapsed_chunk_size="
+                f"{self.cfg.retry_collapsed_chunk_size} is a WhisperX-only knob "
+                "(collapsed-window detect-and-retry); the 'whisper' "
+                "(openai-whisper) backend has its own internal windowing and "
+                "does not collapse this way, so it is ignored here. Switch to "
+                "backend='whisperx' to enable it, or set "
+                "retry_collapsed_chunk_size=0 to silence this note."
+            )
+            self._retry_ignored_logged = True
 
     def unload(self) -> None:
         self._model = None
@@ -242,12 +333,34 @@ class _WhisperXBackend:
         # bf16/fp16 unsafe on CPU; let WhisperX pick a sane default.
         compute_type = "float16" if device_str == "cuda" else "int8"
         model_path = _ensure_ct2_model(self.cfg.model_name)
+        # Decode knobs go into WhisperX's asr_options, which it merges over its
+        # own default_asr_options before building a faster-whisper
+        # TranscriptionOptions. NB the schedule key there is `temperatures`
+        # (plural list), not `temperature`. These defaults reproduce WhisperX's
+        # own defaults exactly (see config.TranscriptionConfig docstrings).
+        asr_options = {
+            "initial_prompt": self.cfg.initial_prompt,
+            "beam_size": self.cfg.beam_size,
+            "patience": self.cfg.patience,
+            "temperatures": _temperature_schedule(self.cfg.temperature),
+            "condition_on_previous_text": self.cfg.condition_on_previous_text,
+            "no_speech_threshold": self.cfg.no_speech_threshold,
+            "compression_ratio_threshold": self.cfg.compression_ratio_threshold,
+            # Anti-hallucination knobs. WhisperX carries each in its own
+            # default_asr_options at the faster-whisper signature default
+            # (no_repeat_ngram_size=0, repetition_penalty=1, hallucination_
+            # silence_threshold=None), so passing the config defaults is a
+            # no-op — the merge below changes nothing for a baseline run.
+            "no_repeat_ngram_size": self.cfg.no_repeat_ngram_size,
+            "repetition_penalty": self.cfg.repetition_penalty,
+            "hallucination_silence_threshold": self.cfg.hallucination_silence_threshold,
+        }
         self._asr = whisperx.load_model(
             model_path,
             device=device_str,
             compute_type=compute_type,
             language=self.cfg.language,
-            asr_options={"initial_prompt": self.cfg.initial_prompt},
+            asr_options=asr_options,
         )
         # Always load the wav2vec2 align model when using WhisperX — it
         # also catches hallucinations (words that can't be aligned to actual
@@ -278,10 +391,24 @@ class _WhisperXBackend:
         )
         self._device_str = device_str
 
+    # whisperx's fixed internal audio rate (it resamples to this); the pipeline
+    # is already 16 kHz, so the retry-window slicing below indexes at this rate.
+    _SR = 16_000
+
     def transcribe(self, audio: np.ndarray) -> dict:
         import whisperx
         audio = audio.astype(np.float32)
-        result = self._asr.transcribe(audio, language=self.cfg.language)
+        # chunk_size bounds the max merged VAD segment length. WhisperX's default
+        # is 30 s (= Whisper's window); a long unbroken segment at that ceiling
+        # can make Whisper collapse and drop ~all of it (see TranscriptionConfig).
+        result = self._asr.transcribe(
+            audio, language=self.cfg.language, chunk_size=self.cfg.chunk_size
+        )
+        # Detect-and-retry collapsed windows on the RAW (pre-alignment) segments,
+        # before wav2vec2 alignment re-segments them (see TranscriptionConfig).
+        if self.cfg.retry_collapsed_chunk_size and result.get("segments"):
+            result = {**result,
+                      "segments": self._retry_collapsed(audio, result["segments"])}
         # `result` has segments with .text / .start / .end but no word-level
         # timing. Alignment adds word timestamps from wav2vec2.
         if self.cfg.word_timestamps and result.get("segments"):
@@ -295,6 +422,50 @@ class _WhisperXBackend:
             )
             result = {**result, **aligned}
         return _normalise_result(result, self.cfg.language)
+
+    def _retry_collapsed(self, audio: np.ndarray, segments: list) -> list:
+        """Re-transcribe collapsed merged windows at a smaller chunk and splice.
+
+        A *collapse* is a long merged VAD window (``dur >= collapse_min_duration_s``)
+        whose word density is below ``collapse_max_wps`` — Whisper emitted ~nothing
+        for ~30 s of speech (see ``TranscriptionConfig``). For each one we re-run
+        the SAME backend on just that audio span at ``retry_collapsed_chunk_size``,
+        offset the recovered segments back onto the original timeline, and splice
+        them in — but only when the retry recovers MORE words than the collapsed
+        original (the guard), so a window can never end up emptier. Survivors and
+        non-collapsed windows pass through untouched; the spliced list is re-sorted
+        by start time. Returns a new list (never mutates the input segments).
+        """
+        cs = self.cfg.retry_collapsed_chunk_size
+        out: list = []
+        for seg in segments:
+            dur = seg["end"] - seg["start"]
+            nw = len(seg["text"].split())
+            collapsed = (
+                dur >= self.cfg.collapse_min_duration_s
+                and nw / max(dur, 1e-9) < self.cfg.collapse_max_wps
+            )
+            if not collapsed:
+                out.append(seg)
+                continue
+            s0, e0 = seg["start"], seg["end"]
+            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
+            retry = self._asr.transcribe(sub, language=self.cfg.language, chunk_size=cs)
+            rsegs = retry.get("segments") or []
+            retry_words = sum(len(rs["text"].split()) for rs in rsegs)
+            # Guard: keep the original unless the retry recovered more words.
+            if not rsegs or retry_words <= nw:
+                out.append(seg)
+                continue
+            _log(
+                f"retry: collapsed window [{s0:.1f}-{e0:.1f}] "
+                f"({nw}w, {nw / max(dur, 1e-9):.2f} w/s) re-transcribed at "
+                f"chunk_size={cs} → {retry_words}w"
+            )
+            for rs in rsegs:
+                out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
+        out.sort(key=lambda s: s["start"])
+        return out
 
     def unload(self) -> None:
         self._asr = None

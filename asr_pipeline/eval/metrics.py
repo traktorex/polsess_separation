@@ -370,15 +370,22 @@ def orc_wer_meeteval(
 
 def mimo_wer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
-    hyp_utterances: List[Utterance],
+    hyp: "List[Utterance] | Dict[str, List[Utterance]]",
     session_id: str,
     lang: str = "pl",
 ) -> Dict[str, object]:
-    """MIMO-WER for the single-stream mixture baseline.
+    """MIMO-WER, for either the single-stream mixture or a multi-stream hyp.
 
-    Same inputs as :func:`orc_wer_meeteval`, but uses MeetEval's MIMO-WER
-    instead of ORC-WER. The difference matters for a single hypothesis
-    stream (the un-separated mixture transcript):
+    ``hyp`` may be a flat ``List[Utterance]`` (the single-stream mixture
+    baseline — one Whisper pass over the raw mix) or a ``Dict[str,
+    List[Utterance]]`` of per-speaker streams (the pipeline's per-speaker
+    output). MeetEval's MIMO-WER is multiple-input multiple-output by design,
+    so both are valid hypothesis shapes; the dict form gives the
+    speaker-agnostic MIMO-WER of the pipeline output (charges no attribution).
+
+    Like :func:`orc_wer_meeteval` it uses MeetEval's MIMO-WER instead of
+    ORC-WER. The difference matters for a single hypothesis stream (the
+    un-separated mixture transcript):
 
     - **ORC** keeps the reference as one pool and fixes the merge order by
       utterance time, then assigns to the hypothesis stream.
@@ -405,11 +412,13 @@ def mimo_wer_meeteval(
     from meeteval.wer import mimower
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
-    hyp = _ensure_nonempty_hyp(
-        _seglst_from_list(hyp_utterances, session_id, lang=lang),
-        session_id, "mimo_wer_meeteval",
+    hyp_seglst = (
+        _seglst_from_dict(hyp, session_id, lang)
+        if isinstance(hyp, dict)
+        else _seglst_from_list(hyp, session_id, lang=lang)
     )
-    m = mimower(ref, hyp)[session_id]
+    hyp_seglst = _ensure_nonempty_hyp(hyp_seglst, session_id, "mimo_wer_meeteval")
+    m = mimower(ref, hyp_seglst)[session_id]
     return _wer_result(m, "mimo_wer")
 
 
