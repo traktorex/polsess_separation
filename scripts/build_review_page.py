@@ -69,50 +69,39 @@ from asr_pipeline.eval.transcript_parser import (  # noqa: E402
 DEFAULT_EVAL_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
 DEFAULT_OUT = Path("~/clarin_review").expanduser()
 
-PILOT = [
-    "065a9896__seg00",
-    "150d1ccc__seg00",
-    "ccfbb9db__seg00",
-    "2bf3474d__seg00",
-    "d1e63652__seg00",
-]
+# Default recordings = the frozen DEV split (the 23 with hand-corrected GT).
+PILOT = (
+    Path(__file__).resolve().parent.parent / "asr_pipeline" / "eval" / "clarin_dev.txt"
+).read_text().split()
 
 # Recordings whose GT / sweep / mixture don't live under DEFAULT_EVAL_ROOT with
 # the standard `<id>/annotation.eaf` layout. Each spec gives explicit paths;
 # `label_map` renames GT tiers onto the pipeline's A/B (442dd69e's hand GT uses
 # L/R channel tiers — L is speaker A, R is speaker B, per spk_to_label).
-EXTRA_RECORDINGS = [
-    {
-        "id": "442dd69e",
-        "rec_dir": "~/datasets/eval/clarin_gotowy/442dd69e",
-        "gt_eaf": "~/datasets/clarin_gotowy/gotowy/true_transcripts/442dd69e.eaf",
-        "mixture": "~/datasets/eval/clarin_gotowy/442dd69e/442dd69e.wav",
-        "label_map": {"L": "A", "R": "B"},
-    },
-]
+# 442dd69e is a full-length recording (removed from the fragment set) and has no
+# e31-config sweep outputs, so it's excluded from this build. Restore an entry
+# here (with its explicit paths) to add a full-recording demo back.
+EXTRA_RECORDINGS = []
 
 # Curated set that tells the story without 24 near-duplicate rows. The first
 # entry is the default shown on load.
+# e31 clean sweep (2026-06-15): the winner + the enhancement×separation ablation
+# corners. First entry = default shown on load. (Just best + ablation — not the
+# 30+ swept configs.)
 DEFAULT_CONFIGS = [
-    "frcrn_vad_strict",
-    "enh_frcrn",
-    "enh_mossformer",
+    "f_oa03",
     "baseline",
-    "enh_none",
-    "nosep",
-    "nosep_noenh",
-    "asr_largev3",
+    "r1_noenh",
+    "r1_nosep",
+    "r1_nosep_noenh",
 ]
 
 CONFIG_LABELS = {
-    "frcrn_vad_strict": "FRCRN + separation + VAD-strict  ★ best",
-    "enh_frcrn": "FRCRN + separation (default VAD)",
-    "enh_mossformer": "MossFormerGAN + separation",
-    "baseline": "FRCRN + separation  (shipped default)",
-    "enh_none": "no enhancement + separation",
-    "nosep": "FRCRN enhancement, NO separation  (ablation)",
-    "nosep_noenh": "no enhancement, NO separation  (ablation)",
-    "asr_largev3": "FRCRN + separation, Whisper large-v3",
+    "f_oa03": "OA-0.3 + FRCRN + separation  ★ best (e31)",
+    "baseline": "FRCRN + separation, no OA  (full pipeline)",
+    "r1_noenh": "no enhancement + separation  (ablation: enh off)",
+    "r1_nosep": "FRCRN enhancement, NO separation  (ablation: sep off)",
+    "r1_nosep_noenh": "no enhancement, NO separation  (ablation: both off)",
 }
 
 # Description of what each layer of the eval measures — shown verbatim in the
@@ -465,7 +454,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CLARIN pilot — separation-pipeline review</title>
+<title>CLARIN — separation-pipeline review (e31, dev set)</title>
 <style>
   :root{
     --A:#1f6feb; --B:#e36209; --ovl:rgba(220,38,38,.16); --ovl-line:rgba(220,38,38,.5);
@@ -563,7 +552,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>CLARIN — separation pipeline, manual review</h1>
+  <h1>CLARIN — separation pipeline, manual review (dev set · e31 · best + ablation)</h1>
   <p class="note" id="genline"></p>
 </header>
 <main>
