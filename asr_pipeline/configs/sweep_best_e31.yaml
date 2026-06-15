@@ -1,0 +1,109 @@
+# Clean-sweep WINNER on the MossFormer2 e31 separator (2026-06-15).
+# = default.yaml + Observation-Adding r=0.3 (the only delta). The dual-objective
+# best on the 23-fragment DEV split: cpWER ~20.3-20.7, CER ~13.5, and PESQ 2.03
+# (vs enh-OFF 1.77) — enhancement made WER-POSITIVE by diluting its artifacts
+# (Iwamoto/Wang dry-wet) and catching its VAD-over-merge collapses (detect-and-retry).
+#
+# Deltas from default.yaml: enhancement.observation_mix_ratio 0.0 -> 0.3;
+# assembly.output_mode shortened -> full_length (timestamp-aligned streams for
+# tcpWER scoring). Everything else IS the default.yaml baseline (FRCRN enh on,
+# ap_bwe BWE, detect-and-retry on, large-v2, no_repeat_ngram_size OFF — nrng3
+# HURTS OA once retry is on).
+#
+# Honest framing (SWEEP_FINAL.md): on n=23 no single config survives multiple-
+# comparison correction — OA is a robust *mechanism*, not a per-config p-value.
+# Round 2: OA r=0.3 is the ratio optimum; large-v3 (`g_oa03_v3`, 20.30) is a
+# within-noise heavier-model alternative. NOT yet validated on the held-out TEST
+# split (test annotation still in progress; split frozen in eval/CLARIN_SPLIT.md).
+
+sample_rate: 16000
+device: cuda
+
+# Force deterministic cuDNN algorithms so runs are reproducible. The enhancement
+# stage is otherwise the pipeline's sole source of run-to-run float
+# nondeterminism (which WhisperX can amplify into a flipped token). Set false to
+# restore cuDNN autotuning (slightly faster, non-reproducible).
+deterministic: true
+
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  # hf_token is read from $HF_TOKEN at load; never hardcode it here.
+  num_speakers: 2
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k | zipenhancer_16k
+  max_segment_length_s: 8.0
+  # Observation Adding (Iwamoto 2022 / Wang 2024): out = (1-r)*enhanced + r*observed,
+  # on the solo regions. r=0.3 is the sweep optimum — dilutes SE artifacts that hurt
+  # ASR while keeping most of the audio-quality gain. THE winning delta.
+  observation_mix_ratio: 0.3
+
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25
+  vad_soft_threshold: 0.10
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+post_separation_processing:
+  # ap_bwe (NOT naive): on e31, naive BWE was worse than ap_bwe.
+  backend: ap_bwe                          # naive | ap_bwe | flowhigh
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  flowhigh_input_sr: 16000
+
+assembly:
+  enabled: true
+  min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  beam_size: 5
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  condition_on_previous_text: false
+  no_speech_threshold: 0.6
+  compression_ratio_threshold: 2.4
+  patience: 1.0
+  # nrng OFF: with detect-and-retry on, OA has no repetition catastrophe for nrng
+  # to fix, so nrng3 only adds collateral (round 2: g_oa03_nrng3 21.30 vs 20.65).
+  no_repeat_ngram_size: 0
+  # Detect-and-retry for WhisperX VAD over-merge collapses (on; 0 = off). This is
+  # what makes OA viable — it catches the collapses OA would otherwise trigger.
+  retry_collapsed_chunk_size: 8
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7
+  # align_model_name omitted → WhisperX per-language default (pl → jonatasgrosman
+  # wav2vec2-large-xlsr-53-polish). Set explicitly to override.
