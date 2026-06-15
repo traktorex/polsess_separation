@@ -33,7 +33,6 @@
 3fed4030__seg00
 424c66c6__seg00
 427ccc31__seg00
-442dd69e__seg00
 46280d61__seg00
 489c15fb__seg00
 48a1f966__cand01
@@ -46,7 +45,6 @@
 5bab2c34__seg00
 5bb1d07e__seg00
 6214a217__seg00
-649991bc__seg00
 65c35d43__seg00
 6741baef__seg00
 68183814__seg00
@@ -104,7 +102,6 @@ d9c4f5df__seg00
 de130e81__seg00
 df51b03c__seg00
 e019ffc3__seg00
-e14aa22f__seg00
 e82015f0__seg00
 ef6aadc0__cand00
 f024a5cc__seg00
@@ -118,7 +115,6 @@ f3b62b36__seg00
 f3d2956d__seg00
 f583ca44__seg00
 f703f5e4__seg00
-f7ed6ed8__seg00
 fadc48cc__seg00
 fc23b3cf__seg00
 fc6b37c3__seg00
