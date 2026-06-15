@@ -560,6 +560,31 @@ class PipelineConfig:
                 f"{self.post_separation_processing.flowhigh_input_sr}"
             )
 
+        # --- Assembly numeric knobs ---
+        # A negative value here crashes deep in Stage 6 (`np.zeros(negative)` /
+        # broadcast errors), not at config load — so fail loud and early,
+        # naming the offending knob. All are seconds/ms durations: zero is a
+        # valid disable (no gap / no fade / no cap), so the floor is >= 0.
+        acfg = self.assembly
+        for knob in (
+            "silence_separator_s",
+            "crossfade_ms",
+            "edge_fade_ms",
+            "min_solo_for_anchor_s",
+        ):
+            value = getattr(acfg, knob)
+            if value < 0:
+                raise ValueError(
+                    f"assembly.{knob} must be >= 0, got {value}"
+                )
+        # anchor_max_duration_s is Optional (None = no cap); a non-None value
+        # must be positive (a zero/negative cap would empty the anchor audio).
+        if acfg.anchor_max_duration_s is not None and acfg.anchor_max_duration_s <= 0:
+            raise ValueError(
+                f"assembly.anchor_max_duration_s must be None (no cap) or "
+                f"positive, got {acfg.anchor_max_duration_s}"
+            )
+
         omr = self.enhancement.observation_mix_ratio
         if not math.isfinite(omr) or not (0.0 <= omr <= 1.0):
             raise ValueError(

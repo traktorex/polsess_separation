@@ -665,12 +665,35 @@ class SeparationStage(Stage):
             # spliced into two overlap events (duplicated words in the
             # transcript). Clamp this region's start to the previous end.
             if results and emit_start_s < results[-1]["emit_end"]:
+                prev_emit_end = results[-1]["emit_end"]
+                if prev_emit_end >= emit_end_s:
+                    # Full swallow: the previous region's extended emit already
+                    # covers this overlap end-to-end, so the clamp would yield a
+                    # zero-length emit (emit_start >= emit_end). Appending it
+                    # would drop this overlap's speech from BOTH speaker streams
+                    # AND the transcript silently: _slice_emit returns a
+                    # zero-length array (skipped by _build_events) while its
+                    # degenerate (emit_start, emit_end) span is a no-op in the
+                    # solo-blocked-set subtraction, so the span is never
+                    # reclaimed as solo either. Instead skip this entry and fold
+                    # its span into the previous emit (extend if needed), so the
+                    # swallowed speech rides the previous overlap event and the
+                    # blocked set covers it exactly once. (SCOPE §4.1: log, don't
+                    # silently drop.)
+                    results[-1]["emit_end"] = float(max(prev_emit_end, emit_end_s))
+                    _log(
+                        f"run: overlap {idx}: emit [{emit_start_s:.3f}, "
+                        f"{emit_end_s:.3f}]s fully swallowed by previous emit_end "
+                        f"{prev_emit_end:.3f}s — folding into previous overlap, "
+                        f"dropping this entry"
+                    )
+                    continue
                 _log(
                     f"run: overlap {idx}: emit_start {emit_start_s:.3f}s "
                     f"crossed previous emit_end "
-                    f"{results[-1]['emit_end']:.3f}s — clamping"
+                    f"{prev_emit_end:.3f}s — clamping"
                 )
-                emit_start_s = min(results[-1]["emit_end"], emit_end_s)
+                emit_start_s = prev_emit_end
 
             # The TypedDict schema is defined in `asr_pipeline/context.py`.
             # `s{1,2}_gated` is added by Stage 3c (post_separation_processing).

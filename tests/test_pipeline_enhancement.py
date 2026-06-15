@@ -325,3 +325,34 @@ def test_oa_ratio_one_returns_observed():
     ctx.audio = _noise(4000)
     stage.run(ctx)
     assert np.allclose(ctx.enhanced_full, ctx.audio.astype(np.float32), atol=1e-6)
+
+
+class _ShorterBackend:
+    """Stub backend that returns FEWER samples than its input — exercises the
+    OA blend's `n = min(len(enhanced), len(observed))` length guard, which the
+    const/identity backends (equal length) never reach."""
+
+    def __init__(self, out_len: int, value: float) -> None:
+        self.out_len = out_len
+        self.value = value
+
+    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
+        return np.full(self.out_len, self.value, dtype=np.float32)
+
+
+def test_oa_blend_length_guard_truncates_to_shorter_stream():
+    # Backend returns 3000 samples for a 4000-sample input; the blend must clip
+    # both sides to n = min(3000, 4000) = 3000 and stay finite (a mismatched
+    # backend would otherwise broadcast-crash).
+    stage = EnhancementStage(
+        EnhancementConfig(backend="frcrn_se_16k", observation_mix_ratio=0.5)
+    )
+    stage._backend = _ShorterBackend(out_len=3000, value=2.0)
+    ctx = PipelineContext()
+    ctx.sample_rate = 16_000
+    ctx.audio = _noise(4000)
+    stage.run(ctx)
+    assert len(ctx.enhanced_full) == 3000
+    assert np.all(np.isfinite(ctx.enhanced_full))
+    expected = 0.5 * 2.0 + 0.5 * ctx.audio[:3000].astype(np.float32)
+    assert np.allclose(ctx.enhanced_full, expected, atol=1e-6)

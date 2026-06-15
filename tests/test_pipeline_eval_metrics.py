@@ -263,6 +263,20 @@ def test_mimo_forgives_interleaving_orc_does_not():
     assert orc > mimo                       # MIMO <= ORC, strictly here
 
 
+def test_mimo_wer_dict_hypothesis_is_speaker_agnostic():
+    """`mimo_wer_meeteval` accepts a per-speaker *dict* hypothesis (the
+    pipeline's two-stream output), not only the single-stream mixture list.
+    That branch was untested. MIMO charges no attribution, so swapping the two
+    hypothesis streams' content must still score 0 — every reference word is
+    recoverable by re-interleaving regardless of which hyp stream it sits in.
+    """
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "jeden dwa")], "B": [U(1.0, 2.0, "trzy cztery")]}
+    # Hypothesis streams carry the right words but attribution-swapped (A<->B).
+    hyp = {"A": [U(1.0, 2.0, "trzy cztery")], "B": [U(0.0, 1.0, "jeden dwa")]}
+    assert mimo_wer_meeteval(ref, hyp, session_id="t")["mimo_wer"] == 0.0
+
+
 def test_orc_multistream_below_cpwer_is_the_attribution_penalty():
     """ORC-WER on the multi-stream hypothesis is attribution-blind, so it
     assigns each reference utterance to whichever output stream fits best.
@@ -310,6 +324,35 @@ def test_mimo_cer_perfect_is_zero():
     ref = {"A": [U(0.0, 1.0, "ala ma kota")]}
     hyp = [U(0.0, 1.0, "ala ma kota")]
     assert mimo_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+
+
+def test_mimo_cer_multi_speaker_interleave_merge_is_zero():
+    """The multi-speaker branch of mimo_cer: with >1 reference speaker, MIMO
+    decides the merge order and the helper rebuilds the reference by popping
+    each speaker's utterances in assignment order. Only single-speaker refs were
+    tested before. Two speakers whose words concatenate (in the speech timeline)
+    to the single hypothesis must score 0 — the merge reconstructs the hyp
+    exactly. (Contrast the time-ordered mixture CER, which can't reorder.)
+    """
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "jeden"), U(2.0, 3.0, "dwa")], "B": [U(3.0, 4.0, "trzy")]}
+    hyp = [U(0.0, 4.0, "jeden dwa trzy")]
+    assert mimo_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+
+
+def test_mimo_cer_multi_speaker_counts_char_edit():
+    """The complement: a genuine character edit in the multi-speaker merge is
+    not forgiven — the rebuilt reference differs from the hypothesis by exactly
+    that edit. ('trzy' vs 'trxy' is one substitution out of the joined length.)
+    """
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "jeden"), U(2.0, 3.0, "dwa")], "B": [U(3.0, 4.0, "trzy")]}
+    hyp = [U(0.0, 4.0, "jeden dwa trxy")]       # one char wrong in "trzy"
+    out = mimo_cer_meeteval(ref, hyp, session_id="t")
+    assert out["errors"] == 1
+    assert out["cer"] > 0.0
 
 
 def test_cp_cer_unmatched_reference_speaker_counts_as_deletions():

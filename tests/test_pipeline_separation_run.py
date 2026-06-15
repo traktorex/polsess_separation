@@ -18,7 +18,7 @@ import torch
 
 from asr_pipeline.config import SeparationConfig
 from asr_pipeline.context import DiarizationResult, OverlapSeparated, PipelineContext
-from asr_pipeline.stages.assembly import _slice_emit
+from asr_pipeline.stages.assembly import _derive_solo_intervals, _slice_emit
 from asr_pipeline.stages.separation import (
     SeparationStage,
     _separate_overlap_add,
@@ -67,6 +67,20 @@ class _StubVad:
 
     def __call__(self, chunk: torch.Tensor, sr: int) -> torch.Tensor:
         return torch.tensor(1.0)
+
+
+class _EnergyVad:
+    """Energy-gated VAD: speech (1.0) when the frame has any energy, silence
+    (0.0) when it's ~all zeros. Lets a test place silence at a known absolute
+    time by zeroing that region of `ctx.audio` — `snap_to_silence` then
+    extends an emit boundary out to exactly that silence.
+    """
+
+    def reset_states(self) -> None:
+        return None
+
+    def __call__(self, chunk: torch.Tensor, sr: int) -> torch.Tensor:
+        return torch.tensor(1.0 if float(chunk.abs().max()) > 1e-6 else 0.0)
 
 
 def _make_stage(separator=None, **config_kwargs) -> SeparationStage:
@@ -224,6 +238,75 @@ def test_adjacent_emit_regions_never_cross():
     first, second = ctx.overlap_separated
     assert second["emit_start"] >= first["emit_end"] - 1e-9
     assert second["emit_start"] <= second["emit_end"]
+
+
+def test_fully_swallowed_overlap_is_folded_not_dropped():
+    """Regression (silent audio drop): when one overlap's snap_to_silence
+    extension swallows the *whole* of the next overlap, the cross-clamp used to
+    yield a zero-length emit (emit_start == emit_end). That degenerate entry was
+    then dropped from both speaker streams (`_slice_emit` → zeros(0), skipped by
+    `_build_events`) AND failed to block the span in solo derivation (a
+    zero-length subtraction is a no-op), so the swallowed speech vanished from
+    both streams and the transcript.
+
+    The fix folds the swallowed span into the previous emit and drops the
+    degenerate entry, so the span survives in exactly one place.
+    """
+    stage = _make_stage(
+        context_window_mode="fixed_pad",
+        context_pad_seconds=3.0,
+        min_fragment_length_s=0.0,
+        seam_mode="snap_to_silence",
+        snap_silence_max_extend_s=5.0,
+        seam_search_radius_s=0.05,
+        vad_threshold=0.5,
+        vad_soft_threshold=0.5,            # strict threshold (no Schmitt band)
+        vad_attack_frames=0,
+        vad_release_frames=0,
+    )
+    stage._vad = _EnergyVad()
+    # Speech everywhere except a silence gap at [10.0, 10.5] s — placed *after*
+    # the second overlap so the first overlap's emit_end snaps out to 10.0 s,
+    # extending across the entire second overlap (9.3-9.6 s).
+    duration_s = 30.0
+    ctx = PipelineContext(sample_rate=SR)
+    audio = np.full(int(duration_s * SR), 0.2, dtype=np.float32)
+    audio[int(10.0 * SR):int(10.5 * SR)] = 0.0
+    ctx.audio = audio
+    # Per-speaker segments so the assembly-side consequence is checkable: SPK_A
+    # spans the swallowed region, SPK_B is solo elsewhere.
+    seg_df = pd.DataFrame(
+        [
+            {"start": 0.0, "end": 12.0, "duration": 12.0, "speaker": "SPK_A"},
+            {"start": 5.0, "end": 9.6, "duration": 4.6, "speaker": "SPK_B"},
+            {"start": 12.0, "end": 20.0, "duration": 8.0, "speaker": "SPK_B"},
+        ],
+        columns=["start", "end", "duration", "speaker"],
+    )
+    ovl_df = pd.DataFrame(columns=["start", "end", "duration"])
+    ctx.diarization = DiarizationResult(
+        segments_df=seg_df, overlaps_df=ovl_df, total_duration_s=duration_s
+    )
+    ctx.overlap_regions = [(5.0, 9.0), (9.3, 9.6)]
+    stage.run(ctx)
+
+    # The second overlap was fully swallowed → only the first entry survives,
+    # and its emit_end now covers the swallowed span (>= the second overlap end).
+    assert len(ctx.overlap_separated) == 1
+    entry = ctx.overlap_separated[0]
+    assert entry["idx"] == 0
+    assert entry["emit_start"] < entry["emit_end"]      # never zero-length
+    assert entry["emit_end"] >= 9.6 - 1e-9              # covers the swallowed end
+
+    # Assembly consequence: the swallowed span is blocked from BOTH speakers'
+    # solo intervals (so it isn't double-emitted) and rides the surviving
+    # overlap event — present in exactly one stream, not dropped from both.
+    solos = _derive_solo_intervals(ctx, ["SPK_A", "SPK_B"])
+    blocked = (entry["emit_start"], entry["emit_end"])
+    for spk in ("SPK_A", "SPK_B"):
+        for s, e in solos[spk]:
+            # No solo interval overlaps the (single, merged) blocked emit span.
+            assert e <= blocked[0] + 1e-9 or s >= blocked[1] - 1e-9
 
 
 # ---------------------------------------------------------------------------

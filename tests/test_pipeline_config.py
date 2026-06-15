@@ -188,6 +188,39 @@ def test_flowhigh_input_sr_must_be_positive():
         cfg.__post_init__()
 
 
+@pytest.mark.parametrize("field,value", [
+    ("silence_separator_s", -0.1),
+    ("crossfade_ms", -1.0),
+    ("edge_fade_ms", -2.0),
+    ("min_solo_for_anchor_s", -3.0),
+    ("anchor_max_duration_s", 0.0),     # non-None cap must be positive
+    ("anchor_max_duration_s", -1.0),
+])
+def test_invalid_assembly_numbers_raise(field, value):
+    """Negative assembly durations (and a zero/negative anchor cap) would crash
+    deep in Stage 6 (`np.zeros(negative)`); they must fail at config time,
+    naming the offending knob."""
+    with pytest.raises(ValueError, match=field):
+        cfg = PipelineConfig()
+        setattr(cfg.assembly, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("silence_separator_s", 0.0),       # 0 = no gap (valid disable)
+    ("crossfade_ms", 0.0),              # 0 = no crossfade
+    ("edge_fade_ms", 0.0),              # 0 = no edge fade
+    ("min_solo_for_anchor_s", 0.0),
+    ("anchor_max_duration_s", None),    # None = no cap
+    ("anchor_max_duration_s", 240.0),   # default
+])
+def test_valid_assembly_number_edges_accepted(field, value):
+    """Zero durations (disable) and a None anchor cap are all accepted."""
+    cfg = PipelineConfig()
+    setattr(cfg.assembly, field, value)
+    cfg.__post_init__()      # must not raise
+
+
 # ---------------------------------------------------------------------------
 # Observation Adding (OA) / dry-wet mix (enhancement.observation_mix_ratio)
 # ---------------------------------------------------------------------------

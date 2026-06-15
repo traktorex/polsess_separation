@@ -106,7 +106,7 @@ def write_pipeline_outputs(
     Writes to ``<out_dir>/<subdir_name>/``::
 
         diarization.json         stage-1 turns on the mixture timeline
-                                 (the DER hypothesis for the eval module)
+                                 (debugging aid / pipeline provenance)
         routing.json             stage-2 overlap regions (debugging aid)
         stream_<label>.wav       one per assembled speaker stream (Stage 4)
         transcript_<label>.txt   decimal-seconds format, no speaker header

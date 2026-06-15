@@ -203,6 +203,15 @@ def test_fade_caps_on_short_pieces():
     assert out[0] == pytest.approx(0.0)
 
 
+def test_fade_single_sample_ramp_is_noop_not_click():
+    # A 1-sample ramp would zero the boundary sample (np.hanning(2) == [0, 0]),
+    # which is a click, not a fade. Both ramps must be skipped, leaving the
+    # edges untouched. (A piece of length 2 caps both ramps to len//2 == 1.)
+    audio = np.ones(2, dtype=np.float32)
+    out = _apply_fade(audio, 5, 5)               # capped to 1 each → skipped
+    assert np.array_equal(out, audio)            # no boundary sample zeroed
+
+
 # ---------------------------------------------------------------------------
 # _slice_emit
 # ---------------------------------------------------------------------------

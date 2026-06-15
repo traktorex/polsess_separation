@@ -388,6 +388,30 @@ CONFIGS: dict[str, dict] = {
     "f_oa07":     {"enhancement.observation_mix_ratio": 0.7},
     "f_noretry":  {"transcription.retry_collapsed_chunk_size": 0},
     "f_cs15":     {"transcription.chunk_size": 15},
+
+    # ======================================================================
+    # CLEAN SWEEP — ROUND 2 (2026-06-15, e31): combos of the round-1 OFAT
+    # winners, anchored on the significant OA-0.3 win. Pre-specified (no further
+    # re-anchoring): does stacking the other positive directions (large-v3,
+    # nrng3, seam-boundary) beat plain OA-0.3? + refine the OA ratio (0.2/0.4).
+    # BWE stays ap_bwe (naive was WORSE than ap_bwe on e31).
+    # ======================================================================
+    "g_oa03_v3":       {"enhancement.observation_mix_ratio": 0.3,
+                        "transcription.model_name": "large-v3"},
+    "g_oa03_nrng3":    {"enhancement.observation_mix_ratio": 0.3,
+                        "transcription.no_repeat_ngram_size": 3},
+    "g_oa03_seamb":    {"enhancement.observation_mix_ratio": 0.3,
+                        "separation.seam_mode": "overlap_boundary"},
+    "g_oa03_beam10":   {"enhancement.observation_mix_ratio": 0.3,
+                        "transcription.beam_size": 10},
+    "g_oa03_v3_nrng3": {"enhancement.observation_mix_ratio": 0.3,
+                        "transcription.model_name": "large-v3",
+                        "transcription.no_repeat_ngram_size": 3},
+    "g_oa03_v3_seamb": {"enhancement.observation_mix_ratio": 0.3,
+                        "transcription.model_name": "large-v3",
+                        "separation.seam_mode": "overlap_boundary"},
+    "f_oa02":          {"enhancement.observation_mix_ratio": 0.2},
+    "f_oa04":          {"enhancement.observation_mix_ratio": 0.4},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -469,6 +493,12 @@ GROUPS: dict[str, list[str]] = {
         "r1_nosep", "r1_nosep_noenh",
         # named endpoints (the two ship candidates)
         "r3_best", "oa_frcrn_05",
+    ],
+    # Round 2: OA-0.3-anchored combos + ratio refine (baseline + f_oa03 as refs).
+    "final2": [
+        "f_oa03", "f_oa02", "f_oa04",
+        "g_oa03_v3", "g_oa03_nrng3", "g_oa03_seamb", "g_oa03_beam10",
+        "g_oa03_v3_nrng3", "g_oa03_v3_seamb",
     ],
 }
 

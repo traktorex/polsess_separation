@@ -621,6 +621,49 @@ def test_retry_resorts_spliced_segments_by_start(monkeypatch):
     assert out["segments"][-1]["text"] == "późne zwykłe zdanie tutaj"
 
 
+def test_retry_runs_before_alignment_so_align_sees_recovered_segments(monkeypatch):
+    """Ordering contract: the collapse retry runs on the RAW (pre-alignment)
+    segments, then `whisperx.align` aligns the SPLICED result. If the retry ran
+    after alignment, the alignment would re-segment the collapsed (near-empty)
+    window and the recovered words would never get word timestamps. Stub
+    `whisperx.align` to record exactly what it's handed and assert it's the
+    recovered segments, not the collapsed original.
+    """
+    import sys
+    import types
+
+    fake_whisperx = types.ModuleType("whisperx")
+    seen = {}
+
+    def fake_align(segments, model, metadata, audio, device, return_char_alignments):
+        seen["segments"] = segments
+        return {"segments": segments, "word_segments": []}
+
+    fake_whisperx.align = fake_align
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    collapsed = [{"start": 10.0, "end": 35.0, "text": "x"}]      # 25 s, 1 word
+    recovered = [
+        {"start": 0.0, "end": 3.0, "text": "odzyskane słowa jeden"},
+        {"start": 3.0, "end": 6.0, "text": "odzyskane słowa dwa"},
+    ]
+    cfg = TranscriptionConfig(backend="whisperx", word_timestamps=True)
+    backend = _WhisperXBackend(cfg)
+    backend._asr = _RetryFakeASR(collapsed, recovered)
+    backend._align_model = object()
+    backend._align_metadata = {"meta": True}
+    backend._device_str = "cpu"
+
+    backend.transcribe(np.zeros(40 * 16_000, dtype=np.float32))
+
+    # align must have been handed the recovered (spliced) segments — with the
+    # collapsed window's start offset applied — not the original "x" placeholder.
+    texts = [s["text"] for s in seen["segments"]]
+    assert texts == ["odzyskane słowa jeden", "odzyskane słowa dwa"]
+    assert seen["segments"][0]["start"] == 10.0      # offset by the window start
+    assert all(s["text"] != "x" for s in seen["segments"])
+
+
 def test_whisperx_backend_builds_asr_options(monkeypatch):
     """WhisperX backend merges the decode knobs into asr_options, mapping the
     temperature schedule onto the `temperatures` (plural) key WhisperX/

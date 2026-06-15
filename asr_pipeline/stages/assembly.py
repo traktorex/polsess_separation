@@ -297,10 +297,13 @@ def _apply_fade(audio: np.ndarray, in_n: int, out_n: int) -> np.ndarray:
     out = audio.copy()
     in_n = min(in_n, len(out) // 2)
     out_n = min(out_n, len(out) // 2)
-    if in_n > 0:
+    # A 1-sample ramp is a click, not a fade: np.hanning(2) == [0, 0], so the
+    # half-Hann would zero the single boundary sample instead of leaving it
+    # ~unchanged. Skip ramps shorter than 2 samples (a no-op is correct there).
+    if in_n >= 2:
         ramp_in = np.hanning(2 * in_n)[:in_n].astype(np.float32)
         out[:in_n] *= ramp_in
-    if out_n > 0:
+    if out_n >= 2:
         ramp_out = np.hanning(2 * out_n)[out_n:].astype(np.float32)
         out[-out_n:] *= ramp_out
     return out
