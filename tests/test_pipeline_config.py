@@ -619,3 +619,119 @@ def test_valid_retry_collapsed_knob_edges_accepted(field, value):
     cfg = PipelineConfig()
     setattr(cfg.transcription, field, value)
     cfg.__post_init__()      # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 transcription levers: suppress_numerals / length_penalty / vad_*
+# ---------------------------------------------------------------------------
+
+
+def test_tier2_transcription_defaults_are_noop():
+    """Defaults reproduce WhisperX's own defaults exactly → a baseline run is
+    byte-identical. Evidence (pinned venv): whisperx/asr.py load_model —
+    default_asr_options[suppress_numerals]=False, [length_penalty]=1; and
+    default_vad_options vad_onset=0.500 / vad_offset=0.363."""
+    t = PipelineConfig().transcription
+    assert t.suppress_numerals is False
+    assert t.length_penalty == 1.0
+    assert t.vad_onset == 0.500
+    assert t.vad_offset == 0.363
+
+
+def test_tier2_default_yaml_matches_dataclass():
+    """Pin: default.yaml ships the same Tier-2 knobs as the dataclass."""
+    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).transcription
+    d = PipelineConfig().transcription
+    assert y.suppress_numerals == d.suppress_numerals
+    assert y.length_penalty == d.length_penalty
+    assert y.vad_onset == d.vad_onset
+    assert y.vad_offset == d.vad_offset
+
+
+def test_tier2_transcription_knobs_load_from_yaml_dict():
+    """The four knobs load from a config dict (the sweep override path)."""
+    cfg = load_pipeline_config_from_dict(
+        {"transcription": {
+            "suppress_numerals": True,
+            "length_penalty": 1.1,
+            "vad_onset": 0.4,
+            "vad_offset": 0.2,
+        }}
+    )
+    t = cfg.transcription
+    assert t.suppress_numerals is True
+    assert t.length_penalty == 1.1
+    assert t.vad_onset == 0.4
+    assert t.vad_offset == 0.2
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("length_penalty", 0.0, "length_penalty"),
+    ("length_penalty", -1.0, "length_penalty"),
+    ("length_penalty", float("inf"), "length_penalty"),
+    ("length_penalty", float("nan"), "length_penalty"),
+    ("vad_onset", 0.0, "vad_onset"),       # must be strictly in (0, 1)
+    ("vad_onset", 1.0, "vad_onset"),
+    ("vad_onset", float("nan"), "vad_onset"),
+    ("vad_offset", 0.0, "vad_offset"),
+    ("vad_offset", 1.0, "vad_offset"),
+    ("vad_offset", -0.1, "vad_offset"),
+])
+def test_invalid_tier2_transcription_knobs_raise(field, value, token):
+    """Out-of-range Tier-2 knobs fail loud at config time, naming the knob."""
+    with pytest.raises(ValueError, match=token):
+        cfg = PipelineConfig()
+        setattr(cfg.transcription, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("length_penalty", 1.0),       # default / no-op
+    ("length_penalty", 0.8),
+    ("vad_onset", 0.500),          # default
+    ("vad_onset", 0.01),           # near floor (still inside open interval)
+    ("vad_offset", 0.363),         # default
+    ("vad_offset", 0.99),          # near ceiling
+])
+def test_valid_tier2_transcription_knob_edges_accepted(field, value):
+    """Boundary-valid Tier-2 values are accepted (defaults + a representative
+    swept value for each)."""
+    cfg = PipelineConfig()
+    setattr(cfg.transcription, field, value)
+    cfg.__post_init__()      # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 attribution lever: assembly.overlap_assign_min_margin
+# ---------------------------------------------------------------------------
+
+
+def test_overlap_assign_min_margin_default_is_off():
+    """0.0 = off (pure argmax, byte-identical baseline); default.yaml may omit
+    the knob, so it must fall back to the dataclass default of 0.0."""
+    assert PipelineConfig().assembly.overlap_assign_min_margin == 0.0
+    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).assembly
+    assert y.overlap_assign_min_margin == 0.0
+
+
+def test_overlap_assign_min_margin_loads_from_dict():
+    cfg = load_pipeline_config_from_dict(
+        {"assembly": {"overlap_assign_min_margin": 0.05}}
+    )
+    assert cfg.assembly.overlap_assign_min_margin == 0.05
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.0, 1.5, float("inf"), float("nan")])
+def test_invalid_overlap_assign_min_margin_raises(value):
+    """Out-of-[0,1) margin fails loud at config time, naming the knob."""
+    with pytest.raises(ValueError, match="overlap_assign_min_margin"):
+        cfg = PipelineConfig()
+        cfg.assembly.overlap_assign_min_margin = value
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("value", [0.0, 0.05, 0.5, 0.999])
+def test_valid_overlap_assign_min_margin_accepted(value):
+    cfg = PipelineConfig()
+    cfg.assembly.overlap_assign_min_margin = value
+    cfg.__post_init__()      # must not raise

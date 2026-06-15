@@ -436,12 +436,23 @@ def _assign_overlaps(
     ecapa,
     device: torch.device,
     sr: int,
+    min_margin: float = 0.0,
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
     summed cosine similarity to the anchors. Falls back to fixed assignment
     when an anchor is missing or the streams are too short to embed
     (< 0.1 s) — never drops a region. Slices each picked stream to the
     emit region.
+
+    ``min_margin`` (default 0.0 = off) gates a carry-forward prior on the ECAPA
+    path: when ``abs(straight - swapped) < min_margin`` the ECAPA decision is
+    too close to trust (short overlaps where the cosines near-tie), so the
+    overlap inherits ``last_pairing`` — the most recent *confident*
+    (margin-clearing) ECAPA decision — instead of the noisy argmax. With the
+    default margin of 0, every finite decision clears the (zero) gap and the
+    prior never fires, so behaviour is the pure-argmax baseline. The first
+    confident decision seeds the prior; ambiguous overlaps before any confident
+    one (or when the gate is off) fall through to plain argmax.
 
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
     emit_pieces: {speaker: audio_np}}`.
@@ -461,6 +472,10 @@ def _assign_overlaps(
     t_start = time.perf_counter()
     min_overlap_len = int(sr * _ECAPA_OVERLAP_MIN_DURATION_S)
     assignments: list[dict] = []
+    # Carry-forward prior for the margin gate: the last confident (margin-clearing)
+    # ECAPA pairing, "straight" or "swapped". None until the first confident
+    # decision. Only consulted when min_margin > 0 (the gate is off at default).
+    last_pairing: Optional[str] = None
     for i_ovl, ovl in enumerate(overlap_separated):
         if "s1_gated" not in ovl or "s2_gated" not in ovl:
             raise RuntimeError(
@@ -494,12 +509,30 @@ def _assign_overlaps(
                 )
                 stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
                 pairing = "arbitrary (non-finite cosine)"
-            elif straight >= swapped:
-                stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
-                pairing = "straight"
             else:
-                stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
-                pairing = "swapped"
+                # Argmax pairing (the `>=` tie-break keeps stream order).
+                argmax_pairing = "straight" if straight >= swapped else "swapped"
+                # Margin gate (off when min_margin == 0): a near-tie ECAPA
+                # decision is unreliable on short overlaps, so when the gap is
+                # below the margin AND we already have a confident prior, inherit
+                # it instead of trusting the argmax. A confident (margin-clearing)
+                # decision updates the prior for later ambiguous overlaps.
+                if (
+                    min_margin > 0
+                    and abs(straight - swapped) < min_margin
+                    and last_pairing is not None
+                ):
+                    pairing = f"{last_pairing} (carry-forward prior)"
+                    chosen = last_pairing
+                else:
+                    pairing = argmax_pairing
+                    chosen = argmax_pairing
+                    if min_margin > 0 and abs(straight - swapped) >= min_margin:
+                        last_pairing = argmax_pairing
+                if chosen == "straight":
+                    stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
+                else:
+                    stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
         else:
             # Fixed assignment when the streams are too short to embed or an
             # anchor is missing. Never drop the region — a drop would lose the
@@ -802,6 +835,7 @@ class AssemblyStage(Stage):
             assignments = _assign_overlaps(
                 ctx.overlap_separated, anchors, speakers,
                 self._ecapa, self._device, sr,
+                min_margin=cfg.overlap_assign_min_margin,
             )
         elif ctx.overlap_regions:
             _log(

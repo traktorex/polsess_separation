@@ -152,18 +152,30 @@ class _WhisperBackend:
     def transcribe(self, audio: np.ndarray) -> dict:
         # Decode knobs route into openai-whisper's transcribe(): temperature /
         # no_speech_threshold / compression_ratio_threshold /
-        # condition_on_previous_text are named params; beam_size / patience
-        # fall through transcribe()'s **decode_options into DecodingOptions.
+        # condition_on_previous_text are named params; beam_size / patience /
+        # length_penalty fall through transcribe()'s **decode_options into
+        # DecodingOptions.
         #
-        # The three anti-hallucination knobs are faster-whisper-only. openai-
-        # whisper has no equivalent for no_repeat_ngram_size / repetition_penalty
-        # (they'd crash DecodingOptions), and its hallucination_silence_threshold
-        # is a DIFFERENT algorithm — forwarding it would silently substitute one
-        # behaviour for another (SCOPE §4.1). So they are never passed here; a
-        # non-default value with backend="whisper" is a loud configuration error,
-        # not a quiet downgrade. Defaults (0 / 1.0 / None) are a no-op.
+        # The anti-hallucination knobs (no_repeat_ngram_size / repetition_penalty
+        # / hallucination_silence_threshold) plus suppress_numerals / vad_onset /
+        # vad_offset are WhisperX/faster-whisper-only. openai-whisper has no
+        # equivalent (the first two would crash DecodingOptions;
+        # hallucination_silence_threshold is a DIFFERENT algorithm; suppress_
+        # numerals / vad_* belong to WhisperX's VAD pipeline) — forwarding any
+        # would crash or silently substitute behaviour (SCOPE §4.1). So they are
+        # never passed here; a non-default value with backend="whisper" is a loud
+        # configuration error, not a quiet downgrade. The defaults are no-ops.
         self._reject_unsupported_knobs()
         self._warn_retry_ignored()
+        # length_penalty is supported by both backends, but the no-op value
+        # differs: faster-whisper's default is 1.0 while openai-whisper's is
+        # None (plain length normalisation), and 1.0 there is NOT equivalent to
+        # None. So forward it only when the user actually changed it — at the
+        # default 1.0 we omit it entirely, letting openai-whisper use its own
+        # None default and keeping the baseline byte-identical.
+        extra_decode = {}
+        if self.cfg.length_penalty != 1.0:
+            extra_decode["length_penalty"] = self.cfg.length_penalty
         result = self._model.transcribe(
             audio.astype(np.float32),
             language=self.cfg.language,
@@ -176,6 +188,7 @@ class _WhisperBackend:
             no_speech_threshold=self.cfg.no_speech_threshold,
             compression_ratio_threshold=self.cfg.compression_ratio_threshold,
             verbose=False,
+            **extra_decode,
         )
         return _normalise_result(result, self.cfg.language)
 
@@ -203,6 +216,18 @@ class _WhisperBackend:
         # would silently no-op (SCOPE §4.1). 30 = WhisperX default = no-op here.
         if self.cfg.chunk_size != 30:
             unsupported.append(f"chunk_size={self.cfg.chunk_size}")
+        # suppress_numerals is popped by WhisperX's load_model into its VAD
+        # pipeline; openai-whisper has no equivalent. False = no-op.
+        if self.cfg.suppress_numerals:
+            unsupported.append(
+                f"suppress_numerals={self.cfg.suppress_numerals}"
+            )
+        # vad_onset / vad_offset configure WhisperX's internal VAD; openai-whisper
+        # has none. Defaults (0.500 / 0.363 = WhisperX's own) = no-op.
+        if self.cfg.vad_onset != 0.500:
+            unsupported.append(f"vad_onset={self.cfg.vad_onset}")
+        if self.cfg.vad_offset != 0.363:
+            unsupported.append(f"vad_offset={self.cfg.vad_offset}")
         if unsupported:
             raise ValueError(
                 "transcription.backend='whisper' (openai-whisper) does not "
@@ -211,7 +236,8 @@ class _WhisperBackend:
                 "backend='whisperx'. Either switch to backend='whisperx' or "
                 "leave these at their defaults (no_repeat_ngram_size=0, "
                 "repetition_penalty=1.0, hallucination_silence_threshold=None, "
-                "chunk_size=30)."
+                "chunk_size=30, suppress_numerals=False, vad_onset=0.500, "
+                "vad_offset=0.363)."
             )
 
     def _warn_retry_ignored(self) -> None:
@@ -342,6 +368,7 @@ class _WhisperXBackend:
             "initial_prompt": self.cfg.initial_prompt,
             "beam_size": self.cfg.beam_size,
             "patience": self.cfg.patience,
+            "length_penalty": self.cfg.length_penalty,
             "temperatures": _temperature_schedule(self.cfg.temperature),
             "condition_on_previous_text": self.cfg.condition_on_previous_text,
             "no_speech_threshold": self.cfg.no_speech_threshold,
@@ -354,6 +381,17 @@ class _WhisperXBackend:
             "no_repeat_ngram_size": self.cfg.no_repeat_ngram_size,
             "repetition_penalty": self.cfg.repetition_penalty,
             "hallucination_silence_threshold": self.cfg.hallucination_silence_threshold,
+            # suppress_numerals is popped by load_model before TranscriptionOptions
+            # is built (it's not a faster-whisper field) and handed to the
+            # pipeline — so it belongs in asr_options. False = WhisperX default.
+            "suppress_numerals": self.cfg.suppress_numerals,
+        }
+        # WhisperX internal-VAD onset/offset. load_model merges this over its
+        # own default_vad_options; the config defaults equal those defaults
+        # (0.500 / 0.363), so a baseline run is byte-identical.
+        vad_options = {
+            "vad_onset": self.cfg.vad_onset,
+            "vad_offset": self.cfg.vad_offset,
         }
         self._asr = whisperx.load_model(
             model_path,
@@ -361,6 +399,7 @@ class _WhisperXBackend:
             compute_type=compute_type,
             language=self.cfg.language,
             asr_options=asr_options,
+            vad_options=vad_options,
         )
         # Always load the wav2vec2 align model when using WhisperX — it
         # also catches hallucinations (words that can't be aligned to actual

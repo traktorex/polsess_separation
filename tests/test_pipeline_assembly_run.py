@@ -187,6 +187,94 @@ def test_assign_missing_gated_raises_clear_error():
 
 
 # ---------------------------------------------------------------------------
+# Tier-2 attribution lever: margin-gated carry-forward prior
+# ---------------------------------------------------------------------------
+#
+# Anchors A=[1,0], B=[0,1]. Embeddings keyed by each stream's first sample
+# (_TableEcapa). Two overlaps:
+#   - "confident straight": s1→[1,0], s2→[0,1] → straight=2.0, swapped=0.0
+#     (gap 2.0, decisive straight). Seeds the carry-forward prior.
+#   - "near-tie swapped":  s1→[0.50,0.52], s2→[0.52,0.50] → straight≈1.386,
+#     swapped≈1.442 (gap≈0.055, argmax = swapped). The gate's target.
+
+_CONF_S1, _CONF_S2 = 0.10, 0.20          # confident overlap stream markers
+_TIE_S1, _TIE_S2 = 0.30, 0.40            # near-tie overlap stream markers
+_TIE_TABLE = {
+    _CONF_S1: [1.0, 0.0], _CONF_S2: [0.0, 1.0],
+    _TIE_S1: [0.50, 0.52], _TIE_S2: [0.52, 0.50],
+}
+
+
+def _margin_anchors():
+    return {"SPK_A": torch.tensor([1.0, 0.0]), "SPK_B": torch.tensor([0.0, 1.0])}
+
+
+def test_margin_off_is_identical_to_argmax():
+    """overlap_assign_min_margin=0 (default) → pure argmax: the near-tie overlap
+    resolves to its argmax 'swapped', identical to today's behaviour. The
+    pairing label stays the bare 'swapped' (no carry-forward annotation)."""
+    conf = _ovl(np.full(SR, _CONF_S1), np.full(SR, _CONF_S2), idx=0)
+    tie = _ovl(np.full(SR, _TIE_S1), np.full(SR, _TIE_S2), idx=1)
+    ecapa = _TableEcapa(_TIE_TABLE)
+    out = _assign_overlaps(
+        [conf, tie], _margin_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        min_margin=0.0,
+    )
+    assert out[0]["pairing"] == "straight"
+    assert out[1]["pairing"] == "swapped"
+    # near-tie argmax = swapped → SPK_A gets s2.
+    np.testing.assert_array_equal(out[1]["emit_pieces"]["SPK_A"], tie["s2_gated"])
+
+
+def test_margin_off_default_matches_explicit_zero():
+    """The default call (no min_margin kwarg) equals an explicit min_margin=0:
+    the carry-forward branch can never alter the committed-default behaviour."""
+    conf = _ovl(np.full(SR, _CONF_S1), np.full(SR, _CONF_S2), idx=0)
+    tie = _ovl(np.full(SR, _TIE_S1), np.full(SR, _TIE_S2), idx=1)
+    spk = ["SPK_A", "SPK_B"]
+    default = _assign_overlaps(
+        [conf, tie], _margin_anchors(), spk, _TableEcapa(_TIE_TABLE), DEVICE, SR
+    )
+    explicit = _assign_overlaps(
+        [conf, tie], _margin_anchors(), spk, _TableEcapa(_TIE_TABLE), DEVICE, SR,
+        min_margin=0.0,
+    )
+    assert [o["pairing"] for o in default] == [o["pairing"] for o in explicit]
+
+
+def test_margin_gate_near_tie_inherits_confident_prior():
+    """With a high margin (0.1 > the 0.055 near-tie gap, < the 2.0 confident gap):
+    the confident overlap decides 'straight' and seeds the prior; the near-tie
+    overlap is ambiguous and inherits that prior instead of its argmax 'swapped'.
+    The near-tie thus flips from swapped (argmax) to straight (prior)."""
+    conf = _ovl(np.full(SR, _CONF_S1), np.full(SR, _CONF_S2), idx=0)
+    tie = _ovl(np.full(SR, _TIE_S1), np.full(SR, _TIE_S2), idx=1)
+    ecapa = _TableEcapa(_TIE_TABLE)
+    out = _assign_overlaps(
+        [conf, tie], _margin_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        min_margin=0.1,
+    )
+    assert out[0]["pairing"] == "straight"
+    assert out[1]["pairing"] == "straight (carry-forward prior)"
+    # Inherited straight → SPK_A keeps s1 (not the argmax swap to s2).
+    np.testing.assert_array_equal(out[1]["emit_pieces"]["SPK_A"], tie["s1_gated"])
+    np.testing.assert_array_equal(out[1]["emit_pieces"]["SPK_B"], tie["s2_gated"])
+
+
+def test_margin_gate_no_prior_yet_falls_through_to_argmax():
+    """An ambiguous overlap that arrives BEFORE any confident one has no prior
+    to inherit, so it falls through to plain argmax (never drops the region)."""
+    tie = _ovl(np.full(SR, _TIE_S1), np.full(SR, _TIE_S2), idx=0)
+    ecapa = _TableEcapa(_TIE_TABLE)
+    out = _assign_overlaps(
+        [tie], _margin_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        min_margin=0.1,
+    )
+    # No prior seeded → argmax 'swapped' (bare label, not carry-forward).
+    assert out[0]["pairing"] == "swapped"
+
+
+# ---------------------------------------------------------------------------
 # _mixture_fill_overlaps
 # ---------------------------------------------------------------------------
 

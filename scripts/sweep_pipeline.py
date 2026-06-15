@@ -412,6 +412,32 @@ CONFIGS: dict[str, dict] = {
                         "separation.seam_mode": "overlap_boundary"},
     "f_oa02":          {"enhancement.observation_mix_ratio": 0.2},
     "f_oa04":          {"enhancement.observation_mix_ratio": 0.4},
+
+    # ======================================================================
+    # Tier-2 "easy-win" levers (2026-06-15). Verified-easy-wins audit. Each is
+    # a NEW sweep-ready knob whose committed default is a NO-OP, anchored on the
+    # OA-0.3 finalist (enhancement.observation_mix_ratio: 0.3 = f_oa03) so they
+    # are testable against it. OFAT off that anchor (one new lever each), except
+    # the model swap (a finetune, no anchor knob needed). See GROUPS["t2"].
+    # ======================================================================
+    # WhisperX suppress_numerals: spell numbers out — GT is word-form Polish, so
+    # digit hypotheses score as substitutions.
+    "t2_suppress_numerals": {"enhancement.observation_mix_ratio": 0.3,
+                             "transcription.suppress_numerals": True},
+    # Length penalty 1.1 (mild long-hypothesis preference).
+    "t2_length_penalty11": {"enhancement.observation_mix_ratio": 0.3,
+                            "transcription.length_penalty": 1.1},
+    # Lower WhisperX VAD offset: keep trailing speech the VAD would clip.
+    "t2_vad_offset_lo":    {"enhancement.observation_mix_ratio": 0.3,
+                            "transcription.vad_offset": 0.20},
+    # Attribution fix #1: margin-gated carry-forward prior on near-tie overlaps.
+    "t2_attr_margin":      {"enhancement.observation_mix_ratio": 0.3,
+                            "assembly.overlap_assign_min_margin": 0.05},
+    # bardsai Polish Whisper-large-v2 finetune (transformers format; the
+    # pipeline's _ensure_ct2_model auto-converts it to CT2 on first use).
+    "t2_bardsai_pl":       {"enhancement.observation_mix_ratio": 0.3,
+                            "transcription.model_name":
+                            "bardsai/whisper-large-v2-pl-v2"},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -499,6 +525,13 @@ GROUPS: dict[str, list[str]] = {
         "f_oa03", "f_oa02", "f_oa04",
         "g_oa03_v3", "g_oa03_nrng3", "g_oa03_seamb", "g_oa03_beam10",
         "g_oa03_v3_nrng3", "g_oa03_v3_seamb",
+    ],
+    # Tier-2 easy-win levers, OFAT off the OA-0.3 finalist (f_oa03 = the anchor
+    # reference; baseline auto-included).
+    "t2": [
+        "f_oa03",
+        "t2_suppress_numerals", "t2_length_penalty11", "t2_vad_offset_lo",
+        "t2_attr_margin", "t2_bardsai_pl",
     ],
 }
 

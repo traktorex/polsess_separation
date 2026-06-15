@@ -308,6 +308,19 @@ class AssemblyConfig:
     # Applied after `overlap_rms_match_solo`; if both are on, this dominates.
     per_piece_rms_norm: bool = False
     target_rms: Optional[float] = None
+    # Margin-gated carry-forward prior for per-overlap ECAPA pairing
+    # (`_assign_overlaps`). The per-overlap pairing picks argmax(straight,
+    # swapped) summed cosine independently per overlap, but ~a third of overlaps
+    # are sub-0.5 s where ECAPA is unreliable and the two cosines sit near a tie.
+    # When this knob is > 0 and `abs(straight - swapped) < overlap_assign_min_margin`,
+    # the overlap is treated as ambiguous: instead of the noisy argmax it inherits
+    # the *carry-forward prior* — the pairing of the last confident (above-margin)
+    # ECAPA decision. 0.0 = off → every ECAPA decision clears the (zero) margin,
+    # so the prior never fires and behaviour is the pure-argmax current pipeline
+    # (byte-identical baseline). A hypothesis to sweep, not a behaviour change.
+    # Must lie in [0, 1) — the summed-cosine gap spans [0, 2], but a margin >= 1
+    # would gate even decisive decisions, so the useful range is small.
+    overlap_assign_min_margin: float = 0.0
 
 
 @dataclass
@@ -381,6 +394,19 @@ class TranscriptionConfig:
     # (asr.py ``patience``); stored as float here, numerically identical.
     # Must be > 0.
     patience: float = 1.0
+    # Exponential length penalty (Google NMT, alpha). Both backends accept it,
+    # so unlike the WhisperX-only knobs below it routes to ``_WhisperBackend``
+    # too — but the no-op value differs per backend, so it is forwarded only
+    # when non-default (see below). faster-whisper / WhisperX default = 1
+    # (asr.py ``default_asr_options["length_penalty"]`` = the
+    # ``WhisperModel.transcribe`` signature default), threaded into the WhisperX
+    # ``asr_options`` at 1.0 = no-op. openai-whisper's default is ``None`` (plain
+    # length normalisation), and a value of 1.0 there is NOT identical to None
+    # (``((5+len)/6)`` vs ``len`` in MaximumLikelihoodRanker), so the
+    # ``whisper`` backend forwards this only when it differs from 1.0 — keeping
+    # the baseline byte-identical for both backends. openai-whisper additionally
+    # requires the value in [0, 1]; faster-whisper has no such cap. Must be > 0.
+    length_penalty: float = 1.0
 
     # --- Anti-hallucination decode knobs (faster-whisper / WhisperX only) ----
     # These three live in faster-whisper's ``transcribe`` signature, and
@@ -416,6 +442,30 @@ class TranscriptionConfig:
     # pipeline already sets). WhisperX / faster-whisper default = None (off).
     # None = off, or a positive finite number of seconds.
     hallucination_silence_threshold: Optional[float] = None
+
+    # Suppress numeric-symbol tokens so numbers come out spelled in words.
+    # WhisperX-only: ``load_model`` pops ``suppress_numerals`` out of
+    # ``default_asr_options`` (asr.py ~L404) and hands it to
+    # ``FasterWhisperPipeline`` — it is NOT a faster-whisper
+    # ``TranscriptionOptions`` field, so it is wired into the ``asr_options``
+    # dict like the other decode knobs. WhisperX default = False (asr.py
+    # ``default_asr_options["suppress_numerals"]``) = current behaviour.
+    # openai-whisper has no equivalent on its decode surface, so a non-default
+    # value with ``backend == "whisper"`` is a loud error (see
+    # ``_WhisperBackend._reject_unsupported_knobs``).
+    suppress_numerals: bool = False
+    # WhisperX internal-VAD onset / offset probabilities (Schmitt-trigger style:
+    # a frame enters speech above ``vad_onset`` and leaves below ``vad_offset``).
+    # WhisperX-only: passed in the ``vad_options`` dict to ``load_model``, which
+    # merges them over its own ``default_vad_options`` (asr.py ~L409-412). The
+    # pipeline currently passes no ``vad_options``, so the defaults below
+    # reproduce WhisperX's exactly — ``vad_onset=0.500``, ``vad_offset=0.363``
+    # = byte-identical baseline. Lowering ``vad_offset`` keeps trailing speech
+    # the VAD would otherwise clip; both must lie in (0, 1). openai-whisper does
+    # its own internal windowing with no such VAD, so a non-default value with
+    # ``backend == "whisper"`` is a loud error.
+    vad_onset: float = 0.500
+    vad_offset: float = 0.363
 
     # WhisperX-only knobs (ignored when ``backend != whisperx``):
     # the wav2vec2 model used for forced alignment.
@@ -584,6 +634,16 @@ class PipelineConfig:
                 f"assembly.anchor_max_duration_s must be None (no cap) or "
                 f"positive, got {acfg.anchor_max_duration_s}"
             )
+        # overlap_assign_min_margin gates the carry-forward prior. The summed
+        # cosine gap spans [0, 2]; 0 = off (current behaviour), and a margin
+        # >= 1 would gate decisive decisions, so the valid range is [0, 1).
+        if not math.isfinite(acfg.overlap_assign_min_margin) or not (
+            0.0 <= acfg.overlap_assign_min_margin < 1.0
+        ):
+            raise ValueError(
+                f"assembly.overlap_assign_min_margin must be in [0, 1) "
+                f"(0 = off), got {acfg.overlap_assign_min_margin}"
+            )
 
         omr = self.enhancement.observation_mix_ratio
         if not math.isfinite(omr) or not (0.0 <= omr <= 1.0):
@@ -602,6 +662,11 @@ class PipelineConfig:
             raise ValueError(
                 f"transcription.patience must be a positive finite number, got "
                 f"{tcfg.patience}"
+            )
+        if tcfg.length_penalty <= 0 or not math.isfinite(tcfg.length_penalty):
+            raise ValueError(
+                f"transcription.length_penalty must be a positive finite number "
+                f"(1.0 = no-op), got {tcfg.length_penalty}"
             )
         if not math.isfinite(tcfg.no_speech_threshold):
             raise ValueError(
@@ -674,6 +739,14 @@ class PipelineConfig:
                 f"transcription.collapse_max_wps must be a positive finite "
                 f"words/second threshold, got {tcfg.collapse_max_wps}"
             )
+        # WhisperX internal-VAD onset/offset are probabilities → strictly in (0, 1).
+        for knob in ("vad_onset", "vad_offset"):
+            value = getattr(tcfg, knob)
+            if not math.isfinite(value) or not (0.0 < value < 1.0):
+                raise ValueError(
+                    f"transcription.{knob} must be a probability in (0, 1), "
+                    f"got {value}"
+                )
 
         if self.spill_intermediate and self.artifact_dir is None:
             raise ValueError(

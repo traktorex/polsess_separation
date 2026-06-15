@@ -104,6 +104,12 @@ transcription:
   no_speech_threshold: 0.6                # silence prob cutoff
   compression_ratio_threshold: 2.4        # hallucination/fallback trigger
   patience: 1.0                           # beam-search patience (> 0)
+  length_penalty: 1.0                     # length penalty alpha; 1.0 = no-op (both backends; > 0)
+  # WhisperX-only knobs (a non-default value with backend=whisper is rejected
+  # loud). Defaults reproduce WhisperX's own defaults exactly → no-op baseline.
+  suppress_numerals: false                # true = spell numbers out as words (whisperx-only)
+  vad_onset: 0.500                        # WhisperX internal-VAD onset prob (whisperx-only; in (0,1))
+  vad_offset: 0.363                       # WhisperX internal-VAD offset prob (whisperx-only; in (0,1))
   # Anti-hallucination knobs (faster-whisper / whisperx backend only; a
   # non-default value with backend=whisper is rejected loud). Defaults match
   # WhisperX's default_asr_options exactly → current behaviour unchanged.

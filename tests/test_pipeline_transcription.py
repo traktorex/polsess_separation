@@ -457,6 +457,58 @@ def test_whisper_backend_rejects_nondefault_antihallucination_knob(field, value,
     assert fake.kwargs is None       # never reached openai-whisper
 
 
+def test_whisper_backend_default_length_penalty_not_forwarded():
+    """length_penalty defaults to 1.0, but openai-whisper's own default is None
+    and 1.0 there is NOT equivalent (different ranker formula). So at the default
+    the backend must OMIT the kwarg entirely, leaving openai-whisper's None →
+    byte-identical baseline."""
+    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))
+    assert "length_penalty" not in fake.kwargs
+
+
+def test_whisper_backend_forwards_nondefault_length_penalty():
+    """A swept length_penalty (!= 1.0) IS forwarded to openai-whisper — it's a
+    shared knob (not WhisperX-only), so no reject, just a pass-through."""
+    cfg = TranscriptionConfig(backend="whisper", length_penalty=0.8)
+    backend = _WhisperBackend(cfg)
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
+    assert fake.kwargs["length_penalty"] == 0.8
+
+
+@pytest.mark.parametrize("field,value,token", [
+    ("suppress_numerals", True, "suppress_numerals"),
+    ("vad_onset", 0.4, "vad_onset"),
+    ("vad_offset", 0.2, "vad_offset"),
+])
+def test_whisper_backend_rejects_nondefault_tier2_whisperx_knob(field, value, token):
+    """suppress_numerals / vad_onset / vad_offset are WhisperX-only; a non-default
+    value with backend=whisper fails loud (SCOPE §4.1) before reaching the model."""
+    cfg = TranscriptionConfig(backend="whisper", **{field: value})
+    backend = _WhisperBackend(cfg)
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    with pytest.raises(ValueError, match=token):
+        backend.transcribe(np.zeros(16_000, dtype=np.float32))
+    assert fake.kwargs is None       # never reached openai-whisper
+
+
+def test_whisper_backend_default_tier2_whisperx_knobs_are_noop():
+    """At their defaults the WhisperX-only Tier-2 knobs neither raise nor reach
+    openai-whisper — byte-identical baseline on the whisper backend."""
+    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
+    fake = _FakeWhisperModel()
+    backend._model = fake
+    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
+    assert "suppress_numerals" not in fake.kwargs
+    assert "vad_onset" not in fake.kwargs
+    assert "vad_offset" not in fake.kwargs
+
+
 def test_whisper_backend_retry_knob_does_not_raise_and_is_ignored():
     """Unlike chunk_size (a hard reject), retry_collapsed_chunk_size defaults to
     8 (ON), so the openai-whisper backend must NOT reject it — it logs that the
@@ -675,8 +727,10 @@ def test_whisperx_backend_builds_asr_options(monkeypatch):
 
     fake_whisperx = types.ModuleType("whisperx")
 
-    def fake_load_model(model_path, device, compute_type, language, asr_options):
+    def fake_load_model(model_path, device, compute_type, language, asr_options,
+                        vad_options):
         captured["asr_options"] = asr_options
+        captured["vad_options"] = vad_options
         return object()    # stand-in ASR pipeline; load() doesn't call it
 
     def fake_load_align_model(language_code, device, model_name):
@@ -698,6 +752,8 @@ def test_whisperx_backend_builds_asr_options(monkeypatch):
         compression_ratio_threshold=1.8, patience=1.2,
         no_repeat_ngram_size=3, repetition_penalty=1.2,
         hallucination_silence_threshold=2.0,
+        suppress_numerals=True, length_penalty=1.1,
+        vad_onset=0.4, vad_offset=0.2,
     )
     backend = _WhisperXBackend(cfg)
     backend.load(torch_cpu())
@@ -715,6 +771,11 @@ def test_whisperx_backend_builds_asr_options(monkeypatch):
     assert opts["no_repeat_ngram_size"] == 3
     assert opts["repetition_penalty"] == 1.2
     assert opts["hallucination_silence_threshold"] == 2.0
+    # Tier-2: suppress_numerals + length_penalty ride in asr_options; vad_onset/
+    # vad_offset go in a separate vad_options dict load_model merges over its own.
+    assert opts["suppress_numerals"] is True
+    assert opts["length_penalty"] == 1.1
+    assert captured["vad_options"] == {"vad_onset": 0.4, "vad_offset": 0.2}
 
 
 def test_whisperx_backend_default_asr_options_match_whisperx_defaults(monkeypatch):
@@ -726,8 +787,12 @@ def test_whisperx_backend_default_asr_options_match_whisperx_defaults(monkeypatc
 
     captured = {}
     fake_whisperx = types.ModuleType("whisperx")
-    fake_whisperx.load_model = lambda model_path, device, compute_type, language, asr_options: (
-        captured.__setitem__("asr_options", asr_options) or object()
+    fake_whisperx.load_model = (
+        lambda model_path, device, compute_type, language, asr_options, vad_options: (
+            captured.__setitem__("asr_options", asr_options)
+            or captured.__setitem__("vad_options", vad_options)
+            or object()
+        )
     )
     fake_whisperx.load_align_model = lambda language_code, device, model_name: (object(), {})
     fake_alignment = types.ModuleType("whisperx.alignment")
@@ -751,6 +816,10 @@ def test_whisperx_backend_default_asr_options_match_whisperx_defaults(monkeypatc
     assert opts["no_repeat_ngram_size"] == 0
     assert opts["repetition_penalty"] == 1.0
     assert opts["hallucination_silence_threshold"] is None
+    # Tier-2 defaults also equal WhisperX's own defaults → no-op merge.
+    assert opts["suppress_numerals"] is False
+    assert opts["length_penalty"] == 1
+    assert captured["vad_options"] == {"vad_onset": 0.500, "vad_offset": 0.363}
 
 
 # ---------------------------------------------------------------------------
