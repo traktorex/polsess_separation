@@ -59,30 +59,6 @@ class SepFormerParams:
 
 
 @dataclass
-class RESepFormerParams:
-    """RE-SepFormer (Resource-Efficient Separation Transformer) parameters.
-
-    Defaults match the official SpeechBrain recipe (resepformer.yaml). Note that
-    the transformer d_model is bound to N inside the wrapper, and mem_type='av' /
-    nonlinear='relu' / unit=256 are fixed to match the paper (see
-    models/resepformer.py).
-    """
-
-    N: int = 128  # Encoder/decoder channels (also the transformer d_model)
-    kernel_size: int = 16  # Encoder kernel size
-    stride: int = 8  # Encoder stride
-    C: int = 2  # Output sources (number of speakers)
-    causal: bool = False
-    num_blocks: int = 2  # Number of resource-efficient separation blocks (seg copies)
-    num_layers: int = 8  # Transformer layers in both intra (seg) and inter (mem) blocks
-    nhead: int = 8  # Number of attention heads
-    d_ffn: int = 1024  # Feed-forward network dimension
-    dropout: float = 0.0  # Dropout rate
-    segment_size: int = 150  # Chunk size for non-overlapping segmentation
-    use_positional_encoding: bool = True  # Sinusoidal PE (paper default)
-
-
-@dataclass
 class MossFormer2Params:
     """MossFormer2 (Zhao et al. 2023, arXiv:2312.11825) model-specific parameters.
 
@@ -202,11 +178,10 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, resepformer, mossformer2, dprnn, spmamba, mamba_tasnet, dpmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, mossformer2, dprnn, spmamba, mamba_tasnet, dpmamba
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
-    resepformer: Optional[RESepFormerParams] = None
     mossformer2: Optional[MossFormer2Params] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
@@ -219,8 +194,6 @@ class ModelConfig:
             self.convtasnet = ConvTasNetParams()
         elif self.model_type == "sepformer" and self.sepformer is None:
             self.sepformer = SepFormerParams()
-        elif self.model_type == "resepformer" and self.resepformer is None:
-            self.resepformer = RESepFormerParams()
         elif self.model_type == "mossformer2" and self.mossformer2 is None:
             self.mossformer2 = MossFormer2Params()
         elif self.model_type == "dprnn" and self.dprnn is None:
@@ -298,8 +271,6 @@ class Config:
                 self.model.convtasnet.C = 1
             elif self.model.model_type == "sepformer":
                 self.model.sepformer.C = 1
-            elif self.model.model_type == "resepformer":
-                self.model.resepformer.C = 1
             elif self.model.model_type == "mossformer2":
                 self.model.mossformer2.C = 1
             elif self.model.model_type == "dprnn":
@@ -315,8 +286,6 @@ class Config:
                 self.model.convtasnet.C = 2
             elif self.model.model_type == "sepformer":
                 self.model.sepformer.C = 2
-            elif self.model.model_type == "resepformer":
-                self.model.resepformer.C = 2
             elif self.model.model_type == "mossformer2":
                 self.model.mossformer2.C = 2
             elif self.model.model_type == "dprnn":
@@ -390,16 +359,6 @@ class Config:
                 f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
                 f"  Positional encoding: {p.use_positional_encoding}",
                 f"  Chunking: chunk={p.chunk_size}, hop={p.hop_size}",
-                f"  Output: C={p.C}",
-            ])
-        elif mt == "resepformer":
-            p = self.model.resepformer
-            lines.extend([
-                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
-                f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.N}",
-                f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
-                f"  Positional encoding: {p.use_positional_encoding}",
-                f"  Chunking: segment_size={p.segment_size}, mem_type=av",
                 f"  Output: C={p.C}",
             ])
         elif mt == "mossformer2":
@@ -507,9 +466,6 @@ def load_config_from_dict(config_dict: dict) -> Config:
     sepformer_dict = model_dict.pop("sepformer", None)
     sepformer_params = SepFormerParams(**sepformer_dict) if sepformer_dict else None
 
-    resepformer_dict = model_dict.pop("resepformer", None)
-    resepformer_params = RESepFormerParams(**resepformer_dict) if resepformer_dict else None
-
     mossformer2_dict = model_dict.pop("mossformer2", None)
     mossformer2_params = MossFormer2Params(**mossformer2_dict) if mossformer2_dict else None
 
@@ -534,7 +490,6 @@ def load_config_from_dict(config_dict: dict) -> Config:
         **model_dict,
         convtasnet=convtasnet_params,
         sepformer=sepformer_params,
-        resepformer=resepformer_params,
         mossformer2=mossformer2_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
@@ -574,8 +529,6 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["convtasnet"] = value
         elif key == "sepformer" and value is not None:
             model_dict["sepformer"] = value
-        elif key == "resepformer" and value is not None:
-            model_dict["resepformer"] = value
         elif key == "mossformer2" and value is not None:
             model_dict["mossformer2"] = value
         elif key == "dprnn" and value is not None:
@@ -586,7 +539,7 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["mamba_tasnet"] = value
         elif key == "dpmamba" and value is not None:
             model_dict["dpmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "resepformer", "mossformer2", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
+        elif key not in ["convtasnet", "sepformer", "mossformer2", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
             model_dict[key] = value
 
     config_dict = {

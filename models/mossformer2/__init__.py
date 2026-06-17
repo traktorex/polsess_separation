@@ -4,7 +4,7 @@ MossFormer2 (Zhao et al. 2023, arXiv:2312.11825) is a time-domain separation
 model that augments the MossFormer transformer backbone with a recurrent
 gated-FSMN (GFSMN) module. This thin wrapper adapts the vendored
 ClearerVoice-Studio training implementation (``models/mossformer2/mossformer2.py``)
-to this project's conventions, mirroring ``models/resepformer.py``:
+to this project's conventions, mirroring ``models/sepformer.py``:
 
   * it builds the ``args``-style namespace ``MossFormer2_SS`` expects from explicit
     keyword arguments, so the config factory's ``model_class(**vars(params))`` call
