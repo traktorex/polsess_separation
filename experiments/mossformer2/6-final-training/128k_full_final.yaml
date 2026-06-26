@@ -1,0 +1,69 @@
+# MossFormer2 paper-depth (FULL, ~55.7M) 128k final training.   [num_blocks=24]
+#
+# The capstone of the full-MossFormer2 capacity curve (experiments/mossformer2/5-scaling/
+# *_full.yaml). Trains the paper's full GFSMN depth at the deployed 128k scale, head-to-head
+# with the SepFormer-matched 128k separator (128k_matched_final.yaml, run 6xuv1tob), to
+# settle whether the matched model's plateau is a true capacity ceiling or a depth-11 one.
+#
+# Identical to 16k/32k/64k_full.yaml EXCEPT train_max_samples (128000) and the W&B target —
+# same paper-full architecture (num_blocks=24), same canonical SepFormer-baseline recipe,
+# same all-8 final-training protocol. See 5-scaling/16k_full.yaml for the full rationale:
+#   - num_blocks 11 -> 24 is the ONLY capacity change vs matched (N/kernel/C identical).
+#   - Recipe = canonical un-swept recipe (lr 1.5e-4 @ bs=1 = lr-per-sample-matched to the
+#     matched curve's 3e-4 @ bs=2; wd 0, clip 5.0), NOT the matched-128k sweep winner — that
+#     HPO was tuned on depth-11, so it would re-confound capacity with optimizer tuning on
+#     depth-24 (the full-SPMamba "don't reuse reduced-arch HPO" rule).
+#   - all-8 SI-SDRi -> directly comparable to the matched MF2 / SepFormer / SPMamba 128k
+#     finals (matched 17.04 dB, SepFormer 16.0 dB).
+#
+# COST WARNING: ~2x the matched 128k per-epoch (batch 1 vs 2, ~2.1x params) -> roughly
+# 6-7 h/epoch (ESTIMATE from matched's 3.4 h; MEASURE epoch 1). If early stopping lands in
+# the 60-80 epoch band (matched/SepFormer profile) that is ~3-4 weeks wall-clock — a large
+# slice of the 2-month runway. RECOMMENDATION: run the 16k/32k/64k curve first; the
+# capacity signal usually shows by 64k, and only launch this 128k point if the curve earns
+# it (same staged plan as the deferred SPMamba 128k). Watch peak VRAM on the 3080 (10 GB).
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # ~55.7M model — one mixture per step (memory).
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim.
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8).
+    C: 2
+    num_blocks: 24   # PAPER-FULL GFSMN depth (matched final used 11).
+    attn_dropout: 0.1   # Upstream default, un-swept (matched sweep tuned 0.07; not transplanted).
+
+training:
+  # ---- Canonical SepFormer-baseline recipe (NOT the matched-128k sweep; see 16k header) ----
+  seed: 42
+  lr: 0.00015              # Canonical LR @ batch_size=1; matched used 3e-4 @ bs=2 (same lr/sample).
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1           # Final-training protocol (all-8 per-variant val is a stable signal).
+  num_epochs: 100          # Cap; early stopping governs.
+  early_stopping_patience: 8
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: mossformer2_full_128k_final_42
+  log_level: INFO
+
+  # No curriculum: full-set-from-epoch-1 (final-training protocol; matches the matched final).
+
+  # Per-variant validation drives the LR scheduler + best-checkpoint logic via avg SI-SDRi;
+  # all 8 MM-IPC variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.
