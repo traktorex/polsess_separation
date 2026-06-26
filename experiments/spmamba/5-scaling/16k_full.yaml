@@ -1,0 +1,79 @@
+# SPMamba paper-faithful scaling run — 16k.   [full 6/256, emb_ks=8, paper optimizer]
+#
+# The whole 128k_paper_final.yaml recipe scaled down to 16k — identical to that file
+# EXCEPT train_max_samples (16000) and the W&B target. The reduced-SPMamba scaling
+# runs (config-1, 4/192, emb_ks=4) are already done and separate; these use the full
+# PAPER config end-to-end — architecture AND optimizer — because config-1's
+# hyperparameters were tuned for the reduced architecture (a different model) and
+# shouldn't be transplanted onto the full one.
+#
+# Paper recipe (configs/spmamba-wsj0.yml; see 128k_paper_final.yaml header for full
+# provenance + caveats): Adam lr 1e-3, wd 0, ReduceLROnPlateau(0.5, 10), grad_clip 5.0
+# (trainer always clips; paper yaml has none), epochs 500 cap / early-stop 20, no
+# curriculum, validation on all 8 MM-IPC variants (best checkpoint on avg SI-SDRi).
+#
+# Result: the full-SPMamba curve (16k/32k/64k -> deferred 128k_paper_final) is one
+# coherent paper-config curve on the all-8 SI-SDRi metric — directly comparable to the
+# MF2/SepFormer 128k finals (17.04 / 16.0 dB), but NOT a tight overlay on the reduced
+# curve (which reported best_val over {SER,SE}). emb_ks=8 is the paper kernel; your
+# 06_spmamba_investigation found 4 better on PolSESS, so it carries a known handicap.
+#
+# Cost: ~2.75 h/epoch at 16k — run first. (early-stop 20 can add a ~2-day tail; drop
+# to ~12-15 if you want to cap it.)
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2
+    n_fft: 256
+    stride: 64
+    window: "hann"
+    n_layers: 6              # FULL (reduced config-1 used 4)
+    lstm_hidden_units: 256   # FULL (reduced used 192)
+    attn_n_head: 4           # FULL (reduced used 2)
+    attn_approx_qk_dim: 512  # FULL (reduced used 256)
+    emb_dim: 16
+    emb_ks: 8                # paper kernel (reduced runs used 4; see header)
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-5
+
+training:
+  # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
+  seed: 42
+  lr: 0.001                # Paper (Adam).
+  weight_decay: 0.0        # Paper -> pure Adam.
+  lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
+  lr_patience: 2          # Paper ReduceLROnPlateau patience.
+  grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none.
+  num_epochs: 500          # Paper cap; early stopping ends it far sooner.
+  early_stopping_patience: 6   # Paper.
+  use_amp: true            # bf16 (validated safe/better) — set false for literal fp32.
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_spmamba_full_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 6
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
