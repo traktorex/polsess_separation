@@ -163,9 +163,21 @@ def test_run_handles_pyannote4_wrapper_result():
 # ---------------------------------------------------------------------------
 
 
-def test_load_signature_is_model_id_only():
+def test_load_signature_includes_frontend_knobs_not_num_speakers():
+    # num_speakers is a call-time knob (excluded); the instantiate-time front-end
+    # hyperparameters ARE included so changing one triggers a reload.
     stage = DiarizationStage(DiarizationConfig(model_id=MODEL_ID, num_speakers=3))
-    assert stage.load_signature() == (MODEL_ID,)   # num_speakers excluded
+    assert stage.load_signature() == (MODEL_ID, None, 0.0, 0.7045654963945799, 12)
+    # a changed front-end knob changes the signature
+    s2 = DiarizationStage(
+        DiarizationConfig(model_id=MODEL_ID, segmentation_min_duration_off=0.5)
+    )
+    assert s2.load_signature() != stage.load_signature()
+    # an embedding swap also changes the signature (triggers reload)
+    s3 = DiarizationStage(
+        DiarizationConfig(model_id=MODEL_ID, embedding="eek/wespeaker-voxceleb-resnet293-LM")
+    )
+    assert s3.load_signature() != stage.load_signature()
 
 
 def test_load_empty_token_raises(monkeypatch):

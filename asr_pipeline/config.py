@@ -38,6 +38,13 @@ def redact_config_snapshot(config_snapshot: dict) -> dict:
     diar = snap.get("diarization")
     if isinstance(diar, dict) and diar.get("hf_token"):
         diar["hf_token"] = _REDACTED
+    # RelabelStage (B/B+) carries its own hf_token field (for a pyannote-format
+    # embedder id; unused for the custom "ecapa2" name). Mask it unconditionally
+    # — cheap insurance so a live token never lands in a saved snapshot even when
+    # relabel is enabled with a pyannote embedder.
+    relabel = snap.get("relabel")
+    if isinstance(relabel, dict) and relabel.get("hf_token"):
+        relabel["hf_token"] = _REDACTED
     return snap
 
 
@@ -56,6 +63,41 @@ def _one_of(value, name: str, allowed: tuple) -> None:
 
 
 @dataclass
+class FusionConfig:
+    """Disagreement-aware diarization fusion (SECOND_PASS_PLAN.md option 3).
+
+    OFF (default) = byte-identical no-op; the second pass never runs.
+
+    When enabled, a SECOND pyannote diarization runs on the ENHANCED audio
+    (`ctx.enhanced_full`) and is FUSED with the raw pass-1 result by the
+    asymmetry rule (plan §0): enhancement HELPS identity but HURTS presence (a
+    single-output SE model suppresses the quieter speaker → an enhanced
+    re-diarization under-detects overlaps / drops quiet turns). So PRESENCE
+    (segment boundaries, overlap timeline, speaker count) stays with the RAW
+    pass-1 result, and pass 2 may override only the IDENTITY label of a region
+    pass 1 already calls single-speaker — and only on confident disagreement.
+
+    Implemented as a separate post-enhancement stage (`FusionDiarizationStage`)
+    rather than a flag inside DiarizationStage, because pass 2 needs the enhanced
+    audio that does not exist at stage 1 (plan §7.9). The stage REPLACES the
+    `speaker` column of `ctx.diarization.segments_df` in place; everything else
+    (overlaps_df, boundaries, the label set) is untouched.
+    """
+
+    enabled: bool = False
+    # Embedder for the pass-2 (identity) diarization. Same custom-name /
+    # pyannote-id contract as DiarizationConfig.embedding (None = stock 3.1).
+    embedding: Optional[str] = "ecapa2"
+    # Override a solo region's label with pass 2's only when pass 2 assigns at
+    # least this fraction of the region's duration to a SINGLE speaker (its
+    # confidence). In (0, 1]. Higher = stricter (fewer overrides).
+    confidence_min: float = 0.75
+    # Minimum solo-region duration (s) to even consider overriding. Below this a
+    # region's pass-2 label is too noisy to trust; keep pass 1. >= 0.
+    min_region_s: float = 0.5
+
+
+@dataclass
 class DiarizationConfig:
     """Stage 1: pyannote speaker diarization."""
 
@@ -65,6 +107,48 @@ class DiarizationConfig:
         default_factory=lambda: os.getenv("HF_TOKEN", None)
     )
     num_speakers: int = 2
+    # pyannote front-end hyperparameters, applied via Pipeline.instantiate() at
+    # load (DiarizationStage.load). Defaults = the shipped speaker-diarization-3.1
+    # config.yaml values, so leaving them untouched is byte-identical to stock
+    # pyannote; they exist to be SWEPT. Only segmentation.min_duration_off and
+    # clustering.min_cluster_size are effective here: num_speakers=2 fixes the
+    # agglomerative cluster COUNT, so clustering.threshold is INERT (kept for
+    # completeness / if num_speakers is ever relaxed).
+    segmentation_min_duration_off: float = 0.0    # fill intra-turn pauses <= this (s)
+    clustering_threshold: float = 0.7045654963945799   # INERT under num_speakers=2
+    clustering_min_cluster_size: int = 12
+    # Agglomerative linkage method, applied in the embedding-swap /
+    # reconstructed-3.1 path (pyannote AgglomerativeClustering). Only effective
+    # when the 3.1 schema is instantiated (embedding != None or a 3.x model_id).
+    # Linkage decides which short segments cluster together = exactly where
+    # short-segment mislabels are decided. Default "centroid" = stock 3.1
+    # (byte-identical). One of pyannote's accepted scipy linkages:
+    # {"average", "centroid", "complete", "median", "single", "ward", "weighted"}.
+    clustering_method: str = "centroid"
+    # Speaker-embedding model swap. None = the stock model_id pipeline via
+    # `from_pretrained` (byte-identical to shipped). Any other value triggers
+    # RECONSTRUCTION of a 3.1-equivalent SpeakerDiarization (segmentation-3.0 +
+    # AgglomerativeClustering + exclude_overlap) with the chosen embedder — the
+    # only difference from stock 3.1. Two embedder families are accepted:
+    #   - a pyannote-format model id/path (e.g.
+    #     "eek/wespeaker-voxceleb-resnet293-LM"), handled by pyannote's own
+    #     embedding factory; OR
+    #   - a CUSTOM name — "ecapa2" (Jenthe/ECAPA2 TorchScript) or "eres2netv2"
+    #     (3D-Speaker ERes2NetV2 via ModelScope) — which pyannote's factory does
+    #     NOT accept, so DiarizationStage.load injects a wrapper from
+    #     stages/custom_embeddings.py in place of pipeline._embedding (see
+    #     CUSTOM_EMBEDDING_NAMES there).
+    # The embedding decides clustering quality (see EMBEDDING_RESEARCH.md); this is
+    # the lever for the db15fc57-style short-segment mislabels. Default stays None
+    # (stock baseline) so the experimental baseline / f_oa03 (which omit
+    # `embedding`) remain stock 3.1 and stay comparable to on-disk outputs; ECAPA2
+    # is adopted ONLY in the shipped configs/sweep_best_e31.yaml.
+    embedding: Optional[str] = None
+    # Disagreement-aware fusion (option 3). Default OFF (FusionConfig.enabled =
+    # False) → no second pass. See FusionConfig. Lives under diarization because
+    # it is a property of the diarization output, but is RUN by the separate
+    # post-enhancement FusionDiarizationStage (which needs enhanced audio).
+    fusion: "FusionConfig" = field(default_factory=FusionConfig)
 
 
 @dataclass
@@ -124,6 +208,16 @@ class EnhancementConfig:
     # (overlaps separate from the original audio), so OA never touches the
     # overlap path — exactly where the papers warn it harms.
     observation_mix_ratio: float = 0.0
+    # librosa/soxr resampling filter applied to every solo region on the
+    # 16k->native->16k round-trip around the enhancer (the `res_type` arg in
+    # stages/enhancement.py). Sets *what* spectrum reaches the enhancer and, via
+    # the OA blend, WhisperX -- directly upstream of `observation_mix_ratio`.
+    # Only the enhancement stage uses this; the separator's torchaudio resample
+    # is unaffected (and deliberately not unified -- the two are not
+    # bit-identical). Default "soxr_hq" = current behaviour (byte-identical),
+    # inherited from the batch-script lineage the 48 kHz checkpoint was
+    # characterised against. One of {"soxr_hq", "soxr_vhq", "kaiser_best"}.
+    resample_quality: str = "soxr_hq"
 
 
 @dataclass
@@ -139,7 +233,7 @@ class SeparationConfig:
 
     enabled: bool = True
     checkpoint_path: str = (
-        "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt"
+        "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt"
     )
     separator_sample_rate: int = 8_000   # SR the separator was trained at
     # Audio duration (seconds) the separator was trained on. Used as the
@@ -189,6 +283,15 @@ class SeparationConfig:
     # output. If no silence found in this window, falls back to the
     # zero_crossing boundary (never contracts).
     snap_silence_max_extend_s: float = 0.3
+    # When `seam_mode == "snap_to_silence"`: the VAD-mask cutoff below which a
+    # frame counts as silence while extending the emit boundary outward
+    # (`_extend_{start,end}_to_silence`). This is the companion to the swept VAD
+    # thresholds: those gate the audio mask; this defines what "silence" means
+    # when growing the seam, i.e. how far an emit region grows into adjacent solo
+    # audio = how much speech is double-counted vs dropped at the seam. NOTE this
+    # is a separate mask from `vad_threshold`/`vad_soft_threshold`. Default 0.5 =
+    # current behaviour (byte-identical). Strictly in (0, 1).
+    seam_silence_threshold: float = 0.5
 
     # Long-overlap chunking: overlaps longer than this trigger overlap-add.
     overlap_add_threshold_s: float = 12.0
@@ -274,7 +377,33 @@ class AssemblyConfig:
     """Stage 4: per-speaker stream assembly + timestamp map."""
 
     enabled: bool = True
+    # Embedder used for the per-speaker anchor (`_compute_anchors`) AND the
+    # per-overlap stream embedding (`_assign_overlaps`):
+    #   - "ecapa1" (default): SpeechBrain `spkrec-ecapa-voxceleb`, the current
+    #     POC embedder. Byte-identical to the pre-knob behaviour.
+    #   - "ecapa2": the Jenthe/ECAPA2 TorchScript embedder via
+    #     `build_custom_embedding` (the same custom wrapper the diarization stage
+    #     uses). Option 4 of the 2nd-pass plan: does a stronger anchor embedder
+    #     ALONE (no 2nd pass) sharpen overlap attribution? `_ecapa_embed`
+    #     dispatches on this so both encoders share one call site. The assembly
+    #     0.25 s pad floor is >= the wrapper's ~25 ms floor, so the custom path
+    #     never under-feeds. Independent of the relabel stage's own ECAPA2.
+    anchor_embedding: str = "ecapa1"           # "ecapa1" (SpeechBrain) | "ecapa2"
     min_solo_for_anchor_s: float = 3.0
+    # Minimum solo duration (s) a speaker needs for an ECAPA *anchor*. Below this
+    # `_compute_anchors` leaves the anchor None and ALL that speaker's overlaps
+    # fall to fixed positional assignment — the real attribution fallback
+    # trigger (distinct from `min_solo_for_anchor_s`, which only sets the
+    # diagnostic `weak_anchor` flag). Also the zero-pad floor inside
+    # `_ecapa_embed` for every anchor / overlap embedding. Default 0.25 =
+    # current behaviour (byte-identical). >= 0.
+    anchor_min_duration_s: float = 0.25
+    # Minimum length (s) of a separated overlap stream for the per-overlap ECAPA
+    # decision to run at all (`_assign_overlaps`). Shorter overlaps fall to fixed
+    # (positional) assignment rather than trusting a noisy cosine on a fraction
+    # of a syllable. Gates how many overlaps reach ANY assignment strategy.
+    # Default 0.1 = current behaviour (byte-identical). >= 0.
+    overlap_min_duration_s: float = 0.1
     # ECAPA only needs a few seconds of audio for a stable speaker embedding,
     # but a richer anchor sharpens overlap speaker-assignment, so we feed as
     # much solo as is safe. On a long recording (e.g. 15 min) the per-speaker
@@ -321,6 +450,36 @@ class AssemblyConfig:
     # Must lie in [0, 1) — the summed-cosine gap spans [0, 2], but a margin >= 1
     # would gate even decisive decisions, so the useful range is small.
     overlap_assign_min_margin: float = 0.0
+    # Per-overlap speaker-assignment strategy (`_assign_overlaps`):
+    #   "ecapa_argmax"        -> the POC default: argmax(straight, swapped) summed
+    #                            cosine to the *global* solo anchors, with the
+    #                            optional `overlap_assign_min_margin` carry-forward.
+    #   "continuity_tiebreak" -> argmax as above, but a near-tie (gap <
+    #                            `continuity_tiebreak_margin`) is broken by
+    #                            *local* anchors built from each speaker's solo
+    #                            audio within `continuity_window_s` of the overlap
+    #                            — the temporally-adjacent ("speech continuity")
+    #                            voice, more reliable than the global anchor on a
+    #                            short ambiguous overlap. Stateless (no
+    #                            carry-forward chain). Ignores
+    #                            `overlap_assign_min_margin`.
+    #   "consensus_2means"    -> a global pre-pass decides every overlap jointly
+    #                            via constrained 2-means over all overlap
+    #                            embeddings + the solo anchors, so the consensus
+    #                            of the majority can overrule a lone confident-
+    #                            but-wrong per-overlap decision (the lever the two
+    #                            per-overlap modes above cannot reach).
+    overlap_assignment: str = "ecapa_argmax"   # ecapa_argmax | continuity_tiebreak | consensus_2means
+    # Near-tie threshold (τ) for "continuity_tiebreak": when the global-anchor
+    # straight/swapped summed-cosine gap is < this, re-decide with local anchors.
+    # 0.0 = off (no overlap is ever a near-tie) → byte-identical to ecapa_argmax,
+    # so this is the swept hypothesis knob. Same [0, 1) range rationale as
+    # `overlap_assign_min_margin`.
+    continuity_tiebreak_margin: float = 0.0
+    # Half-window (seconds) each side of an overlap from which the local
+    # continuity anchor is built. A speaker with no solo audio in the window
+    # yields no local anchor → that overlap falls back to the global argmax.
+    continuity_window_s: float = 10.0
 
 
 @dataclass
@@ -356,6 +515,16 @@ class TranscriptionConfig:
     language: str = "pl"
     initial_prompt: str = "Rozmowa po polsku."
     word_timestamps: bool = True
+    # Peak-amplitude floor below which an assembled stream is treated as silent
+    # and skipped (empty transcript, Whisper never called). The assembler emits
+    # all-zeros sentinels for no-event speakers; without this gate Whisper
+    # hallucinates phantom Polish on pure silence (scored as L3 insertions).
+    # Default 1e-4 mirrors the silence floor in eval/layer2.py (duplicated, not
+    # imported: stages must not depend on eval) = current behaviour
+    # (byte-identical). 0.0 disables the gate (only literal all-zero is skipped,
+    # via the length check); higher values zero out quieter real speakers
+    # (deletions). A deletion↔insertion trade — the swept hypothesis knob. >= 0.
+    silence_floor: float = 1e-4
 
     # --- Whisper decode knobs (both backends) -------------------------------
     # Exposed so a config sweep can vary decoding. Defaults reproduce the
@@ -526,6 +695,55 @@ class TranscriptionConfig:
     transcribe_mixture: bool = False
 
 
+@dataclass
+class RelabelConfig:
+    """2nd-pass identity re-clustering on clean audio (opt-in). OFF = no-op.
+
+    Runs as a model-bearing stage between post_separation_processing (3c) and
+    assembly. Re-embeds the pass-1 single-speaker spans with a stronger embedder
+    (ECAPA2 by default), splits them into exactly 2 by cosine 2-means seeded from
+    the pass-1 speaker centroids, aligns the two clusters back onto the pass-1
+    labels by max-duration overlap, and
+    overwrites `segments_df["speaker"]`. Identity-only: presence
+    (when/who-is-active) stays with the raw pass-1 diarization (see
+    SECOND_PASS_PLAN.md §0). Two modes:
+
+      - "solos"  (B): cluster pass-1 SOLO segments only (overlap-excluded).
+      - "global" (B+): cluster the solos PLUS the VAD-gated separated overlap
+        streams (`s1_gated`/`s2_gated`) jointly, and additionally emit
+        `ctx.overlap_speaker_assignment` (the per-overlap straight/swapped
+        decision) which assembly consumes via its consensus-injection seam.
+
+    Default `enabled=False` → the orchestrator skips the stage entirely
+    (byte-identical no-op; ECAPA2 is never loaded).
+    """
+
+    enabled: bool = False
+    # "solos" (B) | "global" (B+: solos + separated overlap streams).
+    source: str = "solos"
+    # Custom embedder name (build_custom_embedding) or pyannote-format model id.
+    embedding: str = "ecapa2"
+    # Identity-audio source for the SOLO spans: "enhanced" (ctx.enhanced_full,
+    # the cleaner identity signal — needs enhancement.enabled) or "raw"
+    # (ctx.audio, the enhancement-isolating control).
+    audio_source: str = "enhanced"
+    # Subtract ctx.overlap_regions from each solo span before embedding (matches
+    # assembly's solo derivation + pyannote's embedding_exclude_overlap intent).
+    exclude_overlap: bool = True
+    # Weight each point's contribution to its SEED centroid (the 2-means start)
+    # by segment duration. Default OFF: the db15fc57 diagnosis is that long turns
+    # DOMINATED the pass-1 centroid and buried a 2.5 s segment, so weighting the
+    # seed centroids by duration re-creates the very bias this pass exists to fix
+    # (SECOND_PASS_PLAN.md §3.2). Kept as an A/B knob only; duration weighting is
+    # used in ALIGNMENT regardless (where long anchors SHOULD pin identity).
+    duration_weighted: bool = False
+    # hf_token for a pyannote-format embedder id (unused for the custom "ecapa2"
+    # name, whose loader hits the HF hub directly). Masked in saved snapshots.
+    hf_token: Optional[str] = field(
+        default_factory=lambda: os.getenv("HF_TOKEN", None)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Top-level config
 # ---------------------------------------------------------------------------
@@ -566,6 +784,9 @@ class PipelineConfig:
         default_factory=PostSeparationProcessingConfig
     )
     assembly: AssemblyConfig = field(default_factory=AssemblyConfig)
+    # 2nd-pass identity re-clustering (B / B+), placed between 3c and assembly.
+    # Default OFF → orchestrator skips it (byte-identical no-op).
+    relabel: RelabelConfig = field(default_factory=RelabelConfig)
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
 
     def __post_init__(self):
@@ -580,11 +801,57 @@ class PipelineConfig:
                 ("shortened", "full_length"))
         _one_of(self.enhancement.backend, "enhancement.backend",
                 ("frcrn_se_16k", "mossformer_gan_se_16k", "zipenhancer_16k"))
+        _one_of(self.enhancement.resample_quality, "enhancement.resample_quality",
+                ("soxr_hq", "soxr_vhq", "kaiser_best"))
         _one_of(self.post_separation_processing.backend,
                 "post_separation_processing.backend",
                 ("naive", "ap_bwe", "flowhigh"))
         _one_of(self.transcription.backend, "transcription.backend",
-                ("whisper", "whisperx"))
+                ("whisper", "whisperx", "coherex"))
+        _one_of(self.assembly.anchor_embedding, "assembly.anchor_embedding",
+                ("ecapa1", "ecapa2"))
+        _one_of(self.diarization.clustering_method, "diarization.clustering_method",
+                ("average", "centroid", "complete", "median", "single",
+                 "ward", "weighted"))
+        _one_of(self.relabel.source, "relabel.source", ("solos", "global"))
+        _one_of(self.relabel.audio_source, "relabel.audio_source",
+                ("enhanced", "raw"))
+        # Relabel cross-checks (fail loud at config time, SCOPE §4.1 — never a
+        # silent raw fallback / quiet downgrade at runtime):
+        if (self.relabel.enabled and self.relabel.audio_source == "enhanced"
+                and not self.enhancement.enabled):
+            raise ValueError(
+                "relabel.audio_source='enhanced' requires enhancement.enabled "
+                "(no enhanced_full to re-cluster); use audio_source='raw' or "
+                "disable relabel."
+            )
+        if (self.relabel.enabled and self.relabel.source == "global"
+                and not self.separation.enabled):
+            raise ValueError(
+                "relabel.source='global' (B+) requires separation.enabled "
+                "(no overlap_separated streams to cluster)."
+            )
+        # Fusion cross-checks (option 3). Pass 2 re-diarizes the ENHANCED audio
+        # for identity → fail loud at config time if there is no enhanced audio
+        # to re-diarize (SCOPE §4.1 — never a silent fallback to a single pass).
+        fcfg = self.diarization.fusion
+        if fcfg.enabled and not self.enhancement.enabled:
+            raise ValueError(
+                "diarization.fusion.enabled requires enhancement.enabled "
+                "(pass 2 re-diarizes the enhanced audio for identity)."
+            )
+        if not math.isfinite(fcfg.confidence_min) or not (
+            0.0 < fcfg.confidence_min <= 1.0
+        ):
+            raise ValueError(
+                f"diarization.fusion.confidence_min must be in (0, 1], "
+                f"got {fcfg.confidence_min}"
+            )
+        if not math.isfinite(fcfg.min_region_s) or fcfg.min_region_s < 0:
+            raise ValueError(
+                f"diarization.fusion.min_region_s must be >= 0, "
+                f"got {fcfg.min_region_s}"
+            )
 
         if self.separation.training_chunk_length_s <= 0:
             raise ValueError(
@@ -602,6 +869,13 @@ class PipelineConfig:
                 f"separation.vad_soft_threshold must be >= 0, got "
                 f"{self.separation.vad_soft_threshold} (a negative value "
                 f"makes every frame 'weak' and floods the Schmitt mask)."
+            )
+        sst = self.separation.seam_silence_threshold
+        if not math.isfinite(sst) or not (0.0 < sst < 1.0):
+            raise ValueError(
+                f"separation.seam_silence_threshold must be in (0, 1) "
+                f"(VAD silence cutoff for snap_to_silence; 0.5 = default), "
+                f"got {sst}"
             )
 
         if self.post_separation_processing.flowhigh_input_sr <= 0:
@@ -621,6 +895,8 @@ class PipelineConfig:
             "crossfade_ms",
             "edge_fade_ms",
             "min_solo_for_anchor_s",
+            "anchor_min_duration_s",
+            "overlap_min_duration_s",
         ):
             value = getattr(acfg, knob)
             if value < 0:
@@ -644,6 +920,46 @@ class PipelineConfig:
                 f"assembly.overlap_assign_min_margin must be in [0, 1) "
                 f"(0 = off), got {acfg.overlap_assign_min_margin}"
             )
+        # Per-overlap assignment strategy + the continuity tie-break knobs.
+        valid_assign = {"ecapa_argmax", "continuity_tiebreak", "consensus_2means"}
+        if acfg.overlap_assignment not in valid_assign:
+            raise ValueError(
+                f"assembly.overlap_assignment must be one of {sorted(valid_assign)}, "
+                f"got {acfg.overlap_assignment!r}"
+            )
+        if not math.isfinite(acfg.continuity_tiebreak_margin) or not (
+            0.0 <= acfg.continuity_tiebreak_margin < 1.0
+        ):
+            raise ValueError(
+                f"assembly.continuity_tiebreak_margin must be in [0, 1) "
+                f"(0 = off), got {acfg.continuity_tiebreak_margin}"
+            )
+        if not math.isfinite(acfg.continuity_window_s) or acfg.continuity_window_s <= 0:
+            raise ValueError(
+                f"assembly.continuity_window_s must be a positive finite number, "
+                f"got {acfg.continuity_window_s}"
+            )
+
+        # --- Diarization front-end knobs (pyannote instantiate params) ---
+        dcfg = self.diarization
+        if not math.isfinite(dcfg.segmentation_min_duration_off) or \
+                dcfg.segmentation_min_duration_off < 0:
+            raise ValueError(
+                f"diarization.segmentation_min_duration_off must be >= 0, "
+                f"got {dcfg.segmentation_min_duration_off}"
+            )
+        if not math.isfinite(dcfg.clustering_threshold) or not (
+            0.0 <= dcfg.clustering_threshold <= 2.0
+        ):
+            raise ValueError(
+                f"diarization.clustering_threshold must be in [0, 2] (cosine; "
+                f"INERT under num_speakers=2), got {dcfg.clustering_threshold}"
+            )
+        if dcfg.clustering_min_cluster_size < 1:
+            raise ValueError(
+                f"diarization.clustering_min_cluster_size must be >= 1, "
+                f"got {dcfg.clustering_min_cluster_size}"
+            )
 
         omr = self.enhancement.observation_mix_ratio
         if not math.isfinite(omr) or not (0.0 <= omr <= 1.0):
@@ -654,6 +970,11 @@ class PipelineConfig:
 
         # --- Transcription decode knobs ---
         tcfg = self.transcription
+        if not math.isfinite(tcfg.silence_floor) or tcfg.silence_floor < 0:
+            raise ValueError(
+                f"transcription.silence_floor must be a finite value >= 0 "
+                f"(0 = gate off; 1e-4 = default), got {tcfg.silence_floor}"
+            )
         if tcfg.beam_size < 1:
             raise ValueError(
                 f"transcription.beam_size must be >= 1, got {tcfg.beam_size}"
@@ -782,15 +1103,23 @@ def load_pipeline_config_from_dict(config_dict: dict) -> PipelineConfig:
         ("separation", SeparationConfig),
         ("post_separation_processing", PostSeparationProcessingConfig),
         ("assembly", AssemblyConfig),
+        ("relabel", RelabelConfig),
         ("transcription", TranscriptionConfig),
     ):
         sub_dict = config_dict.pop(key, None)
-        if key == "diarization" and sub_dict and sub_dict.get("hf_token") == _REDACTED:
+        if key in ("diarization", "relabel") and sub_dict and \
+                sub_dict.get("hf_token") == _REDACTED:
             # A saved config redacts the token to _REDACTED; drop the key (a new
-            # dict, never mutating the caller's) so DiarizationConfig's
-            # default_factory re-resolves $HF_TOKEN instead of handing pyannote
-            # the literal string "REDACTED".
+            # dict, never mutating the caller's) so the config's default_factory
+            # re-resolves $HF_TOKEN instead of handing the literal "REDACTED".
             sub_dict = {k: v for k, v in sub_dict.items() if k != "hf_token"}
+        if key == "diarization" and sub_dict and isinstance(sub_dict.get("fusion"), dict):
+            # `diarization.fusion` is the one nested dataclass inside a stage
+            # config (option 3). YAML / asdict() leaves it a plain dict, so
+            # rebuild it into a FusionConfig before constructing DiarizationConfig
+            # (a new dict, never mutating the caller's).
+            sub_dict = dict(sub_dict)
+            sub_dict["fusion"] = FusionConfig(**sub_dict["fusion"])
         sub_configs[key] = cls(**sub_dict) if sub_dict else cls()
 
     return PipelineConfig(**config_dict, **sub_configs)

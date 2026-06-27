@@ -17,6 +17,7 @@ from asr_pipeline.stages.assembly import (
     AssemblyStage,
     _assign_overlaps,
     _build_events,
+    _consensus_pairings,
     _derive_solo_intervals,
     _mixture_fill_overlaps,
 )
@@ -275,6 +276,148 @@ def test_margin_gate_no_prior_yet_falls_through_to_argmax():
 
 
 # ---------------------------------------------------------------------------
+# Attribution lever: continuity tie-break (local bracketing-solo anchors)
+# ---------------------------------------------------------------------------
+#
+# Construction: the overlap streams are clean and orthogonal (s1→[1,0]=truly A,
+# s2→[0,1]=truly B), but the GLOBAL anchors are contaminated and lean toward
+# 'swapped' by a gap of ~0.55. The local bracketing-solo anchors are clean
+# ([1,0] for A, [0,1] for B), so on a near-tie they decisively pick 'straight'.
+
+
+def _contaminated_anchors():
+    """Global anchors normalised from [0.4, 0.6] / [0.6, 0.4] — they favour the
+    'swapped' pairing (gap ~0.55) against clean orthogonal overlap embeddings."""
+    import math
+    n = 1.0 / math.sqrt(0.4 ** 2 + 0.6 ** 2)
+    return {"SPK_A": torch.tensor([0.4 * n, 0.6 * n]),
+            "SPK_B": torch.tensor([0.6 * n, 0.4 * n])}
+
+
+def _continuity_setup():
+    """Overlap with clean s1→[1,0], s2→[0,1]; bracketing A-solo (4-5 s)→[1,0]
+    and B-solo (6-7 s)→[0,1] inside the continuity window of the [5,6] s overlap."""
+    ecapa = _TableEcapa({0.30: [1.0, 0.0], 0.40: [0.0, 1.0]})
+    ovl = _ovl(np.full(SR, 0.30), np.full(SR, 0.40),
+               idx=0, pad_start=5.0, emit_start=5.0, emit_end=6.0)
+    audio = np.zeros(12 * SR, dtype=np.float32)
+    audio[4 * SR:5 * SR] = 0.30          # A solo → [1,0]
+    audio[6 * SR:7 * SR] = 0.40          # B solo → [0,1]
+    solo = {"SPK_A": [(4.0, 5.0)], "SPK_B": [(6.0, 7.0)]}
+    return ecapa, ovl, audio, solo
+
+
+def test_continuity_baseline_argmax_picks_swapped():
+    """Sanity anchor: with the contaminated global anchors the plain
+    ecapa_argmax picks 'swapped' — the (wrong) decision continuity must fix."""
+    ecapa, ovl, _, _ = _continuity_setup()
+    out = _assign_overlaps([ovl], _contaminated_anchors(), ["SPK_A", "SPK_B"],
+                           ecapa, DEVICE, SR)
+    assert out[0]["pairing"] == "swapped"
+
+
+def test_continuity_tiebreak_flips_near_tie_via_local_anchor():
+    """tau (0.6) above the ~0.55 global gap → the overlap is a near-tie; the
+    clean local bracketing-solo anchors flip it from 'swapped' to 'straight'."""
+    ecapa, ovl, audio, solo = _continuity_setup()
+    out = _assign_overlaps(
+        [ovl], _contaminated_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        strategy="continuity_tiebreak", continuity_margin=0.6,
+        continuity_window_s=10.0, solo_intervals_by_spk=solo, assembly_audio=audio,
+    )
+    assert out[0]["pairing"] == "straight (continuity tie-break)"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"], ovl["s1_gated"])
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_B"], ovl["s2_gated"])
+
+
+def test_continuity_tau_zero_is_argmax_baseline():
+    """continuity_tiebreak with tau=0 never declares a near-tie → identical to
+    ecapa_argmax (the committed-default behaviour is untouched)."""
+    ecapa, ovl, audio, solo = _continuity_setup()
+    out = _assign_overlaps(
+        [ovl], _contaminated_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        strategy="continuity_tiebreak", continuity_margin=0.0,
+        continuity_window_s=10.0, solo_intervals_by_spk=solo, assembly_audio=audio,
+    )
+    assert out[0]["pairing"] == "swapped"
+
+
+def test_continuity_decisive_gap_keeps_global_argmax():
+    """When the global gap clears tau, continuity does NOT fire — the decisive
+    global decision stands (we only second-guess near-ties)."""
+    ecapa, ovl, audio, solo = _continuity_setup()
+    out = _assign_overlaps(
+        [ovl], _contaminated_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        strategy="continuity_tiebreak", continuity_margin=0.1,   # < ~0.55 gap
+        continuity_window_s=10.0, solo_intervals_by_spk=solo, assembly_audio=audio,
+    )
+    assert out[0]["pairing"] == "swapped"
+
+
+def test_continuity_falls_back_when_no_local_solo():
+    """No solo audio in the window → no local anchor → fall back to the global
+    argmax, labelled honestly (never silently swaps)."""
+    ecapa, ovl, audio, _ = _continuity_setup()
+    out = _assign_overlaps(
+        [ovl], _contaminated_anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        strategy="continuity_tiebreak", continuity_margin=0.6,
+        continuity_window_s=10.0,
+        solo_intervals_by_spk={"SPK_A": [], "SPK_B": []}, assembly_audio=audio,
+    )
+    assert out[0]["pairing"] == "swapped (continuity unavailable)"
+
+
+# ---------------------------------------------------------------------------
+# Attribution lever: consensus 2-means (global constrained re-clustering)
+# ---------------------------------------------------------------------------
+
+
+def test_consensus_clean_case_all_straight():
+    """Two clean overlaps (s1 positive→A, s2 negative→B): consensus = straight
+    both, labelled '(consensus)', emit pieces correct."""
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)
+    o1 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=1)
+    out = _assign_overlaps([o0, o1], _anchors(), ["SPK_A", "SPK_B"],
+                           _StubEcapa(), DEVICE, SR, strategy="consensus_2means")
+    assert out[0]["pairing"] == "straight (consensus)"
+    assert out[1]["pairing"] == "straight (consensus)"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"], o0["s1_gated"])
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_B"], o0["s2_gated"])
+
+
+def test_consensus_matches_argmax_on_clean_separable_case():
+    """On a cleanly separable case consensus reproduces the per-overlap argmax —
+    the documented equivalence (anchor-seeded 2-means is already at the argmax
+    fixed point). Same pairings, different label suffix only."""
+    ovls = [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=i) for i in range(3)]
+    base = _assign_overlaps([dict(o) for o in ovls], _anchors(),
+                            ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR)
+    cons = _assign_overlaps([dict(o) for o in ovls], _anchors(),
+                            ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+                            strategy="consensus_2means")
+    assert ([o["pairing"].split()[0] for o in base]
+            == [o["pairing"].split()[0] for o in cons])
+
+
+def test_consensus_pairings_deterministic_and_covers_eligible():
+    ovls = [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=i) for i in range(3)]
+    p1 = _consensus_pairings(ovls, _anchors(), ["SPK_A", "SPK_B"],
+                             _StubEcapa(), DEVICE, SR)
+    p2 = _consensus_pairings(ovls, _anchors(), ["SPK_A", "SPK_B"],
+                             _StubEcapa(), DEVICE, SR)
+    assert p1 == p2 and set(p1) == {0, 1, 2}
+
+
+def test_consensus_no_anchor_returns_empty():
+    """No anchor → empty dict (caller falls back to the per-overlap argmax path,
+    never dropping a region)."""
+    ovls = [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)]
+    anchors = {"SPK_A": None, "SPK_B": torch.tensor([0.0, 1.0])}
+    assert _consensus_pairings(ovls, anchors, ["SPK_A", "SPK_B"],
+                               _StubEcapa(), DEVICE, SR) == {}
+
+
+# ---------------------------------------------------------------------------
 # _mixture_fill_overlaps
 # ---------------------------------------------------------------------------
 
@@ -510,6 +653,148 @@ def test_assembly_run_end_to_end():
     assert [e.kind for e in ctx.timestamp_map.per_speaker["SPK_B"]] == [
         "overlap", "solo",
     ]
+
+
+# ---------------------------------------------------------------------------
+# B+ handoff: external_pairings (ctx.overlap_speaker_assignment)
+# ---------------------------------------------------------------------------
+
+
+def test_assembly_consumes_external_pairings():
+    """A covered overlap uses the external (relabel_global) pairing with NO
+    ECAPA re-embed; an UNCOVERED overlap still falls through to the anchor ladder.
+
+    The external pairing says 'swapped' for overlap 0, which is the OPPOSITE of
+    what the content/anchor argmax would pick (s1 positive → A, i.e. straight),
+    so a passthrough bug (ignoring external_pairings) would show 'straight'.
+    Overlap 1 is not in the dict → normal argmax 'straight'.
+    """
+
+    class _FailEcapa:
+        """Embedding must NOT be called for the covered overlap (external pairing
+        skips the re-embed). It IS called for the uncovered one. So we count
+        calls and assert the covered overlap added none beyond the anchors."""
+
+        def __init__(self):
+            self.calls = 0
+
+        def encode_batch(self, audio):
+            self.calls += 1
+            v = (torch.tensor([1.0, 0.0]) if float(audio.mean()) > 0
+                 else torch.tensor([0.0, 1.0]))
+            return v.view(1, 1, 2)
+
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)   # content → straight
+    o1 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=1)   # content → straight
+    ecapa = _FailEcapa()
+    out = _assign_overlaps(
+        [o0, o1], _anchors(), ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+        external_pairings={0: "swapped"},
+    )
+    # Covered overlap takes the external (swapped) decision, labelled honestly.
+    assert out[0]["pairing"] == "swapped (relabel_global)"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"], o0["s2_gated"])
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_B"], o0["s1_gated"])
+    # Uncovered overlap falls through to the normal argmax (straight).
+    assert out[1]["pairing"] == "straight"
+    np.testing.assert_array_equal(out[1]["emit_pieces"]["SPK_A"], o1["s1_gated"])
+
+
+def test_external_pairings_overrides_consensus_strategy():
+    """When external_pairings covers an overlap it wins over the consensus
+    strategy too (a strictly stronger global decision)."""
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)
+    out = _assign_overlaps(
+        [o0], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+        strategy="consensus_2means", external_pairings={0: "swapped"},
+    )
+    assert out[0]["pairing"] == "swapped (relabel_global)"
+
+
+def test_external_pairings_too_short_overlap_falls_back():
+    """Even if external_pairings names a too-short overlap, the too_short guard
+    runs first → fixed assignment (the external pairing only applies to
+    ECAPA-eligible overlaps, mirroring the consensus seam)."""
+    n = SR // 20  # 0.05 s → too short
+    ovl = _ovl(np.full(n, 0.5), np.full(n, -0.5), idx=0)
+    out = _assign_overlaps(
+        [ovl], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+        external_pairings={0: "swapped"},
+    )
+    assert out[0]["pairing"] == "arbitrary (too short)"
+
+
+def test_run_passes_overlap_speaker_assignment_to_assign():
+    """AssemblyStage.run threads ctx.overlap_speaker_assignment through to
+    _assign_overlaps (end-to-end B+ wiring)."""
+    enhanced = np.zeros(5 * SR, dtype=np.float32)
+    enhanced[0: 2 * SR] = 0.5
+    enhanced[3 * SR: 5 * SR] = -0.5
+    ovl = _ovl(np.full(SR, 0.5), np.full(SR, -0.5),
+               idx=0, pad_start=2.0, emit_start=2.0, emit_end=3.0)
+    stage = _make_stage(min_solo_for_anchor_s=1.0, crossfade_ms=0.0,
+                        edge_fade_ms=0.0, overlap_rms_match_solo=False)
+    ctx = PipelineContext(sample_rate=SR)
+    ctx.audio = enhanced.copy()
+    ctx.enhanced_full = enhanced
+    ctx.diarization = _diarization(
+        [("SPK_A", 0.0, 2.5), ("SPK_B", 2.5, 5.0)], total_duration_s=5.0
+    )
+    ctx.overlap_regions = [(2.0, 3.0)]
+    ctx.speakers = ["SPK_A", "SPK_B"]
+    ctx.overlap_separated = [ovl]
+    # Force the (content-wrong) swapped decision via the handoff.
+    ctx.overlap_speaker_assignment = {0: "swapped"}
+    stage.run(ctx)
+    # SPK_A's overlap event should be the s2 stream (swapped), not s1.
+    a_overlap = [e for e in ctx.timestamp_map.per_speaker["SPK_A"]
+                 if e.kind == "overlap"]
+    assert len(a_overlap) == 1   # the swapped overlap landed on A
+
+
+# ---------------------------------------------------------------------------
+# Option 4: anchor_embedding=ecapa2 dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_assembly_anchor_embedding_ecapa2_dispatch(monkeypatch):
+    """anchor_embedding='ecapa2' routes AssemblyStage.load through
+    build_custom_embedding (the custom wrapper), not the SpeechBrain loader."""
+    import asr_pipeline.stages.assembly as asm_mod
+
+    sentinel = object()
+    captured = {}
+
+    def fake_build(name, device):
+        captured["name"] = name
+        captured["device"] = device
+        return sentinel
+
+    # build_custom_embedding is imported locally inside load(); patch at source.
+    import asr_pipeline.stages.custom_embeddings as ce_mod
+    monkeypatch.setattr(ce_mod, "build_custom_embedding", fake_build)
+
+    stage = AssemblyStage(AssemblyConfig(anchor_embedding="ecapa2"))
+    stage.load(DEVICE)
+    assert stage._ecapa is sentinel
+    assert captured["name"] == "ecapa2"
+    assert captured["device"] == DEVICE
+    # And the signature now tracks the embedder choice (was () before the knob).
+    assert stage.load_signature() == ("ecapa2",)
+    assert AssemblyStage(AssemblyConfig()).load_signature() == ("ecapa1",)
+
+
+def test_ecapa_embed_dispatches_on_custom_wrapper():
+    """_ecapa_embed handles a call-style custom wrapper (no encode_batch):
+    returns a unit-norm tensor from the wrapper's (1, dim) numpy output."""
+    from asr_pipeline.stages.assembly import _ecapa_embed
+
+    class _Wrapper:   # call-style, like BaseCustomSpeakerEmbedding
+        def __call__(self, wav):
+            return np.asarray([[3.0, 4.0]], dtype=np.float32)   # norm 5
+
+    emb = _ecapa_embed(np.full(SR, 0.5, dtype=np.float32), _Wrapper(), DEVICE, SR)
+    np.testing.assert_allclose(emb.numpy(), [0.6, 0.8], rtol=1e-5)
 
 
 def test_run_warns_on_more_than_two_speakers(capsys):

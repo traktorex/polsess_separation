@@ -117,6 +117,18 @@ class PipelineContext:
     # backend produced them — just that 3c ran.
     overlap_separated: List[OverlapSeparated] = field(default_factory=list)
 
+    # RelabelStage (B+, `relabel.source='global'`) handoff — written between 3c
+    # and assembly, consumed by assembly via the consensus-injection seam.
+    # `{i_ovl -> "straight"|"swapped"}`, keyed by the DENSE list index of
+    # `overlap_separated` (NOT the routing-region `idx`, which can have gaps),
+    # matching the convention `_assign_overlaps`/`_consensus_pairings` already
+    # use. For each covered overlap assembly takes the global-clustering pairing
+    # in place of its own per-overlap anchor decision; overlaps B+ could not
+    # decide (sub-min / leaked / degenerate) are simply absent → assembly falls
+    # back to its own ladder (loudly logged). None (default) = no B+ handoff,
+    # assembly behaves exactly as today.
+    overlap_speaker_assignment: Optional[Dict[int, str]] = None
+
     # Stage 4 — assembly
     # key: speaker label from pyannote; value: 1-D float32 array
     assembled: Dict[str, np.ndarray] = field(default_factory=dict)

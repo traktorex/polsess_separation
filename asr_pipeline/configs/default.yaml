@@ -36,7 +36,7 @@ enhancement:
 
 separation:
   enabled: true
-  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt
+  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt
   separator_sample_rate: 8000
   training_chunk_length_s: 4.0
   context_window_mode: expand_to_chunk

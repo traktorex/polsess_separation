@@ -122,6 +122,9 @@ def test_invalid_enum_raises():
     ("enhancement", "backend", "enhancement.backend"),
     ("post_separation_processing", "backend", "post_separation_processing.backend"),
     ("transcription", "backend", "transcription.backend"),
+    # Holes-bundle D2 / D6 promoted enum knobs.
+    ("enhancement", "resample_quality", "enhancement.resample_quality"),
+    ("diarization", "clustering_method", "diarization.clustering_method"),
 ])
 def test_each_enum_guard_rejects_bad_value(section, field, name):
     """Every enum-string guard in __post_init__ (not just context_window_mode)
@@ -148,6 +151,180 @@ def test_missing_hf_token_raises(monkeypatch):
         cfg = PipelineConfig()
         cfg.diarization.hf_token = None
         cfg.__post_init__()
+
+
+# ---------------------------------------------------------------------------
+# 2nd-pass relabel (B / B+) + Option 4 anchor_embedding
+# ---------------------------------------------------------------------------
+
+
+def test_relabel_defaults_all_off():
+    """All four 2nd-pass knobs default to no-ops so default.yaml stays a stock
+    pipeline (the pin test below stays green)."""
+    cfg = PipelineConfig()
+    assert cfg.relabel.enabled is False
+    assert cfg.relabel.source == "solos"
+    assert cfg.relabel.audio_source == "enhanced"
+    assert cfg.relabel.embedding == "ecapa2"
+    assert cfg.relabel.duration_weighted is False
+    assert cfg.assembly.anchor_embedding == "ecapa1"
+
+
+def test_anchor_embedding_enum_guard():
+    cfg = PipelineConfig()
+    cfg.assembly.anchor_embedding = "ecapa3"
+    with pytest.raises(ValueError, match="assembly.anchor_embedding"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,bad", [
+    ("source", "everything"),
+    ("audio_source", "denoised"),
+])
+def test_relabel_enum_guards(field, bad):
+    cfg = PipelineConfig()
+    setattr(cfg.relabel, field, bad)
+    with pytest.raises(ValueError, match=f"relabel.{field}"):
+        cfg.__post_init__()
+
+
+def test_relabel_enhanced_without_enhancement_raises():
+    """B/B+ on enhanced audio with enhancement disabled → crash at config time
+    (SCOPE §4.1: no silent raw fallback)."""
+    cfg = PipelineConfig()
+    cfg.relabel.enabled = True
+    cfg.relabel.audio_source = "enhanced"
+    cfg.enhancement.enabled = False
+    with pytest.raises(ValueError, match="enhanced"):
+        cfg.__post_init__()
+
+
+def test_relabel_global_without_separation_raises():
+    """B+ (source=global) needs separated overlap streams → separation must be on."""
+    cfg = PipelineConfig()
+    cfg.relabel.enabled = True
+    cfg.relabel.source = "global"
+    cfg.relabel.audio_source = "raw"   # avoid the enhanced cross-check
+    cfg.separation.enabled = False
+    with pytest.raises(ValueError, match="separation"):
+        cfg.__post_init__()
+
+
+def test_relabel_raw_without_enhancement_is_fine():
+    """audio_source='raw' does NOT need enhancement — it reads ctx.audio."""
+    cfg = PipelineConfig()
+    cfg.relabel.enabled = True
+    cfg.relabel.audio_source = "raw"
+    cfg.enhancement.enabled = False
+    cfg.__post_init__()   # must not raise
+
+
+def test_relabel_disabled_skips_cross_checks():
+    """A disabled relabel with an enhanced source + enhancement off must NOT
+    raise (the cross-checks gate on relabel.enabled)."""
+    cfg = PipelineConfig()
+    cfg.relabel.enabled = False
+    cfg.relabel.audio_source = "enhanced"
+    cfg.enhancement.enabled = False
+    cfg.__post_init__()   # must not raise
+
+
+def test_relabel_yaml_round_trip(tmp_path):
+    """relabel + assembly.anchor_embedding blocks round-trip through YAML."""
+    cfg = PipelineConfig()
+    cfg.relabel.enabled = True
+    cfg.relabel.source = "global"
+    cfg.relabel.audio_source = "raw"
+    cfg.relabel.duration_weighted = True
+    cfg.assembly.anchor_embedding = "ecapa2"
+    out_yaml = tmp_path / "relabel.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    again = load_pipeline_config_from_yaml(str(out_yaml))
+    assert again.relabel.source == "global"
+    assert again.relabel.audio_source == "raw"
+    assert again.relabel.duration_weighted is True
+    assert again.assembly.anchor_embedding == "ecapa2"
+
+
+def test_relabel_hf_token_redacted_in_snapshot():
+    """A live relabel.hf_token must not survive into a saved snapshot."""
+    snap = redact_config_snapshot({"relabel": {"hf_token": "LIVE_RELABEL_TOKEN"}})
+    assert snap["relabel"]["hf_token"] == "REDACTED"
+
+
+def test_relabel_redacted_token_drops_on_reload(monkeypatch):
+    """A redacted relabel.hf_token reloads to the env token, never the literal
+    'REDACTED' (mirrors the diarization drop)."""
+    monkeypatch.setenv("HF_TOKEN", "env-token")
+    cfg = load_pipeline_config_from_dict({"relabel": {"hf_token": "REDACTED"}})
+    assert cfg.relabel.hf_token == "env-token"
+
+
+# ---------------------------------------------------------------------------
+# Disagreement-aware fusion (option 3) — diarization.fusion
+# ---------------------------------------------------------------------------
+
+
+def test_fusion_defaults_off():
+    """Fusion defaults to a no-op so default.yaml stays a stock pipeline."""
+    cfg = PipelineConfig()
+    assert cfg.diarization.fusion.enabled is False
+    assert cfg.diarization.fusion.embedding == "ecapa2"
+    assert cfg.diarization.fusion.confidence_min == 0.75
+    assert cfg.diarization.fusion.min_region_s == 0.5
+
+
+def test_fusion_without_enhancement_raises():
+    """Pass 2 re-diarizes the enhanced audio → fusion needs enhancement on
+    (SCOPE §4.1: no silent fall-back to a single pass)."""
+    cfg = PipelineConfig()
+    cfg.diarization.fusion.enabled = True
+    cfg.enhancement.enabled = False
+    with pytest.raises(ValueError, match="fusion.enabled requires enhancement"):
+        cfg.__post_init__()
+
+
+def test_fusion_disabled_skips_cross_check():
+    """A disabled fusion with enhancement off must NOT raise."""
+    cfg = PipelineConfig()
+    cfg.diarization.fusion.enabled = False
+    cfg.enhancement.enabled = False
+    cfg.__post_init__()   # must not raise
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, float("nan")])
+def test_fusion_confidence_min_range_guard(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.fusion.confidence_min = bad
+    with pytest.raises(ValueError, match="confidence_min must be in"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan")])
+def test_fusion_min_region_s_guard(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.fusion.min_region_s = bad
+    with pytest.raises(ValueError, match="min_region_s must be >= 0"):
+        cfg.__post_init__()
+
+
+def test_fusion_yaml_round_trip(tmp_path):
+    """The nested diarization.fusion block round-trips through YAML (and rebuilds
+    as a FusionConfig, not a bare dict)."""
+    from asr_pipeline.config import FusionConfig
+    cfg = PipelineConfig()
+    cfg.diarization.fusion.enabled = True
+    cfg.diarization.fusion.embedding = "ecapa2"
+    cfg.diarization.fusion.confidence_min = 0.9
+    cfg.diarization.fusion.min_region_s = 1.0
+    out_yaml = tmp_path / "fusion.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    again = load_pipeline_config_from_yaml(str(out_yaml))
+    assert isinstance(again.diarization.fusion, FusionConfig)
+    assert again.diarization.fusion.enabled is True
+    assert again.diarization.fusion.embedding == "ecapa2"
+    assert again.diarization.fusion.confidence_min == 0.9
+    assert again.diarization.fusion.min_region_s == 1.0
 
 
 def test_default_yaml_separation_matches_dataclass():
@@ -260,6 +437,137 @@ def test_observation_mix_ratio_valid_values_accepted(value):
     cfg.enhancement.observation_mix_ratio = value
     cfg.__post_init__()  # must not raise
     assert cfg.enhancement.observation_mix_ratio == value
+
+
+# ---------------------------------------------------------------------------
+# Holes-bundle: 6 uninventoried hard-coded levers promoted to config fields
+# (04_HOLES.md D1–D6). Each field defaults to the OLD hard-coded constant
+# (so default behaviour is byte-identical), validates, and round-trips.
+# ---------------------------------------------------------------------------
+
+
+def test_holes_field_defaults_equal_old_constants():
+    """Every promoted field defaults to the value it replaced — the byte-identical
+    guarantee. D1 silence_floor 1e-4, D2 resample_quality soxr_hq, D3
+    seam_silence_threshold 0.5, D4 overlap_min_duration_s 0.1, D5
+    anchor_min_duration_s 0.25, D6 clustering_method centroid."""
+    c = PipelineConfig()
+    assert c.transcription.silence_floor == 1e-4
+    assert c.enhancement.resample_quality == "soxr_hq"
+    assert c.separation.seam_silence_threshold == 0.5
+    assert c.assembly.overlap_min_duration_s == 0.1
+    assert c.assembly.anchor_min_duration_s == 0.25
+    assert c.diarization.clustering_method == "centroid"
+
+
+# --- D1 transcription.silence_floor ---
+
+@pytest.mark.parametrize("value", [-1.0, -1e-6, float("nan"), float("inf")])
+def test_silence_floor_invalid_rejected(value):
+    with pytest.raises(ValueError, match="silence_floor"):
+        cfg = PipelineConfig()
+        cfg.transcription.silence_floor = value
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("value", [0.0, 1e-4, 5e-4, 1e-3])
+def test_silence_floor_grid_values_accepted(value):
+    cfg = PipelineConfig()
+    cfg.transcription.silence_floor = value
+    cfg.__post_init__()  # must not raise
+    assert cfg.transcription.silence_floor == value
+
+
+# --- D2 enhancement.resample_quality (enum guard reuses the parametrize above) ---
+
+@pytest.mark.parametrize("value", ["soxr_hq", "soxr_vhq", "kaiser_best"])
+def test_resample_quality_grid_values_accepted(value):
+    cfg = PipelineConfig()
+    cfg.enhancement.resample_quality = value
+    cfg.__post_init__()  # must not raise
+    assert cfg.enhancement.resample_quality == value
+
+
+# --- D3 separation.seam_silence_threshold ---
+
+@pytest.mark.parametrize("value", [0.0, 1.0, 1.5, -0.1, float("nan")])
+def test_seam_silence_threshold_invalid_rejected(value):
+    with pytest.raises(ValueError, match="seam_silence_threshold"):
+        cfg = PipelineConfig()
+        cfg.separation.seam_silence_threshold = value
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("value", [0.3, 0.5, 0.7])
+def test_seam_silence_threshold_grid_values_accepted(value):
+    cfg = PipelineConfig()
+    cfg.separation.seam_silence_threshold = value
+    cfg.__post_init__()  # must not raise
+    assert cfg.separation.seam_silence_threshold == value
+
+
+# --- D4 / D5 assembly duration floors (>= 0; share the assembly numeric loop) ---
+
+@pytest.mark.parametrize("field,value", [
+    ("overlap_min_duration_s", -0.1),
+    ("anchor_min_duration_s", -0.25),
+])
+def test_assembly_holes_floors_negative_rejected(field, value):
+    with pytest.raises(ValueError, match=field):
+        cfg = PipelineConfig()
+        setattr(cfg.assembly, field, value)
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("overlap_min_duration_s", 0.0),     # 0 = no floor (valid disable)
+    ("overlap_min_duration_s", 0.2),
+    ("overlap_min_duration_s", 0.35),
+    ("anchor_min_duration_s", 0.0),
+    ("anchor_min_duration_s", 0.5),
+    ("anchor_min_duration_s", 1.0),
+])
+def test_assembly_holes_floors_grid_values_accepted(field, value):
+    cfg = PipelineConfig()
+    setattr(cfg.assembly, field, value)
+    cfg.__post_init__()  # must not raise
+    assert getattr(cfg.assembly, field) == value
+
+
+# --- D6 diarization.clustering_method (enum guard reuses the parametrize above) ---
+
+@pytest.mark.parametrize("value", [
+    "average", "centroid", "complete", "median", "single", "ward", "weighted",
+])
+def test_clustering_method_grid_values_accepted(value):
+    cfg = PipelineConfig()
+    cfg.diarization.clustering_method = value
+    cfg.__post_init__()  # must not raise
+    assert cfg.diarization.clustering_method == value
+
+
+def test_holes_fields_survive_yaml_round_trip(tmp_path):
+    """All six promoted fields, set to non-default grid values, survive
+    save_pipeline_config_to_yaml -> reload. The serializer enumerates dataclass
+    fields via asdict(), so this guards the round-trip stays automatic."""
+    cfg = PipelineConfig()
+    cfg.transcription.silence_floor = 5e-4
+    cfg.enhancement.resample_quality = "soxr_vhq"
+    cfg.separation.seam_silence_threshold = 0.3
+    cfg.assembly.overlap_min_duration_s = 0.2
+    cfg.assembly.anchor_min_duration_s = 0.5
+    cfg.diarization.clustering_method = "average"
+    cfg.__post_init__()  # must not raise
+
+    out_yaml = tmp_path / "holes.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    reloaded = load_pipeline_config_from_yaml(str(out_yaml))
+    assert reloaded.transcription.silence_floor == 5e-4
+    assert reloaded.enhancement.resample_quality == "soxr_vhq"
+    assert reloaded.separation.seam_silence_threshold == 0.3
+    assert reloaded.assembly.overlap_min_duration_s == 0.2
+    assert reloaded.assembly.anchor_min_duration_s == 0.5
+    assert reloaded.diarization.clustering_method == "average"
 
 
 # ---------------------------------------------------------------------------

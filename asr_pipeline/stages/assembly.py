@@ -36,9 +36,12 @@ For each speaker:
 6. Build a `TimestampMap` that records the (concat_*) -> (orig_*) mapping
    for every piece in every speaker's stream.
 
-Speaker-assignment behaviour is hard-coded to the POC's ECAPA-per-overlap
-approach. If a second variant is ever introduced (e.g. global PIT, or
-trusting pyannote's own embeddings), refactor to a strategy interface.
+Speaker-assignment offers three strategies via `assembly.overlap_assignment`:
+the POC's per-overlap ECAPA argmax (`ecapa_argmax`, default); `continuity_tiebreak`,
+which re-decides near-ties with local bracketing-solo anchors (`_continuity_decision`);
+and `consensus_2means`, a global constrained-2-means pre-pass (`_consensus_pairings`)
+that decides all overlaps jointly so consensus can overrule a lone confident-but-wrong
+one. All dispatch inside `_assign_overlaps`.
 """
 
 from __future__ import annotations
@@ -73,12 +76,16 @@ def _log(msg: str) -> None:
 
 # ECAPA needs a minimum amount of audio for a usable speaker embedding.
 # Inputs shorter than this are zero-padded up to it (`_ecapa_embed`) or
-# skipped entirely (`_compute_anchors` leaves the anchor None).
-_ECAPA_MIN_DURATION_S = 0.25
+# skipped entirely (`_compute_anchors` leaves the anchor None). Now exposed as
+# `AssemblyConfig.anchor_min_duration_s` (default 0.25); the free functions take
+# it as a parameter (no config access) and default to that value.
+_ANCHOR_MIN_DURATION_S_DEFAULT = 0.25
 # Overlap separator streams shorter than this are too brief for a *stable*
 # ECAPA embedding, so `_assign_overlaps` falls back to fixed assignment
-# rather than trusting a noisy cosine on a fraction of a syllable.
-_ECAPA_OVERLAP_MIN_DURATION_S = 0.1
+# rather than trusting a noisy cosine on a fraction of a syllable. Now exposed
+# as `AssemblyConfig.overlap_min_duration_s` (default 0.1); threaded as a
+# parameter with that default.
+_OVERLAP_MIN_DURATION_S_DEFAULT = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +160,34 @@ def _speaker_solo_intervals(
 
 @torch.no_grad()
 def _ecapa_embed(
-    audio_16k: np.ndarray, ecapa, device: torch.device, sample_rate: int
+    audio_16k: np.ndarray, ecapa, device: torch.device, sample_rate: int,
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
 ) -> torch.Tensor:
-    """Return a unit-norm ECAPA embedding for the audio (1-D float32)."""
-    min_len = int(sample_rate * _ECAPA_MIN_DURATION_S)
+    """Return a unit-norm speaker embedding for the audio (1-D float32).
+
+    Dispatches on the embedder kind so the anchor_embedding=ecapa2 knob
+    (Option 4) and the default SpeechBrain ECAPA1 share one call site:
+
+      - SpeechBrain ``EncoderClassifier`` exposes ``encode_batch`` and is fed
+        ``(1, T)`` → ``(1, 1, dim)``. The current/default path; byte-identical.
+      - The custom ECAPA2 wrapper (``BaseCustomSpeakerEmbedding``) is callable as
+        ``embedder((1, 1, T)) -> (1, dim) numpy``; we wrap it to a torch tensor.
+
+    ``anchor_min_duration_s`` (AssemblyConfig.anchor_min_duration_s, default
+    0.25 s) is the pad floor: shorter input is zero-padded up to it. The default
+    is >= both embedders' minimum (SB's floor and the wrapper's ~25 ms
+    ``min_num_samples``), so neither path under-feeds.
+    """
+    min_len = int(sample_rate * anchor_min_duration_s)
     if len(audio_16k) < min_len:
         audio_16k = np.pad(audio_16k, (0, min_len - len(audio_16k)))
-    audio = torch.from_numpy(audio_16k).unsqueeze(0).to(device)
-    emb = ecapa.encode_batch(audio).squeeze(0).squeeze(0)
+    if hasattr(ecapa, "encode_batch"):
+        audio = torch.from_numpy(audio_16k).unsqueeze(0).to(device)
+        emb = ecapa.encode_batch(audio).squeeze(0).squeeze(0)
+    else:
+        # Custom wrapper: (batch=1, channel=1, T) → (1, dim) numpy.
+        wav = torch.from_numpy(audio_16k.astype(np.float32)).reshape(1, 1, -1)
+        emb = torch.from_numpy(np.asarray(ecapa(wav)[0])).to(device)
     emb = emb / (emb.norm() + 1e-8)
     return emb
 
@@ -197,6 +224,155 @@ def _cap_anchor_audio(
 
 def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a * b).sum())
+
+
+def _local_anchor(
+    solo_intervals: list[Interval],
+    ovl_start: float,
+    ovl_end: float,
+    window_s: float,
+    audio: np.ndarray,
+    ecapa,
+    device: torch.device,
+    sr: int,
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
+) -> Optional[torch.Tensor]:
+    """ECAPA embedding from a speaker's solo audio bracketing one overlap.
+
+    Concatenates the speaker's solo intervals clipped to ``[ovl_start -
+    window_s, ovl_end + window_s]`` and embeds them. Returns None when there is
+    less than ``anchor_min_duration_s`` of local solo — too little for a stable
+    embedding, so the caller falls back to the global anchor. This is the
+    "speech continuity" signal: the speaker's voice right next to the overlap,
+    which tracks local channel/SNR conditions better than the global anchor.
+    """
+    lo_t = ovl_start - window_s
+    hi_t = ovl_end + window_s
+    slices: list[np.ndarray] = []
+    for s, e in solo_intervals:
+        cs = max(s, lo_t)
+        ce = min(e, hi_t)
+        if ce > cs:
+            lo = int(cs * sr)
+            hi = int(ce * sr)
+            if hi > lo:
+                slices.append(audio[lo:hi].astype(np.float32))
+    if not slices:
+        return None
+    concat = np.concatenate(slices)
+    if len(concat) < int(sr * anchor_min_duration_s):
+        return None
+    return _ecapa_embed(concat, ecapa, device, sr, anchor_min_duration_s).cpu()
+
+
+def _continuity_decision(
+    argmax_pairing: str,
+    straight: float,
+    swapped: float,
+    margin: float,
+    emb1: torch.Tensor,
+    emb2: torch.Tensor,
+    a: str,
+    b: str,
+    ovl: dict,
+    window_s: float,
+    solo_intervals_by_spk: Optional[dict[str, list[Interval]]],
+    audio: Optional[np.ndarray],
+    ecapa,
+    device: torch.device,
+    sr: int,
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
+) -> tuple[str, str]:
+    """Continuity tie-break for one overlap. Returns ``(chosen, pairing_label)``.
+
+    When the global-anchor straight/swapped gap clears ``margin`` the global
+    argmax stands (decisive — no need to second-guess). On a near-tie it
+    re-decides using *local* anchors (:func:`_local_anchor`) from the solo audio
+    bracketing the overlap, falling back to the global argmax whenever a local
+    anchor is unavailable or non-finite. Stateless: depends only on this
+    overlap's neighbourhood (no carry-forward chain), so it cannot propagate one
+    wrong decision the way the ``overlap_assign_min_margin`` prior can.
+    """
+    if abs(straight - swapped) >= margin:
+        return argmax_pairing, argmax_pairing
+    if not solo_intervals_by_spk or audio is None:
+        return argmax_pairing, f"{argmax_pairing} (continuity unavailable)"
+    ovl_start = float(ovl["emit_start"])
+    ovl_end = float(ovl["emit_end"])
+    la = _local_anchor(solo_intervals_by_spk.get(a, []), ovl_start, ovl_end,
+                       window_s, audio, ecapa, device, sr, anchor_min_duration_s)
+    lb = _local_anchor(solo_intervals_by_spk.get(b, []), ovl_start, ovl_end,
+                       window_s, audio, ecapa, device, sr, anchor_min_duration_s)
+    if la is None or lb is None:
+        return argmax_pairing, f"{argmax_pairing} (continuity unavailable)"
+    straight_l = _cos(emb1, la) + _cos(emb2, lb)
+    swapped_l = _cos(emb1, lb) + _cos(emb2, la)
+    if not (np.isfinite(straight_l) and np.isfinite(swapped_l)):
+        return argmax_pairing, f"{argmax_pairing} (continuity non-finite)"
+    chosen = "straight" if straight_l >= swapped_l else "swapped"
+    return chosen, f"{chosen} (continuity tie-break)"
+
+
+def _consensus_pairings(
+    overlap_separated: list,
+    anchors: dict[str, Optional[torch.Tensor]],
+    speakers: list[str],
+    ecapa,
+    device: torch.device,
+    sr: int,
+    max_iter: int = 10,
+    overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
+) -> dict[int, str]:
+    """Global per-overlap pairings by constrained 2-means (consensus).
+
+    Seeds two centroids from the solo anchors, then alternates until the pairings
+    stop changing: (1) assign each overlap's two streams to the centroids by best
+    summed cosine, (2) recompute each centroid from the solo anchor PLUS the
+    overlap embeddings now assigned to it. Because every overlap votes into the
+    centroids, a lone confident-but-wrong per-overlap decision can be overruled
+    by the consensus of the rest — the lever that ecapa_argmax / continuity (both
+    per-overlap) cannot reach. The per-overlap constraint (the two streams go to
+    different speakers) is intrinsic to the straight/swapped choice.
+
+    Returns ``{i_ovl: 'straight'|'swapped'}`` for ECAPA-eligible overlaps only;
+    an empty dict when an anchor is missing or no overlap is eligible (the caller
+    then falls back to the per-overlap argmax path, never dropping a region).
+    """
+    if len(speakers) < 2 or any(anchors.get(s) is None for s in speakers[:2]):
+        return {}
+    a, b = speakers[0], speakers[1]
+    min_len = int(sr * overlap_min_duration_s)
+    embs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+    for i, ovl in enumerate(overlap_separated):
+        if "s1_gated" not in ovl or len(ovl["s1_gated"]) < min_len:
+            continue
+        e1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr, anchor_min_duration_s).cpu()
+        e2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr, anchor_min_duration_s).cpu()
+        if torch.isfinite(e1).all() and torch.isfinite(e2).all():
+            embs[i] = (e1, e2)
+    if not embs:
+        return {}
+    cA, cB = anchors[a].clone(), anchors[b].clone()
+    pairings: dict[int, str] = {}
+    for _ in range(max_iter):
+        new = {
+            i: ("straight"
+                if _cos(e1, cA) + _cos(e2, cB) >= _cos(e1, cB) + _cos(e2, cA)
+                else "swapped")
+            for i, (e1, e2) in embs.items()
+        }
+        if new == pairings:
+            break
+        pairings = new
+        va, vb = [anchors[a]], [anchors[b]]
+        for i, (e1, e2) in embs.items():
+            hi, lo = (e1, e2) if pairings[i] == "straight" else (e2, e1)
+            va.append(hi)
+            vb.append(lo)
+        cA = torch.stack(va).mean(0); cA = cA / (cA.norm() + 1e-8)
+        cB = torch.stack(vb).mean(0); cB = cB / (cB.norm() + 1e-8)
+    return pairings
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +523,7 @@ def _compute_anchors(
     device: torch.device,
     sr: int,
     anchor_cap_s: Optional[float],
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
 ) -> tuple[dict[str, Optional[torch.Tensor]], dict[str, float]]:
     """Compute one ECAPA anchor per speaker from their solo concat.
 
@@ -356,11 +533,12 @@ def _compute_anchors(
     kernel.
 
     Returns `(anchors_by_spk, solo_duration_by_spk)`. `anchors[spk]` is None
-    when the speaker doesn't have enough solo audio to embed (< 0.25 s).
+    when the speaker doesn't have enough solo audio to embed
+    (< `anchor_min_duration_s`, default 0.25 s).
     """
     anchors: dict[str, Optional[torch.Tensor]] = {}
     solo_durations: dict[str, float] = {}
-    min_anchor_len = int(sr * _ECAPA_MIN_DURATION_S)
+    min_anchor_len = int(sr * anchor_min_duration_s)
     _log(f"computing speaker anchors via ECAPA (anchor_max={anchor_cap_s}s)...")
     for spk in speakers:
         t0 = time.perf_counter()
@@ -383,7 +561,9 @@ def _compute_anchors(
             + " — calling ECAPA..."
         )
         if len(anchor_input) >= min_anchor_len:
-            anchors[spk] = _ecapa_embed(anchor_input, ecapa, device, sr).cpu()
+            anchors[spk] = _ecapa_embed(
+                anchor_input, ecapa, device, sr, anchor_min_duration_s
+            ).cpu()
         else:
             anchors[spk] = None
         _log(
@@ -437,6 +617,15 @@ def _assign_overlaps(
     device: torch.device,
     sr: int,
     min_margin: float = 0.0,
+    *,
+    strategy: str = "ecapa_argmax",
+    continuity_margin: float = 0.0,
+    continuity_window_s: float = 10.0,
+    solo_intervals_by_spk: Optional[dict[str, list[Interval]]] = None,
+    assembly_audio: Optional[np.ndarray] = None,
+    external_pairings: Optional[dict[int, str]] = None,
+    overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
+    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
     summed cosine similarity to the anchors. Falls back to fixed assignment
@@ -444,15 +633,39 @@ def _assign_overlaps(
     (< 0.1 s) — never drops a region. Slices each picked stream to the
     emit region.
 
-    ``min_margin`` (default 0.0 = off) gates a carry-forward prior on the ECAPA
-    path: when ``abs(straight - swapped) < min_margin`` the ECAPA decision is
-    too close to trust (short overlaps where the cosines near-tie), so the
-    overlap inherits ``last_pairing`` — the most recent *confident*
-    (margin-clearing) ECAPA decision — instead of the noisy argmax. With the
-    default margin of 0, every finite decision clears the (zero) gap and the
-    prior never fires, so behaviour is the pure-argmax baseline. The first
-    confident decision seeds the prior; ambiguous overlaps before any confident
-    one (or when the gate is off) fall through to plain argmax.
+    ``strategy`` selects how a finite ECAPA decision is finalised:
+
+    - ``"ecapa_argmax"`` (default): argmax(straight, swapped), with the optional
+      ``min_margin`` carry-forward prior described below.
+    - ``"continuity_tiebreak"``: argmax, but a near-tie (gap <
+      ``continuity_margin``) is re-decided by :func:`_continuity_decision` using
+      *local* anchors from the solo audio bracketing the overlap (needs
+      ``solo_intervals_by_spk`` + ``assembly_audio``). ``min_margin`` is ignored
+      in this mode.
+    - ``"consensus_2means"``: a pre-pass (:func:`_consensus_pairings`) decides
+      every overlap jointly via constrained 2-means over all overlap embeddings +
+      the solo anchors, so the consensus can overrule a lone confident-but-wrong
+      per-overlap decision. The loop then looks up each overlap's pairing.
+
+    ``external_pairings`` (B+ handoff, ``ctx.overlap_speaker_assignment``):
+    `{i_ovl -> "straight"|"swapped"}` decided up front by the RelabelStage global
+    clustering. When present, an ECAPA-eligible overlap whose ``i_ovl`` is in the
+    dict uses the external pairing directly (NO per-overlap re-embed), labelled
+    ``"<chosen> (relabel_global)"`` — it takes precedence over ALL three
+    ``strategy`` modes for the overlaps it covers (a strictly stronger global
+    decision). Overlaps NOT in the dict (B+ dropped them as sub-min / leaked /
+    degenerate, or they are ECAPA-ineligible here) fall through to the existing
+    ladder unchanged — the SCOPE-compliant fall-soft to current behaviour.
+
+    ``min_margin`` (default 0.0 = off, ``ecapa_argmax`` only) gates a
+    carry-forward prior on the ECAPA path: when ``abs(straight - swapped) <
+    min_margin`` the ECAPA decision is too close to trust (short overlaps where
+    the cosines near-tie), so the overlap inherits ``last_pairing`` — the most
+    recent *confident* (margin-clearing) ECAPA decision — instead of the noisy
+    argmax. With the default margin of 0, every finite decision clears the (zero)
+    gap and the prior never fires, so behaviour is the pure-argmax baseline. The
+    first confident decision seeds the prior; ambiguous overlaps before any
+    confident one (or when the gate is off) fall through to plain argmax.
 
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
     emit_pieces: {speaker: audio_np}}`.
@@ -470,12 +683,22 @@ def _assign_overlaps(
             f"only 2 — speakers {speakers[2:]} get no overlap audio."
         )
     t_start = time.perf_counter()
-    min_overlap_len = int(sr * _ECAPA_OVERLAP_MIN_DURATION_S)
+    min_overlap_len = int(sr * overlap_min_duration_s)
     assignments: list[dict] = []
     # Carry-forward prior for the margin gate: the last confident (margin-clearing)
     # ECAPA pairing, "straight" or "swapped". None until the first confident
     # decision. Only consulted when min_margin > 0 (the gate is off at default).
     last_pairing: Optional[str] = None
+    # Consensus 2-means decides every overlap jointly up front (one pre-pass over
+    # all overlaps); the per-overlap loop below then just looks up its pairing.
+    consensus = (
+        _consensus_pairings(
+            overlap_separated, anchors, speakers, ecapa, device, sr,
+            overlap_min_duration_s=overlap_min_duration_s,
+            anchor_min_duration_s=anchor_min_duration_s,
+        )
+        if strategy == "consensus_2means" else None
+    )
     for i_ovl, ovl in enumerate(overlap_separated):
         if "s1_gated" not in ovl or "s2_gated" not in ovl:
             raise RuntimeError(
@@ -488,51 +711,85 @@ def _assign_overlaps(
             and all(anchors.get(s) is not None for s in speakers[:2])
         )
         if not too_short and have_both_anchors:
-            # ECAPA path: embed both streams and pick the pairing with the
-            # higher *summed* cosine similarity to the two anchors. (Embedding
-            # is deferred to here so a too-short / anchor-missing overlap pays
-            # no ECAPA forward.)
             a, b = speakers[0], speakers[1]
-            emb1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr).cpu()
-            emb2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr).cpu()
-            straight = _cos(emb1, anchors[a]) + _cos(emb2, anchors[b])
-            swapped = _cos(emb1, anchors[b]) + _cos(emb2, anchors[a])
-            if not (np.isfinite(straight) and np.isfinite(swapped)):
-                # ECAPA is an external model fed degenerate gated input; a
-                # non-finite cosine (e.g. a NaN embedding) would make
-                # `straight >= swapped` evaluate False and silently pick
-                # "swapped" as if it were a real decision. Drop to the fixed
-                # fallback instead — the one system-boundary check here.
-                _log(
-                    f"  overlap {ovl['idx']}: non-finite ECAPA cosine "
-                    f"(straight={straight}, swapped={swapped}) — fixed assignment"
+            if external_pairings is not None and i_ovl in external_pairings:
+                # B+ global-clustering handoff: use the pre-decided pairing
+                # directly (no per-overlap re-embed). Strictly stronger than the
+                # per-overlap strategies, so it overrides them for this overlap.
+                chosen = external_pairings[i_ovl]
+                pairing = f"{chosen} (relabel_global)"
+                stream_for = (
+                    {a: ovl["s1_gated"], b: ovl["s2_gated"]} if chosen == "straight"
+                    else {a: ovl["s2_gated"], b: ovl["s1_gated"]}
                 )
-                stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
-                pairing = "arbitrary (non-finite cosine)"
+            elif consensus is not None and i_ovl in consensus:
+                # Global consensus (2-means) pre-decided this overlap from ALL
+                # overlaps jointly; use it directly (its embeddings were computed
+                # in the pre-pass, so no per-overlap re-embed is needed here).
+                chosen = consensus[i_ovl]
+                pairing = f"{chosen} (consensus)"
+                stream_for = (
+                    {a: ovl["s1_gated"], b: ovl["s2_gated"]} if chosen == "straight"
+                    else {a: ovl["s2_gated"], b: ovl["s1_gated"]}
+                )
             else:
-                # Argmax pairing (the `>=` tie-break keeps stream order).
-                argmax_pairing = "straight" if straight >= swapped else "swapped"
-                # Margin gate (off when min_margin == 0): a near-tie ECAPA
-                # decision is unreliable on short overlaps, so when the gap is
-                # below the margin AND we already have a confident prior, inherit
-                # it instead of trusting the argmax. A confident (margin-clearing)
-                # decision updates the prior for later ambiguous overlaps.
-                if (
-                    min_margin > 0
-                    and abs(straight - swapped) < min_margin
-                    and last_pairing is not None
-                ):
-                    pairing = f"{last_pairing} (carry-forward prior)"
-                    chosen = last_pairing
-                else:
-                    pairing = argmax_pairing
-                    chosen = argmax_pairing
-                    if min_margin > 0 and abs(straight - swapped) >= min_margin:
-                        last_pairing = argmax_pairing
-                if chosen == "straight":
+                # ECAPA path: embed both streams and pick the pairing with the
+                # higher *summed* cosine similarity to the two anchors. (Embedding
+                # is deferred to here so a too-short / anchor-missing overlap pays
+                # no ECAPA forward.)
+                emb1 = _ecapa_embed(
+                    ovl["s1_gated"], ecapa, device, sr, anchor_min_duration_s
+                ).cpu()
+                emb2 = _ecapa_embed(
+                    ovl["s2_gated"], ecapa, device, sr, anchor_min_duration_s
+                ).cpu()
+                straight = _cos(emb1, anchors[a]) + _cos(emb2, anchors[b])
+                swapped = _cos(emb1, anchors[b]) + _cos(emb2, anchors[a])
+                if not (np.isfinite(straight) and np.isfinite(swapped)):
+                    # ECAPA is an external model fed degenerate gated input; a
+                    # non-finite cosine (e.g. a NaN embedding) would make
+                    # `straight >= swapped` evaluate False and silently pick
+                    # "swapped" as if it were a real decision. Drop to the fixed
+                    # fallback instead — the one system-boundary check here.
+                    _log(
+                        f"  overlap {ovl['idx']}: non-finite ECAPA cosine "
+                        f"(straight={straight}, swapped={swapped}) — fixed assignment"
+                    )
                     stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
+                    pairing = "arbitrary (non-finite cosine)"
                 else:
-                    stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
+                    # Argmax pairing (the `>=` tie-break keeps stream order).
+                    argmax_pairing = "straight" if straight >= swapped else "swapped"
+                    if strategy == "continuity_tiebreak":
+                        # Near-ties re-decided by local (bracketing-solo) anchors;
+                        # decisive gaps keep the global argmax. Stateless.
+                        chosen, pairing = _continuity_decision(
+                            argmax_pairing, straight, swapped, continuity_margin,
+                            emb1, emb2, a, b, ovl, continuity_window_s,
+                            solo_intervals_by_spk, assembly_audio,
+                            ecapa, device, sr, anchor_min_duration_s,
+                        )
+                    # Margin gate (off when min_margin == 0): a near-tie ECAPA
+                    # decision is unreliable on short overlaps, so when the gap is
+                    # below the margin AND we already have a confident prior, inherit
+                    # it instead of trusting the argmax. A confident (margin-clearing)
+                    # decision updates the prior for later ambiguous overlaps.
+                    elif (
+                        min_margin > 0
+                        and abs(straight - swapped) < min_margin
+                        and last_pairing is not None
+                    ):
+                        pairing = f"{last_pairing} (carry-forward prior)"
+                        chosen = last_pairing
+                    else:
+                        pairing = argmax_pairing
+                        chosen = argmax_pairing
+                        if min_margin > 0 and abs(straight - swapped) >= min_margin:
+                            last_pairing = argmax_pairing
+                    if chosen == "straight":
+                        stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
+                    else:
+                        stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
         else:
             # Fixed assignment when the streams are too short to embed or an
             # anchor is missing. Never drop the region — a drop would lose the
@@ -735,21 +992,46 @@ class AssemblyStage(Stage):
     # Lifecycle
     # ------------------------------------------------------------------
     def load(self, device: torch.device) -> None:
-        from speechbrain.inference.speaker import EncoderClassifier
-
-        _log(f"load: instantiating ECAPA encoder on {device}...")
         t0 = time.perf_counter()
-        cache_dir = Path.cwd() / ".cache" / "ecapa"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        ecapa = EncoderClassifier.from_hparams(
-            source="speechbrain/spkrec-ecapa-voxceleb",
-            run_opts={"device": str(device)},
-            savedir=str(cache_dir),
-        )
-        ecapa.eval()
-        self._ecapa = ecapa
+        if self.config.anchor_embedding == "ecapa2":
+            # Option 4: route the anchor / per-overlap embedder through the same
+            # custom-embedder wrapper the diarization stage uses. `_ecapa_embed`
+            # dispatches on the absence of `encode_batch` (the wrapper is
+            # call-style), so no other call site changes.
+            from asr_pipeline.stages.custom_embeddings import build_custom_embedding
+
+            _log(f"load: building custom anchor embedder 'ecapa2' on {device}...")
+            embedder = build_custom_embedding("ecapa2", device)
+            if embedder is None:  # defensive — "ecapa2" is a known custom name
+                raise RuntimeError(
+                    "build_custom_embedding('ecapa2') returned None — the custom "
+                    "embedder name is not recognised."
+                )
+            self._ecapa = embedder
+        else:
+            from speechbrain.inference.speaker import EncoderClassifier
+
+            _log(f"load: instantiating ECAPA encoder on {device}...")
+            cache_dir = Path.cwd() / ".cache" / "ecapa"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            ecapa = EncoderClassifier.from_hparams(
+                source="speechbrain/spkrec-ecapa-voxceleb",
+                run_opts={"device": str(device)},
+                savedir=str(cache_dir),
+            )
+            ecapa.eval()
+            self._ecapa = ecapa
         self._device = device
-        _log(f"load: ECAPA ready ({time.perf_counter()-t0:.2f}s)")
+        _log(
+            f"load: anchor embedder ready "
+            f"({self.config.anchor_embedding}, {time.perf_counter()-t0:.2f}s)"
+        )
+
+    def load_signature(self) -> tuple:
+        # Was () (model never depended on config). Now the embedder choice picks
+        # WHICH model loads, so it must trigger an interactive-API reload when
+        # the knob flips.
+        return (self.config.anchor_embedding,)
 
     def unload(self) -> None:
         self._ecapa = None
@@ -813,6 +1095,7 @@ class AssemblyStage(Stage):
         anchors, solo_durations = _compute_anchors(
             speakers, solo_intervals_by_spk, assembly_audio,
             self._ecapa, self._device, sr, cfg.anchor_max_duration_s,
+            anchor_min_duration_s=cfg.anchor_min_duration_s,
         )
         weak_anchor = any(
             d < cfg.min_solo_for_anchor_s for d in solo_durations.values()
@@ -832,10 +1115,25 @@ class AssemblyStage(Stage):
         #     otherwise produced nothing): fill overlap regions from the
         #     enhanced mixture, attributed to all speakers.
         if ctx.overlap_separated:
+            if ctx.overlap_speaker_assignment is not None:
+                _log(
+                    f"B+ handoff: relabel pre-decided "
+                    f"{len(ctx.overlap_speaker_assignment)}/"
+                    f"{len(ctx.overlap_separated)} overlap(s) "
+                    f"(relabel_global); the rest use the anchor ladder."
+                )
             assignments = _assign_overlaps(
                 ctx.overlap_separated, anchors, speakers,
                 self._ecapa, self._device, sr,
                 min_margin=cfg.overlap_assign_min_margin,
+                strategy=cfg.overlap_assignment,
+                continuity_margin=cfg.continuity_tiebreak_margin,
+                continuity_window_s=cfg.continuity_window_s,
+                solo_intervals_by_spk=solo_intervals_by_spk,
+                assembly_audio=assembly_audio,
+                external_pairings=ctx.overlap_speaker_assignment,
+                overlap_min_duration_s=cfg.overlap_min_duration_s,
+                anchor_min_duration_s=cfg.anchor_min_duration_s,
             )
         elif ctx.overlap_regions:
             _log(
