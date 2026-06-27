@@ -50,6 +50,8 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 |---|---|---|---|---|---|
 | `num_speakers` | int | 2 | — | 🔒 | corpus is 2-speaker |
 | `model_id` | str | pyannote/speaker-diarization-3.1 | — | 🔒 | one model in use |
+| `embedding` | str | resnet34-LM | resnet34-LM \| resnet293-LM \| ecapa2 \| eres2netv2 | ✅ | first-pass speaker embedder (triggers a 3.1-equivalent rebuild); ecapa2 adopted (`dr_emb_*`) |
+| `clustering_method` | enum | centroid | centroid \| average \| ... | ✅ | **promoted 2026-06-22** (was hard-coded linkage); agglomerative linkage in the embedding-swap path the best config uses; `dr_linkage_avg` |
 | `enabled` | bool | true | — | 🔒 | diarization is mandatory upstream |
 
 ## Stage 2 — Routing (`routing.*`)
@@ -64,9 +66,11 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 | knob | type | baseline | options/range | status | notes |
 |---|---|---|---|---|---|
-| `backend` | enum | frcrn_se_16k | frcrn_se_16k \| mossformer_gan_se_16k \| **mossformer2_se_48k** | ✅/🆕 | frcrn & mossformer_gan swept; **mossformer2_se_48k never tried** |
+| `backend` | enum | frcrn_se_16k | frcrn_se_16k \| mossformer_gan_se_16k \| zipenhancer_16k | ✅ | frcrn & mossformer_gan swept. ⚠️ `mossformer2_se_48k` is **NOT valid** — `config.py.__post_init__` allows only frcrn/mossformer_gan/zipenhancer; it would raise. Do not sweep it (also the worst enhancer, 34.5, e23-era). |
+| `observation_mix_ratio` | float | 0.0 (yaml 0.3) | 0.0–0.5 | ✅ | dry/wet artifact-dilution (Observation Adding); heavily swept (`f_oa0*`, `dr_oa0*`) |
+| `resample_quality` | enum | soxr_hq | soxr_hq \| soxr_vhq \| kaiser_best | ✅ | **promoted 2026-06-22** (was hard-coded `res_type`); anti-alias filter into the enhancer + OA blend, upstream of OA; `dr_resample_*` |
 | `enabled` | bool | true | true/false | ✅ | `enh_none` ablation corner |
-| `max_segment_length_s` | float s | 8.0 | ~4–16 | 🆕 | Hann overlap-add chunk for long solos; untried, minor |
+| `max_segment_length_s` | float s | 8.0 | ~4–16 | 🆕 | Hann overlap-add chunk for long solos; **HAND-SET, untested** (not "swept-inert"), minor |
 
 ## Stage 3b — Separation (`separation.*`) — overlap regions + VAD
 
@@ -81,6 +85,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `seam_mode` | enum | snap_to_silence | zero_crossing \| overlap_boundary \| snap_to_silence | ✅ | `sep_seam_zc`, `sep_seam_boundary` |
 | `seam_search_radius_s` | float s | 0.05 | ~0.02–0.1 | 🆕 | zero-crossing nudge radius; minor |
 | `snap_silence_max_extend_s` | float s | 0.3 | ~0.1–0.5 | 🆕 | snap_to_silence outward reach; untried |
+| `seam_silence_threshold` | float | 0.5 | 0.3–0.7 | ✅ | **promoted 2026-06-22** (was hard-coded); the silence cutoff `snap_to_silence` uses to grow emit regions — companion to the swept VAD pair; `dr_seamsil*` |
 | `overlap_add_threshold_s` | float s | 12.0 | ~6–20 | 🆕 | when long overlaps get chunked; minor |
 | `volume_normalization` | enum | sum_equals_mix | sum_equals_mix \| none | ✅ | `sep_vol_none` |
 | `vad_threshold` | float | 0.25 | 0.2–0.6 | ✅ | heavily swept (round 3 ≈ 0.5 best) |
@@ -105,11 +110,13 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `overlap_rms_match_solo` | bool | true | true/false | 🆕 | toggle off untried (only on-by-default) |
 | `per_piece_rms_norm` | bool | false | true/false | ✅ | `asm_perpiece_rms` |
 | `target_rms` | float?\| None | null | — | 🆕 | only with `per_piece_rms_norm`; untried |
-| `min_solo_for_anchor_s` | float s | 3.0 | ~2–5 | 🆕 | ECAPA anchor min; minor |
+| `min_solo_for_anchor_s` | float s | 3.0 | ~2–5 | 🆕 | sets the *diagnostic* `weak_anchor` flag only — NOT the actual anchor fallback (that's `anchor_min_duration_s`); minor |
+| `anchor_min_duration_s` | float s | 0.25 | 0.25–1.0 | ✅ | **promoted 2026-06-22** (was hard-coded `_ECAPA_MIN_DURATION_S`); the REAL fallback trigger — speaker with < this solo gets no anchor → positional attribution; `dr_anchmin*` |
+| `overlap_min_duration_s` | float s | 0.1 | 0.1–0.35 | ✅ | **promoted 2026-06-22** (was hard-coded `_ECAPA_OVERLAP_MIN_DURATION_S`); gates whether the per-overlap ECAPA decision runs at all (~⅓ of overlaps are sub-0.5 s); `dr_ovmin*` |
 | `crossfade_ms` | float ms | 5.0 | ~2–10 | 🆕 | internal seam fade; minor |
 | `edge_fade_ms` | float ms | 2.0 | ~1–5 | 🆕 | stream-edge fade; minor |
 | `silence_separator_s` | float s | 0.3 | — | 🔒 | only matters in `shortened` (eval uses full_length) |
-| `anchor_max_duration_s` | float?\| None | 30.0 | — | 🔒 | OOM guard, not a quality lever |
+| `anchor_max_duration_s` | float?\| None | 240.0 | — | 🔒 | OOM guard, not a quality lever (dataclass default is 240.0, not 30.0) |
 | `enabled` | bool | true | — | 🔒 | |
 
 ## Stage 5 — Transcription (`transcription.*`)
@@ -118,6 +125,8 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 |---|---|---|---|---|---|
 | `model_name` | str | large-v2 | large-v2 \| large-v3 \| HF finetune id | ✅ | **biggest single WER lever**; `asr_largev3`. HF Polish Whisper finetunes untried 🆕 |
 | `align_model_name` | str\| None | None (→ pl XLSR-53) | None \| HF wav2vec2 id | 🆕 | alternative Polish aligners affect tcpWER; untried |
+| `silence_floor` | float | 1e-4 | 0.0–1e-3 | ✅ | **promoted 2026-06-22** (was hard-coded `_SILENCE_FLOOR`); peak-amp gate below which a stream → empty transcript; direct deletion↔insertion trade on the WER decomposition; `dr_silfloor*` |
+| `retry_collapsed_chunk_size` | int | 8 | 0 (off) \| 8 | ✅ | detect-and-retry on collapsed streams; `f_noretry`, `dr_retry0` |
 | `initial_prompt` | str | "Rozmowa po polsku." | (text) | 🆕 | prompt wording can shift WER; untried |
 | `backend` | enum | whisperx | whisper \| whisperx | 📌 | eval needs whisperx (word alignment for tcpWER) |
 | `language` | str | pl | — | 🔒 | corpus is Polish |
@@ -139,7 +148,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 Ranked rough priority for a thorough sweep, beyond what `CONFIGS` already covers:
 
-1. **`enhancement.backend = mossformer2_se_48k`** — the one enhancement backend never tried.
+1. ~~**`enhancement.backend = mossformer2_se_48k`**~~ — **INVALID / removed 2026-06-22.** `config.py.__post_init__` rejects it (allows only frcrn/mossformer_gan/zipenhancer); it was also the worst enhancer (34.5, e23-era). Do not add it.
 2. **`separation.context_window_mode`** (expand_to_chunk / fixed_pad / none) — a real, untouched lever on what the separator sees; with `context_pad_seconds` for the `fixed_pad` arm.
 3. **`transcription.model_name`** — extend beyond large-v2/v3 to a Polish Whisper finetune (HF id via whisperx).
 4. **`transcription.align_model_name`** — alternative Polish wav2vec2 aligners (tcpWER quality).

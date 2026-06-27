@@ -29,9 +29,12 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import json
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from dataclasses import asdict
 from pathlib import Path
 
@@ -438,6 +441,650 @@ CONFIGS: dict[str, dict] = {
     "t2_bardsai_pl":       {"enhancement.observation_mix_ratio": 0.3,
                             "transcription.model_name":
                             "bardsai/whisper-large-v2-pl-v2"},
+
+    # ======================================================================
+    # Attribution lever: CONTINUITY TIE-BREAK (2026-06-17). Near-tie overlap
+    # pairings are re-decided by *local* bracketing-solo ECAPA anchors (the
+    # "speech continuity" signal) instead of the global anchors. OFAT off the
+    # OA-0.3 finalist (f_oa03); a tau grid over the near-tie threshold (summed-
+    # cosine gap, range [0,2]). tau is the swept hypothesis: tau=0 == f_oa03
+    # (no-op), so the smallest tau that shrinks the attribution gap WITHOUT a
+    # per-recording winner-veto regression wins. Stateless (no carry-forward),
+    # unlike the dud t2_attr_margin. See GROUPS["attr"].
+    # ======================================================================
+    "ct_tau01": {"enhancement.observation_mix_ratio": 0.3,
+                 "assembly.overlap_assignment": "continuity_tiebreak",
+                 "assembly.continuity_tiebreak_margin": 0.1},
+    "ct_tau02": {"enhancement.observation_mix_ratio": 0.3,
+                 "assembly.overlap_assignment": "continuity_tiebreak",
+                 "assembly.continuity_tiebreak_margin": 0.2},
+    "ct_tau04": {"enhancement.observation_mix_ratio": 0.3,
+                 "assembly.overlap_assignment": "continuity_tiebreak",
+                 "assembly.continuity_tiebreak_margin": 0.4},
+    # Consensus 2-means (global constrained re-clustering of overlap pairings).
+    # Hypothesis: outvote a lone confident-but-wrong per-overlap decision. NOTE:
+    # anchor-seeded consensus is mathematically ~= per-overlap argmax (0/40k flips
+    # in random search), so this is expected to be a no-op — run to confirm on
+    # real data. See GROUPS["attr"].
+    "cm_consensus": {"enhancement.observation_mix_ratio": 0.3,
+                     "assembly.overlap_assignment": "consensus_2means"},
+
+    # ======================================================================
+    # Phase 3: DIARIZATION front-end knobs (pyannote instantiate), OFAT off
+    # f_oa03. These change diarization → full pipeline re-run per config.
+    # Effective under num_speakers=2: segmentation.min_duration_off (fill intra-
+    # turn pauses → longer, cleaner embedding spans) and clustering.min_cluster_size.
+    # clustering.threshold is INERT (fixed cluster count), so not swept. Diagnosis
+    # (DIAGNOSIS_db15fc57) says these likely can't fix embedding-clustering
+    # mislabels — run to confirm; the one shot is fe65d170's un-routed overlap.
+    # See GROUPS["diar"].
+    # ======================================================================
+    "dr_mdoff03": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.segmentation_min_duration_off": 0.3},
+    "dr_mdoff05": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.segmentation_min_duration_off": 0.5},
+    "dr_mcs06":   {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.clustering_min_cluster_size": 6},
+
+    # ======================================================================
+    # Phase 4: speaker-EMBEDDING swap (EMBEDDING_RESEARCH.md), OFAT off f_oa03.
+    # Reconstructs a 3.1-equivalent pipeline with a swapped embedder → full
+    # re-run per config. dr_emb_r34 is the reconstruction BASELINE (same
+    # construction as the swaps, stock resnet34-LM embedder): compare swaps to
+    # THIS, and confirm dr_emb_r34 ≈ f_oa03 (reconstruction reproduces 3.1).
+    # 293-LM is tuned for >3s utts and may NOT help the ~2.5s db15fc57 mislabel
+    # — hence also the non-LM variant + ERes2NetV2 (added once ids/wrapper ready).
+    # See GROUPS["emb"]. Score on ALL dev (watch for regressions elsewhere).
+    # ======================================================================
+    "dr_emb_r34":    {"enhancement.observation_mix_ratio": 0.3,
+                      "diarization.embedding": "pyannote/wespeaker-voxceleb-resnet34-LM"},
+    "dr_emb_r293lm": {"enhancement.observation_mix_ratio": 0.3,
+                      "diarization.embedding": "eek/wespeaker-voxceleb-resnet293-LM"},
+    # Custom embedders (stages/custom_embeddings.py wrapper). ECAPA2 = best
+    # short-utterance EER (the on-target lever for db15fc57's ~2.5s mislabel;
+    # CC-BY-NC, fine for the thesis). ERes2NetV2 = short-utt + multilingual.
+    "dr_emb_ecapa2": {"enhancement.observation_mix_ratio": 0.3,
+                      "diarization.embedding": "ecapa2"},
+    "dr_emb_eres2":  {"enhancement.observation_mix_ratio": 0.3,
+                      "diarization.embedding": "eres2netv2"},
+
+    # ======================================================================
+    # 2nd-pass identity re-clustering + assembly embedder swap
+    # (SECOND_PASS_PLAN.md options 4, B, B+). All OFAT off the ADOPTED ECAPA2
+    # diarization (`dr_emb_ecapa2`) — i.e. each row carries the same OA-0.3 +
+    # ECAPA2-on-raw diarization base (`_E2`) plus its one new lever, so each
+    # isolates its marginal effect over the embedder swap the diagnosis says does
+    # NOT by itself fix db15fc57. Score on ALL dev; dr_emb_ecapa2 is the anchor
+    # in the rescore (GROUPS["refine2"]). Option 3 (fusion / dr_fuse) is a
+    # separate later build and is deliberately NOT here.
+    # ======================================================================
+    # Base shared by all rows below (the adopted ECAPA2 diarization).
+    # Inlined per row (CONFIGS values are flat dicts), matching dr_emb_ecapa2.
+    # Option 4 — ECAPA2 assembly anchor only, no 2nd pass (the cheapest probe:
+    # does a stronger embedder in the identity-deciding role help at all?).
+    "as_ecapa2anchor": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "assembly.anchor_embedding": "ecapa2"},
+    # B — solos relabel on ENHANCED audio (the hypothesis: cleaner identity
+    # audio re-clusters the db15fc57 solo mislabel into the right speaker).
+    "dr_refine":      {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "solos",
+                       "relabel.embedding": "ecapa2",
+                       "relabel.audio_source": "enhanced"},
+    # B control — solos relabel on RAW audio. Isolates the enhancement effect:
+    # if dr_refine beats this, enhanced audio is the active ingredient, not the
+    # re-clustering alone.
+    "dr_refine_raw":  {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "solos",
+                       "relabel.embedding": "ecapa2",
+                       "relabel.audio_source": "raw"},
+    # B+ — global identity clustering (enhanced solos + separated overlap
+    # streams); also feeds assembly the per-overlap pairing, so it can move the
+    # overlap half of db15fc57's gap that plain B cannot reach.
+    "dr_refineplus":  {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2",
+                       "relabel.audio_source": "enhanced"},
+    # Option 3 — disagreement-aware fusion (SECOND_PASS_PLAN.md §5). A SECOND
+    # pyannote pass on the ENHANCED audio supplies IDENTITY only; presence
+    # (boundaries / overlaps / count) stays with the raw pass-1 result. A solo
+    # region's label is overridden only when pass 2 confidently (>= 0.75 single-
+    # speaker fraction) disagrees over >= 0.5 s. OFAT off the adopted ECAPA2
+    # diarization, like the B/B+ rows (so it isolates the second-pass effect over
+    # the embedder swap). The heaviest option (a whole extra diarization pass).
+    "dr_fuse":        {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "diarization.fusion.enabled": True,
+                       "diarization.fusion.embedding": "ecapa2"},
+    # Stacked best-candidate: the three small winners combined — ECAPA2 diar +
+    # ECAPA2 assembly anchor (opt 4) + B+ global relabel (dr_refineplus). Tests
+    # whether the wins stack or B+'s overlap handoff already subsumes the anchor.
+    "dr_best":        {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "assembly.anchor_embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2",
+                       "relabel.audio_source": "enhanced"},
+    # ASR-model re-check on the best base (dr_refineplus = ecapa2-diar + B+). The
+    # recognition floor (~18.6 of 20.7 cpWER) dominates the error and the ASR
+    # model is the biggest lever — both untested on the new diarization base.
+    # large-v3 = bigger general model; bardsai = Polish-finetuned large-v2.
+    "dr_refineplus_v3": {"enhancement.observation_mix_ratio": 0.3,
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "transcription.model_name": "large-v3"},
+    "dr_refineplus_pl": {"enhancement.observation_mix_ratio": 0.3,
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "transcription.model_name": "bardsai/whisper-large-v2-pl-v2"},
+
+    # ======================================================================
+    # DEFINITIVE SWEEP arms (docs/sweep_plan/SWEEP_DESIGN.md §3.2, pre-flight
+    # §6.4). All anchored on the `dr_refineplus` knob set (= the fixed anchor):
+    # OA-0.3 + ECAPA2 diar + B+ global relabel (enhanced). Each row is a flat
+    # dotted dict that takes the dr_refineplus base and changes ONE thing (or one
+    # interaction corner), so a CONFIGS diff vs `dr_refineplus` reads as the arm's
+    # delta. See GROUPS["definitive"]. The Tier-A grids (OA refine, BWE toggle)
+    # are re-anchored HERE on the post-B+ base, NOT the stale pre-B+ f_oa0*/r1_*
+    # rows (04b §0 wedge: the old "within-noise" verdicts were measured 3
+    # operating-point hops upstream).
+    #
+    # Shared dr_refineplus base, inlined per row (CONFIGS values are flat dicts):
+    #   enhancement.observation_mix_ratio: 0.3
+    #   diarization.embedding: ecapa2
+    #   relabel.enabled: True, source: global, embedding: ecapa2,
+    #   audio_source: enhanced
+    # ----------------------------------------------------------------------
+    # A1 — OA-ratio refine grid OFF the anchor (anchor itself = OA 0.3 = dr_refineplus).
+    "dr_oa020": {"enhancement.observation_mix_ratio": 0.20,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa025": {"enhancement.observation_mix_ratio": 0.25,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa035": {"enhancement.observation_mix_ratio": 0.35,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa040": {"enhancement.observation_mix_ratio": 0.40,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    # OA=0.5 confirmatory bracket at the REAL (post-B+) base (04b §2.4 insurance):
+    # the design grid stops at 0.4, but 0.5 was unbracketed at the dr_refineplus
+    # base. One arm; cheap; not a candidate, just bracket-checking the optimum.
+    "dr_oa050": {"enhancement.observation_mix_ratio": 0.50,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    # A3 / Tier-B — BWE toggle (ap_bwe=anchor) re-confirmed at the post-B+ base.
+    # Also the (OA0.3, naive) corner of the A4 OA×BWE cell.
+    "dr_bwe_naive": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "post_separation_processing.backend": "naive"},
+    # A4 OA×BWE 2×2: corners are (OA0.3,ap_bwe)=anchor, (OA0.3,naive)=dr_bwe_naive,
+    # (OA0.2,ap_bwe)=dr_oa020, (OA0.2,naive)=this row.
+    "dr_oa02_naive": {"enhancement.observation_mix_ratio": 0.20,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "post_separation_processing.backend": "naive"},
+    # A5 retry×OA 2×2: corners are (retry8,OA0.3)=anchor, (retry0,OA0.3),
+    # (retry8,OA0.0), (retry0,OA0.0). retry8 = the shipped default; retry0 = OFF.
+    "dr_retry0": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "transcription.retry_collapsed_chunk_size": 0},
+    "dr_oa00": {"enhancement.observation_mix_ratio": 0.0,
+                "diarization.embedding": "ecapa2",
+                "relabel.enabled": True, "relabel.source": "global",
+                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_retry0_oa00": {"enhancement.observation_mix_ratio": 0.0,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.retry_collapsed_chunk_size": 0},
+    # A6 enh×relabel 2×2: corners are (enhON,B+on)=anchor, (enhON,B+off)=
+    # dr_emb_ecapa2 (existing), (enhOFF,B+on)=dr_enhoff, (enhOFF,B+off)=
+    # dr_enhoff_norelabel. NOTE: with enhancement OFF there is no enhanced_full,
+    # so config.py:765 forbids relabel.audio_source='enhanced'; the enh-OFF B+
+    # corner therefore uses audio_source='raw' (the only valid B+ form). This is
+    # the A6 enh-OFF-ceiling probe (SWEEP_DESIGN §3 Phase-0 / 04b enh-OFF gate).
+    "dr_enhoff": {"enhancement.observation_mix_ratio": 0.3,
+                  "enhancement.enabled": False,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "raw"},
+    "dr_enhoff_norelabel": {"enhancement.observation_mix_ratio": 0.3,
+                            "enhancement.enabled": False,
+                            "diarization.embedding": "ecapa2",
+                            "relabel.enabled": False},
+    # Tier-B near-Pareto re-confirm (mossformer_gan enhancer) at the anchor base.
+    "dr_enh_mossgan": {"enhancement.observation_mix_ratio": 0.3,
+                       "enhancement.backend": "mossformer_gan_se_16k",
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    # large-v3 writeup-reference arm (closed door; for the table, not a candidate).
+    # = dr_refineplus_v3 (already defined above); aliased here only via the GROUP.
+
+    # ======================================================================
+    # HOLES-BUNDLE arms (docs/sweep_plan/04_HOLES.md DECISION: EVERYTHING).
+    # All anchored on the same `dr_refineplus` base as the definitive block
+    # (OA-0.3 + ECAPA2 diar + B+ global relabel, enhanced), inlined per row.
+    # Two classes:
+    #   Class-1 (C1/C4/C5/C6 + A2 VAD grid): arms on existing/just-promoted
+    #     knobs that the definitive block didn't yet cover.
+    #   Class-2 (D1-D6): the six uninventoried hard-coded levers promoted to
+    #     config fields in this change (04a_holes_uninventoried.md). Each grid
+    #     point is one OFAT arm off the anchor.
+    # ----------------------------------------------------------------------
+    # --- Class-1 ---
+    # A2 VAD threshold grid at the post-B+ base (the swept VAD pair; doc 03 §2).
+    "dr_vad040": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "separation.vad_threshold": 0.4,
+                  "separation.vad_soft_threshold": 0.15},
+    "dr_vad050": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "separation.vad_threshold": 0.5,
+                  "separation.vad_soft_threshold": 0.20},
+    # C1 — VAD × BWE interaction corner (VAD050 crossed with naive BWE).
+    "dr_vad050_naive": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "separation.vad_threshold": 0.5,
+                        "separation.vad_soft_threshold": 0.20,
+                        "post_separation_processing.backend": "naive"},
+    # C5 — VAD attack/release toggle at the post-B+ base (a/r = same mask mech).
+    "dr_vad_ar2": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "separation.vad_attack_frames": 2,
+                   "separation.vad_release_frames": 2},
+    # C4 — mossformer_gan enhancer re-confirmed at ITS OWN OA neighbourhood (0.4),
+    # not frcrn's 0.3 (the dr_enh_mossgan row sat at the wrong dilution). This row
+    # OVERRIDES the base OA 0.3 -> 0.4.
+    "dr_enh_mossgan_oa040": {"enhancement.observation_mix_ratio": 0.40,
+                             "enhancement.backend": "mossformer_gan_se_16k",
+                             "diarization.embedding": "ecapa2",
+                             "relabel.enabled": True, "relabel.source": "global",
+                             "relabel.embedding": "ecapa2",
+                             "relabel.audio_source": "enhanced"},
+    # C6 — B+ over a resnet34-diar first pass (settles stack-vs-subsume vs the
+    # ECAPA2-diar base). OVERRIDES the base diarization.embedding only; the
+    # relabel embedder stays ecapa2.
+    "dr_refineplus_r34": {"enhancement.observation_mix_ratio": 0.3,
+                          "diarization.embedding": "pyannote/wespeaker-voxceleb-resnet34-LM",
+                          "relabel.enabled": True, "relabel.source": "global",
+                          "relabel.embedding": "ecapa2",
+                          "relabel.audio_source": "enhanced"},
+    # --- Class-2: promoted uninventoried levers D1-D6 (one OFAT arm per grid pt) ---
+    # D1 transcription.silence_floor grid {0.0, 5e-4, 1e-3} (anchor = 1e-4).
+    "dr_silfloor0": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "transcription.silence_floor": 0.0},
+    "dr_silfloor5e4": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.silence_floor": 5e-4},
+    "dr_silfloor1e3": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.silence_floor": 1e-3},
+    # D2 enhancement.resample_quality grid {soxr_vhq, kaiser_best} (anchor = soxr_hq).
+    "dr_resample_vhq": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "enhancement.resample_quality": "soxr_vhq"},
+    "dr_resample_kaiser": {"enhancement.observation_mix_ratio": 0.3,
+                           "diarization.embedding": "ecapa2",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "enhancement.resample_quality": "kaiser_best"},
+    # D3 separation.seam_silence_threshold grid {0.3, 0.7} (anchor = 0.5).
+    "dr_seamsil03": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.3},
+    "dr_seamsil07": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.7},
+    # D4 assembly.overlap_min_duration_s grid {0.2, 0.35} (anchor = 0.1).
+    "dr_ovmin02": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "assembly.overlap_min_duration_s": 0.2},
+    "dr_ovmin035": {"enhancement.observation_mix_ratio": 0.3,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "assembly.overlap_min_duration_s": 0.35},
+    # D5 assembly.anchor_min_duration_s grid {0.5, 1.0} (anchor = 0.25).
+    "dr_anchmin05": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "assembly.anchor_min_duration_s": 0.5},
+    "dr_anchmin10": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "assembly.anchor_min_duration_s": 1.0},
+    # D6 diarization.clustering_method robustness ref {average} (anchor = centroid).
+    "dr_linkage_avg": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "diarization.clustering_method": "average"},
+
+    # ======================================================================
+    # COMPREHENSIVE expansion (full-grid, 2026-06-22)
+    # Every row built on the dr_refineplus base (OA-0.3 + ECAPA2 diar + B+
+    # global relabel, enhanced); each adds/replaces only its named override(s).
+    # Inlined per row in the same flat-dotted-dict style as the dr_* arms above.
+    # See GROUPS["definitive"] (COMPREHENSIVE expansion sub-section).
+    # ----------------------------------------------------------------------
+    # OA-ratio finer grid (replaces observation_mix_ratio off the 0.3 anchor).
+    "dr_oa010": {"enhancement.observation_mix_ratio": 0.10,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa015": {"enhancement.observation_mix_ratio": 0.15,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa045": {"enhancement.observation_mix_ratio": 0.45,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa060": {"enhancement.observation_mix_ratio": 0.60,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa070": {"enhancement.observation_mix_ratio": 0.70,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    # VAD threshold finer grid (vad_threshold / vad_soft_threshold pair).
+    "dr_vad020": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "separation.vad_threshold": 0.2,
+                  "separation.vad_soft_threshold": 0.08},
+    "dr_vad030": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "separation.vad_threshold": 0.3,
+                  "separation.vad_soft_threshold": 0.12},
+    "dr_vad060": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "separation.vad_threshold": 0.6,
+                  "separation.vad_soft_threshold": 0.25},
+    # VAD attack/release grid (vad_attack_frames / vad_release_frames pair).
+    "dr_vad_ar0": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "separation.vad_attack_frames": 0,
+                   "separation.vad_release_frames": 0},
+    "dr_vad_ar3": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "separation.vad_attack_frames": 3,
+                   "separation.vad_release_frames": 3},
+    # BWE flowhigh backend at 8 kHz input — matches the separator's 0-4 kHz
+    # output (apples-to-apples with ap_bwe's 8k->16k path). Single flowhigh arm.
+    "dr_bwe_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "post_separation_processing.backend": "flowhigh",
+                        "post_separation_processing.flowhigh_input_sr": 8000},
+    # seam_silence_threshold finer grid (anchor = 0.5).
+    "dr_seamsil02": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.2},
+    "dr_seamsil04": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.4},
+    "dr_seamsil06": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.6},
+    "dr_seamsil08": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "separation.seam_silence_threshold": 0.8},
+    # transcription.silence_floor finer grid (anchor = 1e-4).
+    "dr_silfloor2e4": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.silence_floor": 0.0002},
+    "dr_silfloor2e3": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.silence_floor": 0.002},
+    # assembly.overlap_min_duration_s finer grid (anchor = 0.1).
+    "dr_ovmin015": {"enhancement.observation_mix_ratio": 0.3,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "assembly.overlap_min_duration_s": 0.15},
+    "dr_ovmin03": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "assembly.overlap_min_duration_s": 0.3},
+    "dr_ovmin05": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "assembly.overlap_min_duration_s": 0.5},
+    # assembly.anchor_min_duration_s finer grid (anchor = 0.25).
+    "dr_anchmin04": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "assembly.anchor_min_duration_s": 0.4},
+    "dr_anchmin075": {"enhancement.observation_mix_ratio": 0.3,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "assembly.anchor_min_duration_s": 0.75},
+    "dr_anchmin15": {"enhancement.observation_mix_ratio": 0.3,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "assembly.anchor_min_duration_s": 1.5},
+    # diarization.clustering_method linkage refs (anchor = centroid).
+    "dr_linkage_complete": {"enhancement.observation_mix_ratio": 0.3,
+                            "diarization.embedding": "ecapa2",
+                            "relabel.enabled": True, "relabel.source": "global",
+                            "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                            "diarization.clustering_method": "complete"},
+    "dr_linkage_ward": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "diarization.clustering_method": "ward"},
+    # enhancement backend — ZipEnhancer at the anchor base (OA 0.3).
+    "dr_enh_zip": {"enhancement.observation_mix_ratio": 0.3,
+                   "enhancement.backend": "zipenhancer_16k",
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    # ASR — Cohere Transcribe (coherex backend; isolated venv at run time).
+    "dr_cohere": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "transcription.backend": "coherex",
+                  "transcription.model_name": "CohereLabs/cohere-transcribe-03-2026"},
+    # re-confirm @ e46/B+ base — context / routing / ASR-decode knobs OFAT.
+    "dr_ctx_fixedpad": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "separation.context_window_mode": "fixed_pad"},
+    "dr_ctx_fixedpad15": {"enhancement.observation_mix_ratio": 0.3,
+                          "diarization.embedding": "ecapa2",
+                          "relabel.enabled": True, "relabel.source": "global",
+                          "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                          "separation.context_window_mode": "fixed_pad",
+                          "separation.context_pad_seconds": 1.5},
+    "dr_ctx_none": {"enhancement.observation_mix_ratio": 0.3,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "separation.context_window_mode": "none"},
+    "dr_merge03": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "routing.merge_gap": 0.3},
+    "dr_merge08": {"enhancement.observation_mix_ratio": 0.3,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "routing.merge_gap": 0.8},
+    "dr_align_xlsr1b": {"enhancement.observation_mix_ratio": 0.3,
+                        "diarization.embedding": "ecapa2",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "transcription.align_model_name": "jonatasgrosman/wav2vec2-xls-r-1b-polish"},
+    "dr_cs15": {"enhancement.observation_mix_ratio": 0.3,
+                "diarization.embedding": "ecapa2",
+                "relabel.enabled": True, "relabel.source": "global",
+                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                "transcription.chunk_size": 15},
+    "dr_beam10": {"enhancement.observation_mix_ratio": 0.3,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "transcription.beam_size": 10},
+    "dr_nospeech_hi": {"enhancement.observation_mix_ratio": 0.3,
+                       "diarization.embedding": "ecapa2",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "transcription.no_speech_threshold": 0.8},
+    "dr_condprev": {"enhancement.observation_mix_ratio": 0.3,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "transcription.condition_on_previous_text": True},
+    # Interaction corners — OA × BWE × enhancer × VAD crosses off the anchor.
+    "dr_oa04_naive": {"enhancement.observation_mix_ratio": 0.40,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "post_separation_processing.backend": "naive"},
+    "dr_oa03_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "post_separation_processing.backend": "flowhigh",
+                         "post_separation_processing.flowhigh_input_sr": 8000},
+    "dr_oa02_flowhigh": {"enhancement.observation_mix_ratio": 0.20,
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "post_separation_processing.backend": "flowhigh",
+                         "post_separation_processing.flowhigh_input_sr": 8000},
+    "dr_oa04_flowhigh": {"enhancement.observation_mix_ratio": 0.40,
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "post_separation_processing.backend": "flowhigh",
+                         "post_separation_processing.flowhigh_input_sr": 8000},
+    "dr_enh_zip_oa040": {"enhancement.observation_mix_ratio": 0.40,
+                         "enhancement.backend": "zipenhancer_16k",
+                         "diarization.embedding": "ecapa2",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_vad050_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
+                           "diarization.embedding": "ecapa2",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "separation.vad_threshold": 0.5,
+                           "separation.vad_soft_threshold": 0.2,
+                           "post_separation_processing.backend": "flowhigh",
+                           "post_separation_processing.flowhigh_input_sr": 8000},
+
+    # ======================================================================
+    # PHASE 2 (2026-06-24): OA × large-v3 stack + OA-peak bracket. Phase-1
+    # found the OA-blend (HIGH-stratum, Holm-significant) and large-v3 (best
+    # ALL point estimate, FAILED Holm at OA-0.3) as the two strongest
+    # INDEPENDENT signals — never crossed. Tests whether they stack robustly.
+    # All off the dr_refineplus base. See GROUPS["phase2"].
+    # ======================================================================
+    "dr_oa045_v3": {"enhancement.observation_mix_ratio": 0.45,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "transcription.model_name": "large-v3"},
+    "dr_oa050_v3": {"enhancement.observation_mix_ratio": 0.5,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "transcription.model_name": "large-v3"},
+    "dr_oa070_v3": {"enhancement.observation_mix_ratio": 0.7,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "transcription.model_name": "large-v3"},
+    "dr_oa075": {"enhancement.observation_mix_ratio": 0.75,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa080": {"enhancement.observation_mix_ratio": 0.8,
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
+    "dr_oa050_v3_naive": {"enhancement.observation_mix_ratio": 0.5,
+                          "diarization.embedding": "ecapa2",
+                          "relabel.enabled": True, "relabel.source": "global",
+                          "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                          "transcription.model_name": "large-v3",
+                          "post_separation_processing.backend": "naive"},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -532,6 +1179,100 @@ GROUPS: dict[str, list[str]] = {
         "f_oa03",
         "t2_suppress_numerals", "t2_length_penalty11", "t2_vad_offset_lo",
         "t2_attr_margin", "t2_bardsai_pl",
+    ],
+    # Attribution: continuity tie-break tau grid, OFAT off f_oa03 (the no-op
+    # anchor ref; baseline auto-included).
+    "attr": [
+        "f_oa03",
+        "ct_tau01", "ct_tau02", "ct_tau04",
+        "cm_consensus",
+    ],
+    # Phase 3 diarization front-end grid, OFAT off f_oa03 (the anchor ref).
+    "diar": [
+        "f_oa03",
+        "dr_mdoff03", "dr_mdoff05", "dr_mcs06",
+    ],
+    # Phase 4 embedding swap. dr_emb_r34 = reconstruction baseline (compare swaps
+    # to it). 293-non-LM + ERes2NetV2 appended once ids/wrapper are confirmed.
+    "emb": [
+        "f_oa03",
+        "dr_emb_r34", "dr_emb_r293lm", "dr_emb_ecapa2", "dr_emb_eres2",
+    ],
+    # 2nd-pass identity re-clustering (SECOND_PASS_PLAN.md opts 4 / B / B+ / 3),
+    # OFAT off the adopted ECAPA2 diarization. f_oa03 = current no-op finalist;
+    # dr_emb_ecapa2 = ECAPA2-on-raw diarization, the immediate anchor each option
+    # must beat in the rescore. dr_fuse = option 3 (disagreement-aware fusion).
+    "refine2": [
+        "f_oa03", "dr_emb_ecapa2",
+        "as_ecapa2anchor", "dr_refine", "dr_refine_raw", "dr_refineplus",
+        "dr_fuse",
+    ],
+    # ======================================================================
+    # The DEFINITIVE SWEEP (SWEEP_DESIGN.md §3.2). Run with
+    #   --groups definitive --split dev --anchor dr_refineplus
+    # then route headline scoring through
+    #   scripts/rescore_stratified.py --anchor dr_refineplus --configs ...
+    # for recording-clustered CIs + Holm/FDR (the harness CI is diagnostic).
+    # The anchor `dr_refineplus` is auto-included (and `baseline` is always
+    # prepended by the runner; it is harmless as a fixed reference column).
+    # ======================================================================
+    "definitive": [
+        # Phase 0 — anchor + Tier-B diagnostics (existing rows).
+        "dr_refineplus",          # 0.1 the fixed anchor (reproduce current best)
+        "dr_emb_ecapa2",          # 0.2 B+ OFF (= enhON,B+off = A6 corner)
+        "nosep",                  # 0.3 separation ablation
+        "dr_refine_raw",          # 0.4 relabel audio_source control
+        "f_oa03",                 # 0.5 ECAPA2-diar OFF confirm
+        # Phase 1 — Tier-A coordinate-ascent (OFAT off the anchor).
+        "dr_oa020", "dr_oa025", "dr_oa035", "dr_oa040",  # A1 OA refine
+        "dr_oa050",                                       # A1 0.5 bracket insurance
+        "dr_bwe_naive",                                   # A3 BWE toggle
+        "dr_enh_mossgan",                                 # Tier-B Pareto re-confirm
+        "dr_refineplus_v3",                               # large-v3 writeup ref
+        # Phase 2 — interaction-confirmation 2×2 cells.
+        "dr_oa02_naive",                                  # A4 OA×BWE 4th corner
+        "dr_retry0", "dr_oa00", "dr_retry0_oa00",         # A5 retry×OA
+        "dr_enhoff", "dr_enhoff_norelabel",               # A6 enh×relabel
+        # Phase 3 — HOLES-BUNDLE Class-1 (04_HOLES.md; existing/just-promoted knobs).
+        "dr_vad040", "dr_vad050",                         # A2 VAD threshold grid
+        "dr_vad050_naive",                                # C1 VAD×BWE corner
+        "dr_vad_ar2",                                     # C5 VAD attack/release
+        "dr_enh_mossgan_oa040",                           # C4 mossgan @ own OA 0.4
+        "dr_refineplus_r34",                              # C6 B+ over resnet34 diar
+        # Phase 4 — HOLES-BUNDLE Class-2: promoted uninventoried levers D1–D6.
+        "dr_silfloor0", "dr_silfloor5e4", "dr_silfloor1e3",      # D1 silence_floor
+        "dr_resample_vhq", "dr_resample_kaiser",                 # D2 resample_quality
+        "dr_seamsil03", "dr_seamsil07",                          # D3 seam_silence_threshold
+        "dr_ovmin02", "dr_ovmin035",                             # D4 overlap_min_duration_s
+        "dr_anchmin05", "dr_anchmin10",                          # D5 anchor_min_duration_s
+        "dr_linkage_avg",                                        # D6 clustering_method
+        # Phase 5 — COMPREHENSIVE expansion (full-grid, 2026-06-22). All off the
+        # same dr_refineplus anchor; finer grids + new levers + interaction corners.
+        "dr_oa010", "dr_oa015", "dr_oa045", "dr_oa060", "dr_oa070",   # OA-finer
+        "dr_vad020", "dr_vad030", "dr_vad060",                        # VAD-finer
+        "dr_vad_ar0", "dr_vad_ar3",                                   # VAD-a/r
+        "dr_bwe_flowhigh",                                           # BWE-flowhigh (@8k)
+        "dr_seamsil02", "dr_seamsil04", "dr_seamsil06", "dr_seamsil08",  # seam-finer
+        "dr_silfloor2e4", "dr_silfloor2e3",                          # silence_floor-finer
+        "dr_ovmin015", "dr_ovmin03", "dr_ovmin05",                   # overlap_min-finer
+        "dr_anchmin04", "dr_anchmin075", "dr_anchmin15",             # anchor_min-finer
+        "dr_linkage_complete", "dr_linkage_ward",                    # linkage
+        "dr_enh_zip",                                                # enh-zip
+        "dr_cohere",                                                 # Cohere ASR
+        # re-confirm @ e46/B+ base
+        "dr_ctx_fixedpad", "dr_ctx_fixedpad15", "dr_ctx_none",
+        "dr_merge03", "dr_merge08",
+        "dr_align_xlsr1b", "dr_cs15", "dr_beam10",
+        "dr_nospeech_hi", "dr_condprev",
+        # interactions
+        "dr_oa04_naive", "dr_oa03_flowhigh", "dr_oa02_flowhigh", "dr_oa04_flowhigh",
+        "dr_enh_zip_oa040", "dr_vad050_flowhigh",
+    ],
+    # Phase 2 — OA × large-v3 stack + OA-peak bracket (2026-06-24). Rescore with
+    # LOO refs: dr_refineplus / dr_refineplus_v3 / dr_oa045 / dr_oa050 / dr_oa070.
+    "phase2": [
+        "dr_oa045_v3", "dr_oa050_v3", "dr_oa070_v3",
+        "dr_oa075", "dr_oa080", "dr_oa050_v3_naive",
     ],
 }
 
@@ -730,7 +1471,7 @@ def _read_run_seconds(run_dir: Path) -> float:
         return float("nan")
 
 
-def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
+def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.DataFrame:
     """cpWER / MIMO-WER / tcpWER / ORC per (config, recording), micro-averaged.
 
     Micro-average (sum errors / sum reference length) is the standard WER
@@ -749,9 +1490,16 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
         ``deterministic=True`` (re-running is ~zero-variance).
       - ``vs_base_delta`` / ``vs_base_ci_lo`` / ``vs_base_ci_hi`` / ``sig`` —
         paired bootstrap of the micro-averaged cpWER difference vs the
-        ``baseline`` config, on the fragments both scored; ``sig`` True iff the
-        CI excludes 0. Blank for ``baseline`` itself and skipped (blank, with a
-        printed note) if ``baseline`` is not among the scored configs.
+        ``anchor`` config (default ``baseline``), on the fragments both scored;
+        ``sig`` True iff the CI excludes 0. Blank for the anchor itself and
+        skipped (blank, with a printed note) if the anchor is not among the
+        scored configs.
+
+    ``anchor`` defaults to ``baseline`` so the historical behaviour is byte-
+    identical; the definitive sweep passes ``anchor='dr_refineplus'``. This is a
+    FRAGMENT-level diagnostic CI — the HEADLINE recording-clustered + Holm/FDR
+    scoring is ``scripts/rescore_stratified.py --anchor <anchor>`` (SWEEP_DESIGN
+    §3.4). The column name stays ``vs_base_*`` for CSV continuity.
     """
     gt = {}
     for fid in recordings:
@@ -843,20 +1591,22 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
             row[fid[:8]] = round(100 * per_rec[fid], 1) if fid in per_rec else None
         rows.append(row)
 
-    # --- Paired comparison vs the `baseline` config (section C) -------------
-    # For each non-baseline config, bootstrap the micro-averaged cpWER
-    # difference on the fragments BOTH it and baseline scored (paired = same
-    # fragment indices resampled jointly). `sig` flags a CI that excludes 0.
-    base_counts = cp_frag_counts.get("baseline")
+    # --- Paired comparison vs the anchor config (section C) -----------------
+    # For each non-anchor config, bootstrap the micro-averaged cpWER difference
+    # on the fragments BOTH it and the anchor scored (paired = same fragment
+    # indices resampled jointly). `sig` flags a CI that excludes 0. The anchor
+    # defaults to `baseline` (historical behaviour); the definitive sweep uses
+    # `dr_refineplus`. FRAGMENT-level diagnostic only — see docstring.
+    base_counts = cp_frag_counts.get(anchor)
     if base_counts is None:
-        print("note: `baseline` not among scored configs — "
+        print(f"note: anchor {anchor!r} not among scored configs — "
               "skipping paired vs_base columns (left blank).")
     for row in rows:
         row["vs_base_delta"] = float("nan")
         row["vs_base_ci_lo"] = float("nan")
         row["vs_base_ci_hi"] = float("nan")
         row["sig"] = None
-        if base_counts is None or row["config"] == "baseline":
+        if base_counts is None or row["config"] == anchor:
             continue
         cfg_counts = cp_frag_counts[row["config"]]
         shared = [f for f in cfg_counts if f in base_counts]
@@ -875,7 +1625,159 @@ def score_configs(config_names, eval_root, recordings) -> pd.DataFrame:
     return df
 
 
+# --- Provenance + durable append-only ledger ------------------------------
+# SWEEP_DESIGN §3.3 / §6.5: every reported number must reproduce from the
+# committed CONFIGS rows + a durable ledger, and the GT must be pinned by a
+# snapshot hash recorded with each run. The per-run `_sweep_results.csv` is kept
+# for eyeballing (overwritten); the ledger is APPEND-only and never rewritten.
+
+
+def _git_head() -> str:
+    """Short git HEAD + a `-dirty` suffix if the tree has uncommitted changes.
+
+    Degrades to ``"unknown"`` (never raises) so provenance capture can't abort a
+    sweep on a box without git."""
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        return f"{head}{'-dirty' if dirty else ''}" if head else "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def _configs_hash(config_names) -> str:
+    """Stable hash of the RESOLVED override dicts for the scored arms.
+
+    Pins the exact knob values behind each arm name, so a later CONFIGS edit that
+    silently changed a row is detectable from the ledger. Sorted keys → order-
+    independent; only the scored arms are hashed."""
+    payload = {n: CONFIGS.get(n, {}) for n in sorted(set(config_names))}
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def _gt_snapshot_hash(eval_root: Path, recordings) -> str:
+    """Hash of the GT actually read by the scorer for these recordings.
+
+    Tracks the REAL reference (the loader resolves EAF → reference/*.txt), so the
+    ledger pins the GT snapshot the design's §6.1 requires and any mid-campaign
+    GT edit shows up as a changed hash. Missing GT for a recording contributes a
+    sentinel rather than crashing."""
+    h = hashlib.sha256()
+    for fid in sorted(recordings):
+        rec = load_recording(eval_root / fid)
+        gt = load_reference_utterances(rec) if rec is not None else {}
+        h.update(fid.encode("utf-8"))
+        for spk in sorted(gt):
+            h.update(spk.encode("utf-8"))
+            for u in gt[spk]:
+                h.update((u.text or "").encode("utf-8"))
+        if not gt:
+            h.update(b"<no-gt>")
+    return h.hexdigest()[:16]
+
+
+def build_provenance(config_names, eval_root, recordings, anchor) -> dict:
+    """The provenance/GT-snapshot header for one scoring pass (SWEEP_DESIGN §3.3)."""
+    return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "git_head": _git_head(),
+        "configs_hash": _configs_hash(config_names),
+        "gt_snapshot_hash": _gt_snapshot_hash(eval_root, recordings),
+        "anchor": anchor,
+        "eval_root": str(eval_root),
+        "n_recordings": len(recordings),
+        "recordings": list(recordings),
+        "configs": list(config_names),
+    }
+
+
+def append_ledger(ledger_path: Path, df: pd.DataFrame, provenance: dict) -> None:
+    """Append every scored row to the durable ledger, tagged with provenance.
+
+    The ledger is APPEND-only (SWEEP_DESIGN §3.3 forbids the overwrite-per-run
+    pattern of doc 02 §4.7). Each appended row carries the run timestamp, git
+    head, configs/GT hashes, and anchor, so the union table across the whole
+    campaign reconstructs from this one file. A sibling ``<stem>_provenance.json``
+    accumulates one JSON object per run for the full header."""
+    tagged = df.copy()
+    tagged.insert(0, "run_ts", provenance["timestamp_utc"])
+    tagged.insert(1, "git_head", provenance["git_head"])
+    tagged.insert(2, "configs_hash", provenance["configs_hash"])
+    tagged.insert(3, "gt_snapshot_hash", provenance["gt_snapshot_hash"])
+    tagged.insert(4, "anchor", provenance["anchor"])
+    header = not ledger_path.exists()
+    tagged.to_csv(ledger_path, mode="a", header=header, index=False)
+    prov_path = ledger_path.with_name(ledger_path.stem + "_provenance.json")
+    with prov_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(provenance) + "\n")
+
+
+def report_coverage(config_names, eval_root, recordings) -> None:
+    """Warn (don't exit) when scored configs disagree on recording coverage.
+
+    The harness is the diagnostic tool; the strict paired-coverage GATE is
+    ``rescore_stratified.py`` (which exits if no recording is common to all
+    configs). This mirrors that report so a partial cache is visible here too —
+    SWEEP_DESIGN §3.4: drops reported, never silently intersected away."""
+    cov = {}
+    for name in config_names:
+        present = [fid for fid in recordings
+                   if read_per_speaker(eval_root / fid / "sweep" / name) is not None]
+        cov[name] = set(present)
+    if not cov:
+        return
+    common = set.intersection(*cov.values())
+    seen = set().union(*cov.values())
+    if any(cov[c] != common for c in cov):
+        for c in config_names:
+            miss = seen - cov[c]
+            if miss:
+                print(f"!! coverage WARNING {c}: missing {len(miss)} of "
+                      f"{len(seen)} recording(s): "
+                      f"{', '.join(sorted(r[:8] for r in miss))}")
+        print(f"!! configs disagree on coverage; harness scores each on its own "
+              f"{len(common)}–{len(seen)} present recordings (paired headline "
+              f"scoring is rescore_stratified.py).")
+
+
 # --- Driver ---------------------------------------------------------------
+
+
+def _die(msg: str) -> int:
+    print(f"ERROR: {msg}", file=sys.stderr)
+    return 2
+
+
+def _load_split(split: str) -> list[str]:
+    """Frozen fragment list from asr_pipeline/eval/clarin_<split>.txt.
+
+    The SAME file the rescorer reads, so the run set and the scoring set cannot
+    drift on which fragments are the dev/test split (SWEEP_DESIGN §3.3 frozen-set
+    control). Both the space-separated dev list and the newline-separated test
+    list ``.split()`` cleanly."""
+    path = REPO_ROOT / "asr_pipeline" / "eval" / f"clarin_{split}.txt"
+    if not path.exists():
+        raise SystemExit(f"split list not found: {path}")
+    frags = path.read_text().split()
+    if not frags:
+        raise SystemExit(f"no fragments in {path}")
+    return frags
+
+
+def _resolve_recordings(args) -> list[str]:
+    """Precedence: explicit --recordings > --split > PILOT (ad-hoc smoke set)."""
+    if args.recordings:
+        return list(args.recordings)
+    if args.split:
+        return _load_split(args.split)
+    return list(PILOT)
 
 
 def _selected_configs(args) -> list[str]:
@@ -887,9 +1789,13 @@ def _selected_configs(args) -> list[str]:
             names += GROUPS[g]
     else:
         names = [n for n in CONFIGS if n != "baseline"]  # all but baseline
-    # baseline always present for comparison; dedupe, preserve order
+    # baseline + the paired anchor always present for comparison; dedupe, order.
+    # The anchor (default `baseline`) must be in the scored set so the paired
+    # vs-anchor column has its reference; `baseline` stays a fixed reference too.
+    anchor = getattr(args, "anchor", "baseline")
+    lead = ["baseline"] if anchor == "baseline" else ["baseline", anchor]
     seen, ordered = set(), []
-    for n in ["baseline"] + names:
+    for n in lead + names:
         if n in CONFIGS and n not in seen:
             seen.add(n); ordered.append(n)
     return ordered
@@ -907,19 +1813,38 @@ def main() -> int:
     ap.add_argument("--eval-root", type=Path, default=EVAL_ROOT,
                     help="Eval-tree root holding <id>/ recording dirs "
                          f"(default: {EVAL_ROOT}).")
-    ap.add_argument("--recordings", nargs="+", default=PILOT,
-                    help="Recording ids under --eval-root (default: the 5 pilot fragments).")
+    ap.add_argument("--recordings", nargs="+", default=None,
+                    help="Recording ids under --eval-root "
+                         "(default: --split if given, else the 5 pilot fragments).")
+    ap.add_argument("--split", choices=["dev", "test"], default=None,
+                    help="Load the frozen fragment list "
+                         "asr_pipeline/eval/clarin_<split>.txt (same file the "
+                         "rescorer reads). Ignored if --recordings is given.")
+    ap.add_argument("--anchor", default="baseline",
+                    help="Config the paired vs-anchor diagnostic column compares "
+                         "to (default: baseline). The definitive sweep uses "
+                         "dr_refineplus; headline scoring is rescore_stratified.py.")
     ap.add_argument("--csv", type=Path, default=None,
-                    help="Results CSV (default: <eval-root>/_sweep_results.csv).")
+                    help="Per-run results CSV, overwritten "
+                         "(default: <eval-root>/_sweep_results.csv).")
+    ap.add_argument("--ledger", type=Path, default=None,
+                    help="Durable APPEND-only ledger CSV + provenance header "
+                         "(default: <eval-root>/_sweep_ledger.csv). Reproduces "
+                         "every reported number across the campaign.")
     args = ap.parse_args()
 
     eval_root = args.eval_root.expanduser()
-    recordings = args.recordings
+    recordings = _resolve_recordings(args)
     csv = args.csv or (eval_root / "_sweep_results.csv")
+    ledger = args.ledger or (eval_root / "_sweep_ledger.csv")
+
+    if args.anchor not in CONFIGS:
+        return _die(f"--anchor {args.anchor!r} is not a known config name")
 
     names = _selected_configs(args)
     print(f"eval_root: {eval_root}")
-    print(f"recordings: {recordings}")
+    print(f"recordings ({len(recordings)}): {recordings}")
+    print(f"anchor: {args.anchor}")
     print(f"configs: {names}\n")
 
     if not args.score_only:
@@ -935,12 +1860,22 @@ def main() -> int:
                 print(f"  [{name}] CONFIG-LEVEL ERROR {type(e).__name__}: {e} — skipping")
             print()
 
-    df = score_configs(names, eval_root, recordings)
+    report_coverage(names, eval_root, recordings)
+    df = score_configs(names, eval_root, recordings, anchor=args.anchor)
     pd.set_option("display.width", 200)
     print("\n=== ranked by micro-averaged cpWER (lower is better) ===")
     print(df.to_string(index=False))
     df.to_csv(csv, index=False)
     print(f"\nwrote {csv}")
+
+    # Durable provenance + append-only ledger (SWEEP_DESIGN §3.3 / §6.5).
+    provenance = build_provenance(names, eval_root, recordings, args.anchor)
+    print("\n=== provenance ===")
+    for k in ("timestamp_utc", "git_head", "configs_hash",
+              "gt_snapshot_hash", "anchor"):
+        print(f"  {k}: {provenance[k]}")
+    append_ledger(ledger, df, provenance)
+    print(f"appended {len(df)} rows to {ledger}")
     return 0
 
 

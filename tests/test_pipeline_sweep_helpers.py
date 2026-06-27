@@ -27,10 +27,16 @@ from asr_pipeline.eval.layer3 import read_mixture, read_per_speaker
 from scripts.run_pipeline_on_recording import MODES, _fresh_cfg
 from scripts.sweep_pipeline import (
     CONFIGS,
+    GROUPS,
     _apply,
+    _build_cfg,
+    _configs_hash,
+    _resolve_recordings,
     _selected_configs,
+    append_ledger,
     bootstrap_microavg_ci,
     bootstrap_paired_diff_ci,
+    build_provenance,
     score_configs,
 )
 
@@ -66,6 +72,34 @@ def test_all_configs_apply():
     """
     for name, overrides in CONFIGS.items():
         _apply(PipelineConfig(), overrides)   # must not raise
+
+
+def test_definitive_group_rows_build_valid_eval_cfg():
+    """Every `definitive` arm resolves through the REAL eval path (_build_cfg =
+    default.yaml + eval overrides + the row's dotted overrides) into a valid
+    PipelineConfig — the non-GPU dry-check that each arm can actually run."""
+    for name in GROUPS["definitive"]:
+        assert name in CONFIGS, name
+        cfg = _build_cfg(dict(CONFIGS[name]))   # must not raise (re-validates)
+        assert isinstance(cfg, PipelineConfig)
+
+
+def test_definitive_arms_anchored_on_dr_refineplus():
+    """The new dr_* arms carry the dr_refineplus B+ relabel base (so each is one
+    delta off the anchor), and the enh-OFF B+ corner uses audio_source='raw' —
+    config.py forbids 'enhanced' with enhancement disabled (no enhanced_full)."""
+    cfg = _build_cfg(dict(CONFIGS["dr_oa050"]))
+    assert cfg.enhancement.observation_mix_ratio == 0.5
+    assert cfg.relabel.enabled is True and cfg.relabel.source == "global"
+
+    cfg = _build_cfg(dict(CONFIGS["dr_enhoff"]))
+    assert cfg.enhancement.enabled is False
+    assert cfg.relabel.enabled is True          # B+ still on
+    assert cfg.relabel.audio_source == "raw"    # the only valid B+ form enh-OFF
+
+    cfg = _build_cfg(dict(CONFIGS["dr_retry0_oa00"]))
+    assert cfg.transcription.retry_collapsed_chunk_size == 0
+    assert cfg.enhancement.observation_mix_ratio == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -146,9 +180,13 @@ def test_read_mixture_present_and_absent(tmp_path):
 
 
 class _Args:
-    def __init__(self, configs=None, groups=None):
+    def __init__(self, configs=None, groups=None, anchor="baseline",
+                 recordings=None, split=None):
         self.configs = configs
         self.groups = groups
+        self.anchor = anchor
+        self.recordings = recordings
+        self.split = split
 
 
 def test_selected_configs_baseline_first_and_deduped():
@@ -163,6 +201,16 @@ def test_selected_configs_default_excludes_baseline_dupe():
     assert names[0] == "baseline"
     assert names.count("baseline") == 1
     assert set(names) == set(CONFIGS)
+
+
+def test_selected_configs_includes_nonbaseline_anchor():
+    # A non-baseline anchor (the definitive sweep uses dr_refineplus) must be in
+    # the scored set so the paired vs-anchor column has its reference. baseline
+    # stays present too (fixed reference column).
+    names = _selected_configs(_Args(configs=["dr_emb_ecapa2"], anchor="dr_refineplus"))
+    assert "dr_refineplus" in names
+    assert names[0] == "baseline"
+    assert names.count("dr_refineplus") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -379,3 +427,97 @@ def test_score_configs_paired_skipped_without_baseline(tmp_path, capsys):
     cfgx = df[df["config"] == "cfgX"].iloc[0]
     assert math.isnan(cfgx["vs_base_delta"])
     assert cfgx["sig"] is None
+
+
+# ---------------------------------------------------------------------------
+# score_configs — paired anchor is now a parameter (default baseline)
+# ---------------------------------------------------------------------------
+
+
+def test_score_configs_paired_anchor_is_configurable(tmp_path):
+    # Anchor on cfgX instead of baseline: cfgX's vs-anchor column blanks, and
+    # baseline is now compared TO cfgX. Default behaviour (anchor=baseline) is
+    # exercised by the other score_configs tests, so this pins the new flag.
+    import math
+    _make_rec(tmp_path, "rec1", "ala ma kota", "ala ma kota", "baseline")
+    _make_rec(tmp_path, "rec2", "ala ma kota", "ala ma psa", "baseline")
+    _add_sweep_output(tmp_path, "rec1", "ala ma kota", "cfgX")
+    _add_sweep_output(tmp_path, "rec2", "ala ma psa", "cfgX")
+
+    df = score_configs(["baseline", "cfgX"], tmp_path, ["rec1", "rec2"],
+                       anchor="cfgX")
+    cfgx = df[df["config"] == "cfgX"].iloc[0]
+    assert math.isnan(cfgx["vs_base_delta"])     # the anchor blanks its own column
+    assert cfgx["sig"] is None
+    base = df[df["config"] == "baseline"].iloc[0]
+    # baseline == cfgX here (identical outputs) → delta 0, not significant.
+    assert base["vs_base_delta"] == pytest.approx(0.0)
+    assert base["sig"] is False
+
+
+# ---------------------------------------------------------------------------
+# --split / --recordings resolution
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_recordings_precedence():
+    # explicit --recordings wins over --split
+    assert _resolve_recordings(
+        _Args(recordings=["a__seg00", "b__seg00"], split="dev")
+    ) == ["a__seg00", "b__seg00"]
+    # --split loads the frozen dev list (23 fragments) and matches the rescorer's
+    dev = _resolve_recordings(_Args(split="dev"))
+    assert len(dev) == 23 and "db15fc57__seg00" in dev
+    # no recordings, no split → the PILOT smoke set
+    from scripts.sweep_pipeline import PILOT
+    assert _resolve_recordings(_Args()) == list(PILOT)
+
+
+# ---------------------------------------------------------------------------
+# provenance + durable append-only ledger
+# ---------------------------------------------------------------------------
+
+
+def test_configs_hash_is_stable_and_value_sensitive():
+    # Same arms (any order) → same hash; a changed override value → different hash.
+    h1 = _configs_hash(["baseline", "enh_frcrn"])
+    h2 = _configs_hash(["enh_frcrn", "baseline"])
+    assert h1 == h2
+    assert _configs_hash(["baseline"]) != _configs_hash(["enh_frcrn"])
+
+
+def test_build_provenance_captures_header_fields(tmp_path):
+    _make_rec(tmp_path, "rec1", "ala ma kota", "ala ma kota", "baseline")
+    prov = build_provenance(["baseline"], tmp_path, ["rec1"], "baseline")
+    for k in ("timestamp_utc", "git_head", "configs_hash", "gt_snapshot_hash",
+              "anchor", "eval_root", "recordings"):
+        assert k in prov
+    assert prov["anchor"] == "baseline"
+    assert prov["recordings"] == ["rec1"]
+    # The GT hash tracks the real reference: a GT edit changes it.
+    h0 = prov["gt_snapshot_hash"]
+    _write_transcript(tmp_path / "rec1" / "reference" / "speaker_A.txt",
+                      0.0, 1.0, "zupelnie inny tekst")
+    h1 = build_provenance(["baseline"], tmp_path, ["rec1"], "baseline")[
+        "gt_snapshot_hash"]
+    assert h0 != h1
+
+
+def test_append_ledger_appends_not_overwrites(tmp_path):
+    import pandas as pd
+    led = tmp_path / "_sweep_ledger.csv"
+    df1 = pd.DataFrame([{"config": "baseline", "cpWER": 25.0}])
+    df2 = pd.DataFrame([{"config": "dr_refineplus", "cpWER": 19.9}])
+    prov = build_provenance(["baseline"], tmp_path, [], "baseline")
+    append_ledger(led, df1, prov)
+    append_ledger(led, df2, prov)
+    out = pd.read_csv(led)
+    # Both runs survive (append, not overwrite); provenance columns are present.
+    assert len(out) == 2
+    assert set(out["config"]) == {"baseline", "dr_refineplus"}
+    for col in ("run_ts", "git_head", "configs_hash", "gt_snapshot_hash", "anchor"):
+        assert col in out.columns
+    # The provenance sidecar accumulates one JSON line per run.
+    prov_path = led.with_name(led.stem + "_provenance.json")
+    assert prov_path.exists()
+    assert len(prov_path.read_text().strip().splitlines()) == 2
