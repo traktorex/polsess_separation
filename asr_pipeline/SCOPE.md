@@ -17,7 +17,7 @@ BWE-ImportError REMOVE verdict verified already absent (see ledger footnote).
 
 The pipeline has **two lives**:
 
-- **Life 1 — thesis instrument (now).** Produce the L1/L2/L3 evaluation tables
+- **Life 1 — thesis instrument (now).** Produce the L2/L3 evaluation tables
   that show the effect of speech-separation preprocessing on Polish 2-speaker
   ASR. The thesis discusses the pipeline's *design*, not its implementation;
   the code is a tool that produces results, not an exhibit that gets read
@@ -101,7 +101,7 @@ review passes shift lines too fast for refs to stay honest.
 | `transcription.py` `_normalise_result`; `io.py` `write_pipeline_outputs` (EAF locale → literal `"pl"`) | missing `language` in WhisperX result → config value                   | **KEEP** — the operator declared the language; trusting config is correct                                                                                                   |
 | `eval/recordings.py` `Recording` / `load_recording`                                                    | eval-tree layout fallbacks (.txt+.rttm; old `mixture.wav` symlink)     | **KEEP** (rule 4); not set in stone, prune layouts that die                                                                                                                 |
 | `eval/metrics.py` `_digits_to_words_pl` (module-level `_num2words` import)                             | number-to-words dep missing → digits stay digits                       | **UNDECIDED** — silently changes scores with environment; candidate: make it a hard dep                                                                                     |
-| `stages/assembly.py` `_assign_overlaps`                                                                | straight-through fallback in overlap assignment                        | **UNDECIDED** — needs a dedicated look                                                                                                                                      |
+| `stages/assembly.py` `_assign_overlaps`                                                                | straight-through fallback in overlap assignment                        | **KEEP** (ruled 2026-06-11) — degenerate-input escape hatch (sub-0.25 s solo anchors / sub-0.1 s overlaps / non-finite cosine); too rare and information-poor to act on better; documented in-code |
 | `stages/assembly.py` `_assign_overlaps` (>2 speakers warn)                                             | 3rd speaker → warn and continue                                        | **KEEP for now** — see §3 phantom-speaker anomaly                                                                                                                           |
 | `stages/transcription.py` `_skip_transcription` *(review 2026-06-10)*                                  | short (<0.5 s) or silent stream → empty transcript, Whisper not called | **KEEP** — silence in, silence out; Whisper hallucinates Polish on the assembler's all-zeros no-event sentinel, which L3 then scores as insertions. Logged visibly via dlog |
 | `stages/enhancement.py` `_MIN_ENHANCE_SAMPLES` *(review 2026-06-10)*                                   | input <256 samples (16 ms) → passed through unenhanced                 | **KEEP** — below one STFT frame; nothing to enhance                                                                                                                         |
@@ -131,9 +131,10 @@ Resolved rows:
 
 **Frozen / removable:**
 
-- `mpsenet` — consistently the worst enhancement backend; candidate for
-  removal once the config sweep concludes. Note: it is still the dataclass
-  *default* today — that default should not outlive the sweep conclusion.
+- `mpsenet` — **removal ruled 2026-06-11 (author)**; consistently the worst
+  enhancement backend. Dataclass default moves to `frcrn_se_16k` (the
+  evidence leader) as a placeholder — the *final* default ruling stays
+  deferred until there is substantive testing data (see §10 q7).
 
 **Ablation surface (fixed for the thesis):** full pipeline vs (no-sep, yes-enh)
 vs (yes-sep, no-enh) vs (no-sep, no-enh) vs whisper-on-raw-mixture (no
@@ -182,10 +183,21 @@ deployment work starts:
   exporter until it's needed or it serves Life 1.
 - **Not Polish-only.** The platform will serve other languages. The wav2vec2
   alignment model must stay swappable like every other model; new code must
-  not pin Polish any deeper than it already is.
-- **Long recordings.** End-to-end verified on one ~15-minute recording
-  (442dd69e from `clarin_gotowy`, good output). 60–90-minute recordings are
-  untested; a smoke test on one is a known TODO before deployment work starts.
+  not pin Polish any deeper than it already is. *Wired 2026-06-11:
+  `align_model_name: null` (the default) lets WhisperX pick its per-language
+  aligner (pl → the previously pinned jonatasgrosman model, byte-identical
+  behavior; en → torchaudio `WAV2VEC2_ASR_BASE_960H`, author's choice);
+  `configs/english.yaml` is the English preset.*
+- **Long recordings.** ~~60–90-minute recordings are untested~~ **Verified
+  2026-06-11**: end-to-end on a 1:35:29 recording (the longest available) via
+  `explore_pipeline.ipynb` — nothing broke, output looks fine. (Earlier:
+  ~15-minute 442dd69e, also good.) TODO closed.
+- **Adaptive stage application.** The platform pipeline must eventually treat
+  its stages adaptively rather than as a fixed always-on chain — recordings
+  where a stage has nothing legitimate to do should not be damaged by it.
+  Evidence: LibriCSS L3 (2026-06-12), where always-on FRCRN roughly doubled
+  cpWER on clean far-field audio (no additive noise to remove → only harm).
+  No implementation direction chosen yet — only the need is established.
 
 ## 10. Open questions
 
@@ -195,7 +207,11 @@ initiative — `UNDECIDED` means frozen until the author rules.
 1. Phantom 3rd speaker (GPS-navigation case): error, ignore-the-extra-cluster,
    or merge-into-nearest? Needs a decision informed by real recordings.
 2. `eval/metrics.py:62` digits fallback — hard dep or documented behavior?
-3. Assembly straight-through fallback — keep, narrow, or remove?
+3. ~~Assembly straight-through fallback — keep, narrow, or remove?~~
+   **RESOLVED 2026-06-11 (author): keep.** It only fires on degenerate inputs
+   (no usable anchor / too-short overlap / non-finite cosine) where nothing
+   smarter is possible; cases are vanishingly rare in the input universe.
+   Documented with an author-ruling comment at the fixed-assignment branch.
 4. flowhigh vs ap_bwe — measure compute cost; if marginal, the quality winner
    takes the default.
    *Data gathered 2026-06-10 (5 pilot fragments, deterministic,
@@ -207,11 +223,22 @@ initiative — `UNDECIDED` means frozen until the author rules.
    18.81 / 12.70. Notes: default.yaml ships `flowhigh_input_sr: 8000`,
    clearly the worse setting; at 16k-in flowhigh is ~tied (n=5, mixed
    per-fragment direction) while costing more compute + an extra git dep.
-   The decision remains the author's.*
+   The decision remains the author's.* **UNDECIDED 2026-06-11 (author): we'll keep and test both once we have more data.**
 5. ~~Vanilla Whisper backend — keep as a thesis comparison or delete?~~ RESOLVED 2026-06-11 (author): keep it
 6. ~~Missing (no-sep, no-enh) ablation arm — add to
    `run_pipeline_on_recording.py`?~~ **RESOLVED 2026-06-10 (author): yes.**
    The producer already existed (`pipeline_minimal`, both stages off); the
    eval layer now discovers it (`Recording.pipeline_minimal_dir`), scores it
    (L3 mode `minimal`), and surfaces it (`summarize_layer3.minimal_cpwer`).
-7. mpsenet removal + default-backend change after the sweep concludes.
+7. ~~mpsenet removal + default-backend change after the sweep concludes.~~
+   **PARTIALLY RESOLVED 2026-06-11 (author): remove mpsenet now** (done in
+   code). The default-backend *final* choice remains open until substantive
+   testing data exists; `frcrn_se_16k` is the interim dataclass default.
+8. ~~Is L1 (DER) computable anywhere?~~ **RESOLVED 2026-06-11 (author): L1 is
+   retired — not computed anywhere, for anything.** No reference RTTM exists
+   for any dataset; the GT `.eaf` transcripts were once treated as reference
+   diarization, but they are not built for that — short utterances carry
+   timestamps that run long past the actual end of speech, so DER against
+   them is invalid. Consequence (lifetime rule): `eval/layer1.py` and the DER
+   plumbing are deletion candidates; not yet scheduled. L1 cells removed from
+   `asr/evaluate_pipeline.ipynb` 2026-06-11 (author-requested).
