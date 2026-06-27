@@ -32,14 +32,14 @@ from asr_pipeline.transcript_format import format_transcript, to_jsonable
 # Minimum stream length worth sending to Whisper. SR-relative so it tracks
 # ctx.sample_rate rather than baking in 16 kHz (POC's lower bound).
 _MIN_TRANSCRIBE_DURATION_S = 0.5
-# Peak-amplitude floor below which a stream is treated as silent and skipped.
-# The assembler emits all-zeros sentinels for no-event speakers (assembly.py:
+# The peak-amplitude floor below which a stream is treated as silent and skipped
+# is `TranscriptionConfig.silence_floor` (default 1e-4). The assembler emits
+# all-zeros sentinels for no-event speakers (assembly.py:
 # _concat_shortened/_concat_full_length); those clear the duration gate above,
 # and Whisper hallucinates phantom Polish on pure silence — which would then be
-# spilled and scored as insertions in the L3 WER table. Value mirrors the
-# silence floor in eval/layer2.py (duplicated, not imported: stages must not
-# depend on eval).
-_SILENCE_FLOOR = 1e-4
+# spilled and scored as insertions in the L3 WER table. The default value
+# mirrors the silence floor in eval/layer2.py (duplicated, not imported: stages
+# must not depend on eval).
 
 
 def _log(msg: str) -> None:
@@ -513,6 +513,96 @@ class _WhisperXBackend:
         self._device_str = None
 
 
+# Isolated-venv CohereX worker (Diffio-AI/CohereX). Invoked under $COHEREX_VENV_PY,
+# NOT the main venv — see scripts/coherex_worker.py for the isolation rationale.
+_COHEREX_WORKER = Path(__file__).resolve().parents[2] / "scripts" / "coherex_worker.py"
+
+
+class _CohereXBackend:
+    """Cohere ASR (Diffio-AI/CohereX) via an isolated-venv subprocess.
+
+    CohereX's ``coherex`` package + transformers pins + the 2B Cohere model
+    conflict with the main venv, so this backend shells out to the interpreter in
+    ``$COHEREX_VENV_PY`` running ``scripts/coherex_worker.py`` (same isolation as
+    the Brouhaha scorer; unlike ``_ZipEnhancerBackend`` it cannot use the main
+    venv via ``sys.executable``). The worker loads the model per ``transcribe``
+    call (per-speaker stream) — a few extra minutes on a single recording; for
+    batch eval use the standalone sweep driver instead. SCOPE §4: a missing
+    venv/worker is a loud crash at ``load`` — never a silent fall-back to WhisperX.
+
+    Maps existing ``TranscriptionConfig`` fields to the worker: ``model_name`` is
+    the Cohere model id, ``align_model_name`` the wav2vec2 aligner (None → the
+    worker's Polish default), plus ``language`` / ``chunk_size`` / ``vad_onset`` /
+    ``vad_offset`` / ``repetition_penalty`` / ``no_repeat_ngram_size``.
+    """
+
+    def __init__(self, cfg: TranscriptionConfig) -> None:
+        self.cfg = cfg
+        self._venv_py: Optional[str] = None
+
+    def load(self, device: torch.device) -> None:
+        import os
+        venv_py = os.environ.get("COHEREX_VENV_PY")
+        if not venv_py:
+            raise RuntimeError(
+                "transcription.backend='coherex' requires $COHEREX_VENV_PY — the "
+                "path to the isolated CohereX venv's python (e.g. "
+                "~/asr_model_compare/coherex_venv/bin/python). Set it, or use "
+                "backend='whisperx'. (No silent fall-back — SCOPE §4.)"
+            )
+        if not Path(venv_py).exists():
+            raise FileNotFoundError(f"$COHEREX_VENV_PY not found: {venv_py}")
+        if not _COHEREX_WORKER.exists():
+            raise FileNotFoundError(f"CohereX worker missing: {_COHEREX_WORKER}")
+        self._venv_py = venv_py
+        _log(f"load: CohereX backend ready (venv={venv_py}, "
+             f"worker={_COHEREX_WORKER.name}); model loads per-call in subprocess")
+
+    def transcribe(self, audio: np.ndarray) -> dict:
+        if self._venv_py is None:
+            raise RuntimeError("_CohereXBackend.transcribe called before load().")
+        import subprocess
+        import tempfile
+
+        import soundfile as sf
+        with tempfile.TemporaryDirectory() as td:
+            tin = str(Path(td) / "in.wav")
+            tout = str(Path(td) / "out.json")
+            sf.write(tin, np.asarray(audio, dtype=np.float32), 16_000)
+            cmd = [
+                self._venv_py, str(_COHEREX_WORKER),
+                "--in", tin, "--out", tout,
+                "--asr-model", self.cfg.model_name,
+                "--language", self.cfg.language,
+                "--chunk-size", str(self.cfg.chunk_size),
+                "--vad-onset", str(self.cfg.vad_onset),
+                "--vad-offset", str(self.cfg.vad_offset),
+            ]
+            if self.cfg.align_model_name:
+                cmd += ["--align-model", self.cfg.align_model_name]
+            if self.cfg.no_repeat_ngram_size:
+                cmd += ["--no-repeat-ngram", str(self.cfg.no_repeat_ngram_size)]
+            if self.cfg.repetition_penalty and self.cfg.repetition_penalty != 1.0:
+                cmd += ["--rep-penalty", str(self.cfg.repetition_penalty)]
+            # Neutral cwd (scripts/) so the worker never resolves the repo's local
+            # `datasets/` package; inherit env for HF_TOKEN / CUDA.
+            proc = subprocess.run(
+                cmd, cwd=str(_COHEREX_WORKER.parent),
+                capture_output=True, text=True,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"CohereX worker failed (exit {proc.returncode}). "
+                    f"stderr tail:\n{proc.stderr[-2000:]}"
+                )
+            with open(tout, encoding="utf-8") as f:
+                result = json.load(f)
+        return _normalise_result(result, self.cfg.language)
+
+    def unload(self) -> None:
+        self._venv_py = None
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -524,7 +614,8 @@ class TranscriptionStage(Stage):
     def __init__(self, config: TranscriptionConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: Optional[_WhisperBackend | _WhisperXBackend] = None
+        self._backend: Optional[
+            _WhisperBackend | _WhisperXBackend | _CohereXBackend] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -534,6 +625,8 @@ class TranscriptionStage(Stage):
             self._backend = _WhisperBackend(self.config)
         elif self.config.backend == "whisperx":
             self._backend = _WhisperXBackend(self.config)
+        elif self.config.backend == "coherex":
+            self._backend = _CohereXBackend(self.config)
         else:
             raise ValueError(f"Unknown transcription backend: {self.config.backend!r}")
         self._backend.load(device)
@@ -542,7 +635,7 @@ class TranscriptionStage(Stage):
         # Per-call options (language / initial_prompt / word_timestamps) are
         # not part of model identity. Backend, model id, and (for whisperx)
         # alignment model id are.
-        if self.config.backend == "whisperx":
+        if self.config.backend in ("whisperx", "coherex"):
             return (self.config.backend, self.config.model_name,
                     self.config.align_model_name)
         return (self.config.backend, self.config.model_name)
@@ -570,7 +663,7 @@ class TranscriptionStage(Stage):
         # hallucinated text scored against a speaker who said nothing.
         results: dict[str, dict] = {}
         for spk, audio in (ctx.assembled or {}).items():
-            if self._skip_transcription(audio, min_samples):
+            if self._skip_transcription(audio, min_samples, self.config.silence_floor):
                 _log(
                     f"run: {spk} stream short/silent "
                     f"({len(audio) / ctx.sample_rate:.2f}s) — empty transcript, "
@@ -585,7 +678,7 @@ class TranscriptionStage(Stage):
         # Used by the ablation table — same backend / prompt / args as the
         # per-speaker pass, so the comparison is fair.
         if self.config.transcribe_mixture and ctx.audio is not None:
-            if self._skip_transcription(ctx.audio, min_samples):
+            if self._skip_transcription(ctx.audio, min_samples, self.config.silence_floor):
                 _log(
                     "run: mixture short/silent — empty transcript, "
                     "Whisper not called"
@@ -595,11 +688,18 @@ class TranscriptionStage(Stage):
                 ctx.mixture_transcript = self._backend.transcribe(ctx.audio)
 
     @staticmethod
-    def _skip_transcription(audio: np.ndarray, min_samples: int) -> bool:
-        """True if `audio` is too short or silent to be worth transcribing."""
+    def _skip_transcription(
+        audio: np.ndarray, min_samples: int, silence_floor: float
+    ) -> bool:
+        """True if `audio` is too short or silent to be worth transcribing.
+
+        `silence_floor` is the peak-amplitude gate
+        (`TranscriptionConfig.silence_floor`); passed in because this is a
+        staticmethod with no `self`/config access.
+        """
         if len(audio) < min_samples or len(audio) == 0:
             return True
-        return float(np.max(np.abs(audio))) < _SILENCE_FLOOR
+        return float(np.max(np.abs(audio))) < silence_floor
 
     # ------------------------------------------------------------------
     # Spill

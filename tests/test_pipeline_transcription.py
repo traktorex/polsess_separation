@@ -16,16 +16,21 @@ import pytest
 from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.stages.transcription import (
-    _SILENCE_FLOOR,
     TranscriptionStage,
     _WhisperBackend,
     _WhisperXBackend,
+    _CohereXBackend,
     _empty_result,
     _ensure_ct2_model,
     _finite_or_zero,
     _normalise_result,
     _temperature_schedule,
 )
+
+# The silence floor is now a config field (TranscriptionConfig.silence_floor),
+# not a module constant; the stage gate uses whatever value the config carries.
+# The tests below exercise the DEFAULT, so anchor on the dataclass default.
+_SILENCE_FLOOR = TranscriptionConfig().silence_floor
 
 
 class _StubBackend:
@@ -281,6 +286,22 @@ def test_load_dispatches_to_whisperx_backend(monkeypatch):
     assert isinstance(stage._backend, _WhisperXBackend)
 
 
+def test_load_dispatches_to_coherex_backend(monkeypatch):
+    monkeypatch.setattr(_CohereXBackend, "load", lambda self, device: None)
+    stage = TranscriptionStage(TranscriptionConfig(backend="coherex"))
+    stage.load(torch_cpu())
+    assert isinstance(stage._backend, _CohereXBackend)
+
+
+def test_coherex_backend_fail_loud_without_venv_env(monkeypatch):
+    # SCOPE §4: a missing isolated venv is a loud crash at load, never a silent
+    # fall-back to WhisperX.
+    monkeypatch.delenv("COHEREX_VENV_PY", raising=False)
+    stage = TranscriptionStage(TranscriptionConfig(backend="coherex"))
+    with pytest.raises(RuntimeError, match="COHEREX_VENV_PY"):
+        stage.load(torch_cpu())
+
+
 def test_load_unknown_backend_raises():
     stage = TranscriptionStage(TranscriptionConfig(backend="nonsense"))
     with pytest.raises(ValueError, match="Unknown transcription backend"):
@@ -297,6 +318,13 @@ def test_load_signature_whisperx_includes_align_model():
                               align_model_name="some/aligner")
     stage = TranscriptionStage(cfg)
     assert stage.load_signature() == ("whisperx", "large-v2", "some/aligner")
+
+
+def test_load_signature_coherex_includes_align_model():
+    cfg = TranscriptionConfig(backend="coherex", model_name="CohereLabs/x",
+                              align_model_name="some/aligner")
+    stage = TranscriptionStage(cfg)
+    assert stage.load_signature() == ("coherex", "CohereLabs/x", "some/aligner")
 
 
 def torch_cpu():
