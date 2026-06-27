@@ -1,0 +1,114 @@
+# CURRENT BEST config (2026-06-19) — "dr_refineplus" / B+.
+# = sweep_best_e31.yaml (the e31 OA-0.3 + ECAPA2-diar winner) PLUS the 2nd-pass
+# B+ relabel stage. This is the best dev result of the attribution campaign.
+#
+# Dev (23 frags, vs the ECAPA2-diar baseline dr_emb_ecapa2): cpWER 20.3 -> 19.7
+# (ALL ΔcpWER +0.6 [+0.1,+1.4], significant), CER 13.2 -> 12.8; HIGH 28.8 -> 27.8.
+# It is the FIRST lever in the whole campaign to actually move the attribution
+# gap (ALL MIMO-gap +0.2*, HIGH +0.5*) AND improve reference-free stream purity
+# (ALL +0.6*, HIGH +1.3*) — purity being GT-independent makes the de-contamination
+# claim robust. Only 1 trivial regression (065a9896 9->10 CER). db15fc57 37.7->~34.6.
+#
+# Mechanism: after post_separation_processing, RelabelStage (source=global)
+# re-embeds the pass-1 SOLO segments (enhanced audio) AND the separator's gated
+# overlap streams (s1_gated/s2_gated — recovered from the UN-enhanced mix, so the
+# quiet speaker survives) with ECAPA2, clusters them jointly into 2 (seeded cosine
+# 2-means), and feeds each overlap's stream->speaker decision to assembly via its
+# consensus seam. The win comes from the OVERLAP re-assignment (per-overlap
+# cross-contamination), not solo re-clustering (which reconverges to pass-1).
+#
+# HONEST CAVEATS: (1) dev-selected on n=23, NOT validated on the held-out TEST
+# split; (2) small win (~0.6 cpWER) — the attribution gap is small (2.1 WER) and
+# mostly irreducible (forensic _forensics/TRANSCRIPT_ROOTCAUSE.md: ~1 WER
+# recoverable corpus-wide); (3) costs an extra ECAPA2 pass over sweep_best_e31.
+# (4) ECAPA2 is CC-BY-NC — fine for the thesis, not commercial Life-2.
+# The shipped/anchor config remains sweep_best_e31.yaml (= f_oa03 + ecapa2-diar);
+# this file is the best-candidate with the B+ 2nd pass enabled.
+
+sample_rate: 16000
+device: cuda
+deterministic: true
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  # hf_token is read from $HF_TOKEN at load; never hardcode it here.
+  num_speakers: 2
+  embedding: ecapa2          # ECAPA2 custom wrapper (small broad dev win)
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  max_segment_length_s: 8.0
+  observation_mix_ratio: 0.3   # Observation-Adding r=0.3 (the e31 winning delta)
+
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25
+  vad_soft_threshold: 0.10
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+post_separation_processing:
+  backend: ap_bwe
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  flowhigh_input_sr: 16000
+
+# 2nd-pass identity re-clustering (B+). Runs after post_separation_processing,
+# before assembly; re-IDs solos + assigns overlap streams via global ECAPA2
+# clustering; feeds assembly's consensus seam. THE delta vs sweep_best_e31.yaml.
+relabel:
+  enabled: true
+  source: global             # solos + separated overlap streams (B+); "solos" = B
+  embedding: ecapa2
+  audio_source: enhanced     # solos from enhanced_full; overlap streams are raw-derived
+  exclude_overlap: true
+  duration_weighted: false
+
+assembly:
+  enabled: true
+  min_solo_for_anchor_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  beam_size: 5
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  condition_on_previous_text: false
+  no_speech_threshold: 0.6
+  compression_ratio_threshold: 2.4
+  patience: 1.0
+  no_repeat_ngram_size: 0
+  retry_collapsed_chunk_size: 8
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7

@@ -6,7 +6,11 @@
 #
 # Deltas from default.yaml: enhancement.observation_mix_ratio 0.0 -> 0.3;
 # assembly.output_mode shortened -> full_length (timestamp-aligned streams for
-# tcpWER scoring). Everything else IS the default.yaml baseline (FRCRN enh on,
+# tcpWER scoring); diarization.embedding -> ecapa2 (2026-06-18: stronger speaker
+# embedder via the custom wrapper — small BROAD dev win +0.4 cpWER / +0.4 CER,
+# 1 trivial regression; does NOT fix the attribution gap, the win is cleaner
+# diarization segmentation. CC-BY-NC: fine for the thesis, not commercial Life-2).
+# Everything else IS the default.yaml baseline (FRCRN enh on,
 # ap_bwe BWE, detect-and-retry on, large-v2, no_repeat_ngram_size OFF — nrng3
 # HURTS OA once retry is on).
 #
@@ -33,6 +37,10 @@ diarization:
   model_id: pyannote/speaker-diarization-3.1
   # hf_token is read from $HF_TOKEN at load; never hardcode it here.
   num_speakers: 2
+  # ECAPA2 speaker embedder (custom wrapper, stages/custom_embeddings.py) in
+  # place of the stock wespeaker-resnet34-LM. Adopted 2026-06-18 for a small
+  # broad dev ASR win (see header). Reconstructs a 3.1-equivalent pipeline.
+  embedding: ecapa2
 
 routing:
   enabled: true
