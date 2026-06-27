@@ -49,8 +49,8 @@ introduce one.
 Finally, following the CHiME normalizer, we drop non-verbal material that
 neither side should be scored on: bracketed non-speech markup (`[śmiech]`,
 `<muzyka>`) and a conservative list of non-lexical filler vocalizations
-(`yyy`, `eee`, `mmm`, `hmm`, `mhm`, `yhy`). Lexical backchannels that *are*
-words — `no`, `tak`, `aha` — are deliberately kept.
+(`yyy`, `eee`, `mmm`, `hmm`, `mhm`). Lexical backchannels that *are*
+words — `no`, `tak`, `aha`, `yhy` — are deliberately kept.
 """
 
 from __future__ import annotations
@@ -82,14 +82,39 @@ _PUNCT_RE = re.compile(r"[^\w\s]+", flags=re.UNICODE)
 _BRACKET_RE = re.compile(r"<[^>]*>|\[[^\]]*\]")
 
 # Non-lexical filler vocalizations (whole-token match). Conservative: only
-# clear hesitation sounds — lexical backchannels (`no`, `tak`, `aha`) are kept.
-_FILLER_RE = re.compile(r"(?:y{2,}|e{2,}|m{2,}|hm+|mhm+|yhy)")
+# clear hesitation sounds — lexical backchannels (`no`, `tak`, `aha`, `yhy`) are
+# kept (the author's GT convention treats `yhy` as a lexical backchannel, unlike
+# the `mhm`/`eee`/`yyy`/`mmm`/`hmm` hesitations which both sides drop).
+_FILLER_RE = re.compile(r"(?:y{2,}|e{2,}|m{2,}|hm+|mhm+)")
 
 # Interchangeable spelling variants mapped to one canonical token, applied to
 # BOTH reference and hypothesis so the choice never costs WER. Extend this as
 # more equivalences turn up (keep only genuinely free variants — same word,
 # different spelling — not different words).
-_CANON = {"okej": "ok"}
+_CANON = {"okej": "ok", "noo": "no"}
+
+# Collapse expressive letter elongation: a letter repeated 3+ times -> once
+# ("nooo"->"no", "taaak"->"tak"). Safe because Polish orthography never repeats a
+# letter 3+ times (max gemination is 2: "lekko", "kooperacja", "zoo"), so this can
+# only fire on expressive lengthening. Applied to plain word tokens on BOTH sides;
+# 2-char interjection elongations ("noo") go through _CANON instead, since a
+# blanket 2->1 collapse would corrupt legitimate doubles.
+_ELONG_RE = re.compile(r"(.)\1{2,}")
+
+# Apostrophes are removed WITHOUT inserting a space (unlike other punctuation,
+# which becomes a space) so a Polish genitive of a foreign proper noun stays one
+# token: "War'a" -> "wara" (matching a GT written "Wara"), not "war a". Covers
+# ASCII ' plus the curly/modifier variants Whisper/Cohere emit.
+_APOS_RE = re.compile("['’‘ʼ]")
+
+# Whole-phrase equivalences folded on the normalized string (both sides), for
+# abbreviation <-> spelled-out forms the per-token pass can't see. Canonical form
+# is the abbreviation. "i tak dalej" is overwhelmingly the "etc." idiom in
+# conversational Polish, so the fold is safe.
+_PHRASE_FOLDS = [
+    (re.compile(r"\bi tak dalej\b"), "itd"),
+    (re.compile(r"\bi tym podobne\b"), "itp"),
+]
 
 # Split a token on its maximal digit runs, keeping the runs as separate groups:
 # "c3p2" → ["c", "3", "p", "2"]; "a24" → ["a", "24"]; "10x" → ["10", "x"].
@@ -153,8 +178,9 @@ def _is_alnum_mixed(token: str) -> bool:
 
 def _normalize_text(s: str, lang: str = "pl") -> str:
     """Lowercase, drop non-speech markup + fillers, fold digits to spoken
-    words in `lang`, split alphanumeric tokens, strip punctuation, collapse
-    whitespace.
+    words in `lang`, split alphanumeric tokens, collapse letter elongation,
+    drop apostrophes (no space), fold abbreviation phrases (itd/itp),
+    strip punctuation, collapse whitespace.
 
     Preserves diacritics (phonemic in Polish — `ł` vs `l` is a real
     substitution and should count as a WER error). Digit tokens become their
@@ -168,6 +194,7 @@ def _normalize_text(s: str, lang: str = "pl") -> str:
     split (`a dwadzieścia cztery`) — applied symmetrically to ref and hyp.
     """
     s = _BRACKET_RE.sub(" ", s.lower())
+    s = _APOS_RE.sub("", s)   # apostrophes drop with no space (see _APOS_RE)
     tokens = _PUNCT_RE.sub(" ", s).split()
     out = []
     for tok in tokens:
@@ -179,20 +206,44 @@ def _normalize_text(s: str, lang: str = "pl") -> str:
         elif _is_alnum_mixed(tok):
             out.append(_alnum_split(tok, lang))
         else:
-            out.append(tok)
-    return " ".join(out)
+            out.append(_ELONG_RE.sub(r"\1", tok))
+    result = " ".join(out)
+    for pat, repl in _PHRASE_FOLDS:   # abbreviation <-> spelled-out (see _PHRASE_FOLDS)
+        result = pat.sub(repl, result)
+    return result
+
+
+# Word-boundary sentinel for character-level (CER) tokenization: spaces become
+# this token so they are scored as edits, matching cp_cer's string-Levenshtein
+# convention (spaces count). U+2581 does not occur in normalized transcript text.
+_CER_SPACE = "▁"
+
+
+def _char_words(text_norm: str) -> str:
+    """Char-tokenize a normalized 'words' string for character-level (CER)
+    scoring: each character becomes its own whitespace-separated token (spaces →
+    the _CER_SPACE sentinel). A WER routine run on this yields CER, reusing the
+    exact permutation/assignment machinery of the word-level metrics."""
+    return " ".join(_CER_SPACE if ch == " " else ch for ch in text_norm)
 
 
 def _seglst_from_dict(
-    utts_by_spk: Dict[str, List[Utterance]], session_id: str, lang: str = "pl"
+    utts_by_spk: Dict[str, List[Utterance]], session_id: str, lang: str = "pl",
+    char_level: bool = False,
 ):
     """SegLST rows from per-speaker utterances, with normalization applied.
 
     Shared by every metric below — one row per non-empty utterance.
-    `lang` selects the number speller (see ``_normalize_text``). meeteval is
-    imported lazily so the module stays importable without it.
+    `lang` selects the number speller (see ``_normalize_text``). When
+    ``char_level`` is set the normalized text is char-tokenized (``_char_words``)
+    so a WER routine computes CER. meeteval is imported lazily so the module
+    stays importable without it.
     """
     from meeteval.io.seglst import SegLST
+
+    def _words(u):
+        w = _normalize_text(u.text, lang)
+        return _char_words(w) if char_level else w
 
     # Untimed utterances (start/end = None) carry 0.0 placeholders here. This
     # is safe ONLY because the metrics that consume this SegLST — cpWER, ORC,
@@ -205,7 +256,7 @@ def _seglst_from_dict(
             "speaker": spk,
             "start_time": float(u.start) if u.start is not None else 0.0,
             "end_time": float(u.end) if u.end is not None else 0.0,
-            "words": _normalize_text(u.text, lang),
+            "words": _words(u),
         }
         for spk, utts in utts_by_spk.items()
         for u in utts
@@ -448,6 +499,51 @@ def orc_wer_multistream(
         ),
     )[session_id]
     return _wer_result(orc, "orc_wer")
+
+
+def orc_cer_multistream(
+    ref_utts_by_spk: Dict[str, List[Utterance]],
+    hyp_utts_by_spk: Dict[str, List[Utterance]],
+    session_id: str,
+    lang: str = "pl",
+) -> Dict[str, object]:
+    """ORC-CER on a multi-stream hypothesis — the character analog of
+    :func:`orc_wer_multistream`. Char-tokenizes both sides (spaces scored, as in
+    :func:`cp_cer_meeteval`) so meeteval's ORC routine returns CER. The gap
+    ``cp-CER - ORC-CER`` is the attribution penalty in characters; ORC-CER <=
+    cp-CER always. Returns ``{"orc_cer", "errors", "length"}``."""
+    from meeteval.wer import orcwer
+
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang, char_level=True)
+    hyp = _ensure_nonempty_hyp(
+        _seglst_from_dict(hyp_utts_by_spk, session_id, lang, char_level=True),
+        session_id, "orc_cer_multistream",
+    )
+    return _wer_result(orcwer(ref, hyp)[session_id], "orc_cer")
+
+
+def mimo_cer_multistream(
+    ref_utts_by_spk: Dict[str, List[Utterance]],
+    hyp_utts_by_spk: Dict[str, List[Utterance]],
+    session_id: str,
+    lang: str = "pl",
+) -> Dict[str, object]:
+    """MIMO-CER on a multi-stream hypothesis — the character analog of
+    :func:`mimo_wer_meeteval` on a per-speaker dict. The granularity-robust
+    content floor in characters. Returns ``{"mimo_cer", "errors", "length"}``.
+
+    SLOW: meeteval's MIMO assignment search blows up on char-token sequences
+    (~150x the word-level cost, ~11 s on a 90 s fragment), so it is NOT used in
+    routine scoring (rescore_stratified uses ORC-CER, which is ~0.7 s and
+    coincides with MIMO-CER on this data). Kept for one-off granularity checks."""
+    from meeteval.wer import mimower
+
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang, char_level=True)
+    hyp = _ensure_nonempty_hyp(
+        _seglst_from_dict(hyp_utts_by_spk, session_id, lang, char_level=True),
+        session_id, "mimo_cer_multistream",
+    )
+    return _wer_result(mimower(ref, hyp)[session_id], "mimo_cer")
 
 
 def cp_cer_meeteval(

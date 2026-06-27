@@ -36,12 +36,40 @@ def test_normalize_strips_bracket_markup():
 
 
 def test_normalize_drops_fillers_keeps_lexical_backchannels():
-    # yyy/eee/hmm/mhm/yhy are non-lexical fillers; `no`, `tak`, `aha` are words.
-    assert _normalize_text("yyy tak eee mhm hmm yhy no aha") == "tak no aha"
+    # yyy/eee/hmm/mhm are non-lexical fillers; `no`, `tak`, `aha`, `yhy` are kept
+    # (the author's GT convention treats `yhy` as a lexical backchannel).
+    assert _normalize_text("yyy tak eee mhm hmm yhy no aha") == "tak yhy no aha"
 
 
 def test_normalize_canonical_variants():
     assert _normalize_text("Okej, dobrze") == "ok dobrze"
+
+
+def test_normalize_drops_apostrophes_without_space():
+    # Foreign proper-noun genitive: apostrophe drops with NO space, so the
+    # recognizer's "War'a" matches a GT written "Wara" (one token, not "war a").
+    assert _normalize_text("Total War'a") == "total wara"
+    assert _normalize_text("Total Wara") == "total wara"
+    assert _normalize_text("rock’n’roll") == "rocknroll"  # curly apostrophes too
+
+
+def test_normalize_folds_abbreviation_phrases():
+    # "i tak dalej" <-> "itd" and "i tym podobne" <-> "itp" fold to one form.
+    assert _normalize_text("kupił jabłka i tak dalej") == _normalize_text("kupił jabłka itd.")
+    assert _normalize_text("warzywa i tym podobne") == _normalize_text("warzywa itp.")
+
+
+def test_normalize_collapses_letter_elongation():
+    # Expressive elongation of a backchannel folds to one canonical form on both
+    # sides: no/noo/nooo/noooo -> "no", taaak -> "tak". 3+ repeats collapse
+    # globally; the 2-char "noo" via _CANON.
+    assert _normalize_text("nooo") == "no"
+    assert _normalize_text("noooo") == "no"
+    assert _normalize_text("noo") == "no"
+    assert _normalize_text("taaak") == "tak"
+    # Legitimate Polish doubles (never 3+) are preserved.
+    assert _normalize_text("kooperacja") == "kooperacja"
+    assert _normalize_text("lekko") == "lekko"
 
 
 def test_normalize_digits_to_polish_words():

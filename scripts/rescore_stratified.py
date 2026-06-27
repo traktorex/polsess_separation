@@ -29,7 +29,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 from asr_pipeline.eval.metrics import (                                  # noqa: E402
     cpwer_meeteval, cp_cer_meeteval,
-    mimo_wer_meeteval, mimo_cer_meeteval)
+    mimo_wer_meeteval, mimo_cer_meeteval, orc_wer_multistream,
+    orc_cer_multistream)
 from asr_pipeline.eval.layer3 import read_per_speaker, read_mixture       # noqa: E402
 from asr_pipeline.eval.recordings import (                                # noqa: E402
     load_recording, load_reference_utterances)
@@ -90,6 +91,20 @@ def _strata(frags):
     return strat
 
 
+def load_purity():
+    """{(frag_id, config): (pure, total)} from score_attribution_purity.py's CSV,
+    or {} if absent (the purity table/Δ are then silently omitted; the WER/CER
+    gaps still print). Window counts micro-average like errors/length."""
+    path = EVAL / "_attribution_purity.csv"
+    if not path.exists():
+        return {}
+    out = {}
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            out[(r["frag_id"], r["config"])] = (int(r["pure"]), int(r["total"]))
+    return out
+
+
 def per_fragment(cfg, gt, frags):
     """{fid: {cpE,cpL,cerE,cerL, mixE,mixL,mixcE,mixcL}} for a config."""
     out = {}
@@ -100,8 +115,31 @@ def per_fragment(cfg, gt, frags):
             continue
         cp = cpwer_meeteval(gt[fid], hyp, session_id=fid)
         cc = cp_cer_meeteval(gt[fid], hyp, session_id=fid)
+        # Speaker-agnostic content floor of the PIPELINE output: ORC-WER on the
+        # multi-stream hyp charges no attribution (meeteval optimally assigns each
+        # reference utterance to a stream). cpWER - ORC = the ATTRIBUTION GAP — the
+        # error caused purely by mis-filing content to the wrong speaker, which is
+        # exactly what the attribution-fix work targets (and the "ORC" the forensics
+        # quote). ORC-WER <= cpWER always, so the gap is non-negative. (A multi-stream
+        # ORC/MIMO *CER* helper doesn't exist yet, so the gap is WER-only for now;
+        # cpCER stays the headline in the absolute table.)
+        orc = orc_wer_multistream(gt[fid], hyp, session_id=fid)
+        # MIMO floor too: ORC assigns whole REFERENCE utterances to streams, so
+        # it is sensitive to the GT's utterance granularity — a coarse GT can hide
+        # an overlap mis-attribution as "content error" (gap understated). MIMO
+        # splits a speaker's stream at word level, so it is granularity-robust.
+        # The recoverable-attribution truth is bracketed by the two; for fixed-GT
+        # config COMPARISONS the Δ is valid either way (the GT bias cancels).
+        mw = mimo_wer_meeteval(gt[fid], hyp, session_id=fid)
+        # CER content floor for the CER attribution gap. ORC-CER only: char-level
+        # MIMO-CER is ~150x slower (meeteval's MIMO assignment explodes on char
+        # tokens, ~11 s/fragment) and ORC≈MIMO on this data, so it isn't worth it.
+        oc = orc_cer_multistream(gt[fid], hyp, session_id=fid)
         row = dict(cpE=cp["cp_errors"], cpL=cp["cp_length"],
-                   cerE=cc["errors"], cerL=cc["length"])
+                   cerE=cc["errors"], cerL=cc["length"],
+                   ctE=orc["errors"], ctL=orc["length"],
+                   mwE=mw["errors"], mwL=mw["length"],
+                   ocE=oc["errors"], ocL=oc["length"])
         mix = read_mixture(d)
         if mix is not None:
             mw = mimo_wer_meeteval(gt[fid], mix, session_id=fid)
@@ -155,6 +193,118 @@ def cluster_boot_paired(recs_a, recs_b, eK, lK, rng):
     return point, lo, hi
 
 
+def cluster_boot_paired_draws(recs_a, recs_b, eK, lK, rng):
+    """Like ``cluster_boot_paired`` but ALSO returns the finite bootstrap draws.
+
+    Same point estimate and same resampling — factored out so the Holm/FDR pass
+    can derive a bootstrap p-value from the draws (fraction on the wrong side of
+    0, two-sided) WITHOUT re-running the bootstrap or changing the existing
+    per-stratum CI output (which keeps calling ``cluster_boot_paired``). Returns
+    ``(point, draws_array)``; ``draws_array`` is empty when no finite draw exists."""
+    ids = [r for r in recs_a if r in recs_b
+           and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
+    if not ids:
+        return float("nan"), np.array([])
+
+    def delta(sample):
+        ae = sum(recs_a[r][eK] for r in sample); al = sum(recs_a[r][lK] for r in sample)
+        be = sum(recs_b[r][eK] for r in sample); bl = sum(recs_b[r][lK] for r in sample)
+        return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
+
+    point = delta(ids)
+    idx = np.arange(len(ids))
+    draws = np.array([delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
+                      for _ in range(B_DRAWS)])
+    return point, draws[np.isfinite(draws)]
+
+
+def boot_pvalue(draws) -> float:
+    """Two-sided bootstrap p-value for H0: paired Δ = 0.
+
+    Standard percentile-bootstrap p: p = 2 * min(frac draws <= 0, frac draws >= 0),
+    clipped to [0, 1]. A Δ whose draws sit entirely on one side of 0 gets the
+    smallest resolvable p (≈ 2/B_DRAWS, never exactly 0 — the bootstrap cannot
+    resolve below its resolution). Empty draws → 1.0 (cannot reject)."""
+    draws = np.asarray(draws, dtype=float)
+    draws = draws[np.isfinite(draws)]
+    n = draws.size
+    if n == 0:
+        return 1.0
+    frac_le = float(np.count_nonzero(draws <= 0)) / n
+    frac_ge = float(np.count_nonzero(draws >= 0)) / n
+    p = 2.0 * min(frac_le, frac_ge)
+    # Floor at the bootstrap resolution so an all-one-side draw isn't reported p=0.
+    return float(min(max(p, 1.0 / n), 1.0))
+
+
+def holm_bonferroni(pvals):
+    """Holm-Bonferroni step-down adjusted p-values (family-wise, conservative).
+
+    ``pvals`` is a list of raw p-values; returns adjusted p-values in the SAME
+    order. Reject H_i at level α iff adjusted p_i <= α. Monotone by construction
+    (cumulative max along the sorted order)."""
+    m = len(pvals)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvals[i])
+    adj = [0.0] * m
+    running = 0.0
+    for rank, i in enumerate(order):
+        val = (m - rank) * pvals[i]
+        running = max(running, val)
+        adj[i] = min(running, 1.0)
+    return adj
+
+
+def benjamini_hochberg(pvals):
+    """Benjamini-Hochberg FDR-adjusted p-values (less conservative than Holm).
+
+    Same order in / out as ``holm_bonferroni``. Standard step-up with the
+    monotone (cumulative-min from the largest) enforcement."""
+    m = len(pvals)
+    if m == 0:
+        return []
+    order = sorted(range(m), key=lambda i: pvals[i])
+    adj = [0.0] * m
+    prev = 1.0
+    for rank in range(m - 1, -1, -1):
+        i = order[rank]
+        val = pvals[i] * m / (rank + 1)
+        prev = min(prev, val)
+        adj[i] = min(prev, 1.0)
+    return adj
+
+
+def cluster_boot_gap(recs_a, recs_b, eK, lK, gK, gL, rng):
+    """Paired Δ of the ATTRIBUTION GAP (cpWER - MIMO content floor), cluster-boot
+    by recording. gap = micro(cpWER) - micro(content); Δ = gap_anchor - gap_cfg,
+    so positive => cfg has the SMALLER gap (better attribution). (eK,lK) = cpWER
+    error/length; (gK,gL) = content-floor error/length. Excludes recordings with
+    zero reference length on either side (same nan-guard as cluster_boot_paired)."""
+    ids = [r for r in recs_a if r in recs_b
+           and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
+    if not ids:
+        return float("nan"), float("nan"), float("nan")
+
+    def gap(recs, sample):
+        ce = sum(recs[r][eK] for r in sample); cl = sum(recs[r][lK] for r in sample)
+        ge = sum(recs[r][gK] for r in sample); gl = sum(recs[r][gL] for r in sample)
+        return (100 * ce / cl - 100 * ge / gl) if cl and gl else float("nan")
+
+    def delta(sample):
+        return gap(recs_a, sample) - gap(recs_b, sample)
+
+    point = delta(ids)
+    idx = np.arange(len(ids))
+    draws = [delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
+             for _ in range(B_DRAWS)]
+    draws = [d for d in draws if np.isfinite(d)]
+    if not draws:
+        return point, float("nan"), float("nan")
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return point, lo, hi
+
+
 def _sig(lo, hi):
     """Significance star only for a finite CI that excludes 0 (a nan CI is NOT
     significant — the bug this guards against printed `*` on nan <= 0 == False)."""
@@ -177,6 +327,13 @@ def main():
     strat = _strata(frags)                       # {recid: stratum}
     allcfgs = [args.anchor] + [c for c in args.configs if c != args.anchor]
     perfrag = {c: per_fragment(c, gt, frags) for c in allcfgs}
+    purity = load_purity()
+    if purity:
+        for (fid, c), (pure, total) in purity.items():
+            if c in perfrag and fid in perfrag[c] and total > 0:
+                perfrag[c][fid]["purE"] = pure
+                perfrag[c][fid]["purL"] = total
+    has_purity = bool(purity)
     recs = {c: by_recording(perfrag[c]) for c in allcfgs}
 
     # ---- coverage: the headline number must be PAIRED across every config ----
@@ -224,6 +381,42 @@ def main():
         print(f"{'MIXTURE floor':18}" + "".join(f"{x:>14}" for x in cells))
     print("(cells = cpWER / cp-CER)")
 
+    # ---- attribution-gap tables (cp{WER,CER} - content floor; ORC and MIMO) ----
+    def _gap_table(title, cpe, cpl, oe, ol, me, ml, note):
+        print(f"\n=== {title} (paired set; lower = better attribution) ===")
+        hdr = f"{'config':18}" + "".join(f"{s:>14}" for s in strata_order)
+        print(hdr); print("-" * len(hdr))
+        for c in allcfgs:
+            cells = []
+            for st in strata_order:
+                rr = recs_in(c, st)
+                go = micro(rr, cpe, cpl) - micro(rr, oe, ol)
+                if me is not None:
+                    gm = micro(rr, cpe, cpl) - micro(rr, me, ml)
+                    cells.append(f"{go:4.1f}/{gm:4.1f}")
+                else:
+                    cells.append(f"{go:5.1f}")
+            print(f"{c:18}" + "".join(f"{x:>14}" for x in cells))
+        print(note)
+
+    _gap_table("WER attribution gap = cpWER - content floor",
+               "cpE", "cpL", "ctE", "ctL", "mwE", "mwL",
+               "(cells = ORCgap / MIMOgap; ORC is GT-granularity-sensitive, MIMO robust)")
+    _gap_table("CER attribution gap = cpCER - ORC content floor",
+               "cerE", "cerL", "ocE", "ocL", None, None,
+               "(cells = cpCER - ORC-CER, character units; MIMO-CER omitted — too slow)")
+
+    # ---- reference-free stream purity (idea #1) ----
+    if has_purity:
+        print(f"\n=== Stream purity % (reference-free; HIGHER = cleaner attribution) ===")
+        hdr = f"{'config':18}" + "".join(f"{s:>14}" for s in strata_order)
+        print(hdr); print("-" * len(hdr))
+        for c in allcfgs:
+            cells = [f"{micro(recs_in(c, st), 'purE', 'purL'):5.1f}"
+                     for st in strata_order]
+            print(f"{c:18}" + "".join(f"{x:>14}" for x in cells))
+        print("(centroid self-consistency of assembled stream_A/B; window-micro %)")
+
     # ---- paired cluster-bootstrap vs anchor ----
     print(f"\n=== Paired Δ vs {args.anchor} (cluster-boot by recording; + = better) ===")
     for c in args.configs:
@@ -234,10 +427,21 @@ def main():
             keep = None if st == "ALL" else {r for r in common if strat.get(r) == st}
             ra = {r: recs[args.anchor][r] for r in common if keep is None or r in keep}
             rb = {r: recs[c][r] for r in common if keep is None or r in keep}
-            dW, loW, hiW = cluster_boot_paired(ra, rb, "cpE", "cpL", np.random.default_rng(SEED))
-            dC, loC, hiC = cluster_boot_paired(ra, rb, "cerE", "cerL", np.random.default_rng(SEED))
+            mk = lambda: np.random.default_rng(SEED)   # noqa: E731 (same seed each call)
+            dW, loW, hiW = cluster_boot_paired(ra, rb, "cpE", "cpL", mk())
+            dC, loC, hiC = cluster_boot_paired(ra, rb, "cerE", "cerL", mk())
+            dWo, loWo, hiWo = cluster_boot_gap(ra, rb, "cpE", "cpL", "ctE", "ctL", mk())
+            dWm, loWm, hiWm = cluster_boot_gap(ra, rb, "cpE", "cpL", "mwE", "mwL", mk())
+            dCo, loCo, hiCo = cluster_boot_gap(ra, rb, "cerE", "cerL", "ocE", "ocL", mk())
             print(f"  {st:4} ΔcpWER {dW:+5.1f} [{loW:+5.1f},{hiW:+5.1f}]{_sig(loW,hiW):2} | "
                   f"ΔcpCER {dC:+5.1f} [{loC:+5.1f},{hiC:+5.1f}]{_sig(loC,hiC)}")
+            print(f"       WERgap Δ ORC {dWo:+5.1f} [{loWo:+5.1f},{hiWo:+5.1f}]{_sig(loWo,hiWo):2} | "
+                  f"MIMO {dWm:+5.1f} [{loWm:+5.1f},{hiWm:+5.1f}]{_sig(loWm,hiWm)}")
+            print(f"       CERgap Δ ORC {dCo:+5.1f} [{loCo:+5.1f},{hiCo:+5.1f}]{_sig(loCo,hiCo)}")
+            if has_purity:
+                # Higher purity = better, so flip args (cfg - anchor): + = better.
+                dP, loP, hiP = cluster_boot_paired(rb, ra, "purE", "purL", mk())
+                print(f"       Δpurity {dP:+5.1f} [{loP:+5.1f},{hiP:+5.1f}]{_sig(loP,hiP)}")
 
     # ---- per-recording winner-regression veto (CER) ----
     print(f"\n=== Per-recording cp-CER vs {args.anchor} (veto: winner regressing) ===")
@@ -253,6 +457,45 @@ def main():
         tag = "OK" if not worse else f"{len(worse)} regressed"
         print(f"  {c}: {tag}" + ("" if not worse else
               "  " + ", ".join(f"{r[:8]}({a:.0f}->{b:.0f})" for r, a, b in worse)))
+
+    # ---- multiple-comparison correction across all paired arms (ALL stratum) ----
+    # SWEEP_DESIGN §3.4 pre-registers Holm-Bonferroni as the SELECTION GATE (FDR/BH
+    # reported alongside). The per-arm CIs above are the (uncorrected) effect
+    # estimates; this table is the family-wise corrected significance over the
+    # whole arm set, on the full (ALL) paired set. cpCER is the primary, cpWER the
+    # confirming secondary (§3.4). p is the two-sided bootstrap p from the SAME
+    # cluster-bootstrap draws as the CIs above; an arm "clears" the gate only when
+    # its corrected p stays below the level AND its Δ is favourable (> 0).
+    arms = [c for c in args.configs if c != args.anchor]
+    if arms:
+        ra_all = {r: recs[args.anchor][r] for r in common}
+        rows = []
+        for c in arms:
+            rb_all = {r: recs[c][r] for r in common}
+            dC, drC = cluster_boot_paired_draws(
+                ra_all, rb_all, "cerE", "cerL", np.random.default_rng(SEED))
+            dW, drW = cluster_boot_paired_draws(
+                ra_all, rb_all, "cpE", "cpL", np.random.default_rng(SEED))
+            rows.append({"cfg": c, "dC": dC, "pC": boot_pvalue(drC),
+                         "dW": dW, "pW": boot_pvalue(drW)})
+        holmC = holm_bonferroni([r["pC"] for r in rows])
+        bhC = benjamini_hochberg([r["pC"] for r in rows])
+        holmW = holm_bonferroni([r["pW"] for r in rows])
+        bhW = benjamini_hochberg([r["pW"] for r in rows])
+        print(f"\n=== Multiple-comparison correction vs {args.anchor} "
+              f"(ALL stratum, {len(arms)} arms; + = better) ===")
+        print(f"{'config':18}{'ΔcpCER':>8}{'pC':>8}{'HolmC':>8}{'BH_C':>8}"
+              f"{'ΔcpWER':>8}{'pW':>8}{'HolmW':>8}{'BH_W':>8}")
+        print("-" * 82)
+        for i, r in enumerate(rows):
+            def star(d, p):   # gate: favourable Δ AND corrected p < 0.05
+                return "*" if (d > 0 and p < 0.05) else " "
+            print(f"{r['cfg']:18}{r['dC']:+8.1f}{r['pC']:8.3f}"
+                  f"{holmC[i]:8.3f}{bhC[i]:8.3f}{star(r['dC'], holmC[i])}"
+                  f"{r['dW']:+7.1f}{r['pW']:8.3f}{holmW[i]:8.3f}{bhW[i]:8.3f}"
+                  f"{star(r['dW'], holmW[i])}")
+        print("(p = two-sided bootstrap p from the cluster-boot draws; Holm = "
+              "family-wise, BH = FDR. * = favourable Δ AND Holm-adjusted p < 0.05.)")
 
 
 if __name__ == "__main__":
