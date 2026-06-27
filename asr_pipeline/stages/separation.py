@@ -455,12 +455,17 @@ def _pick_seam_zero_crossing(
 
 
 def _extend_start_to_silence(
-    vad_mask: np.ndarray, zc_start_idx: int, max_extend_n: int
+    vad_mask: np.ndarray, zc_start_idx: int, max_extend_n: int,
+    silence_threshold: float = 0.5,
 ) -> int:
     """Walk backward from `zc_start_idx` looking for VAD silence in the
     separator output. Returns the latest silence position within the search
     range — i.e. the silence side of the most recent silence→speech transition
     before the boundary. Falls back to `zc_start_idx` if no silence found.
+
+    `silence_threshold` (SeparationConfig.seam_silence_threshold) is the VAD
+    cutoff below which a frame counts as silence; passed in because this is a
+    module-level free function with no config access.
 
     By construction the returned index is ≤ `zc_start_idx`, so the resulting
     emit region is never narrower than zero_crossing's.
@@ -469,19 +474,24 @@ def _extend_start_to_silence(
     if zc_start_idx <= lo:
         return zc_start_idx
     region = vad_mask[lo:zc_start_idx]
-    silent = np.where(region < 0.5)[0]
+    silent = np.where(region < silence_threshold)[0]
     if len(silent) == 0:
         return zc_start_idx
     return lo + int(silent[-1])
 
 
 def _extend_end_to_silence(
-    vad_mask: np.ndarray, zc_end_idx: int, max_extend_n: int
+    vad_mask: np.ndarray, zc_end_idx: int, max_extend_n: int,
+    silence_threshold: float = 0.5,
 ) -> int:
     """Walk forward from `zc_end_idx` looking for VAD silence in the separator
     output. Returns the first silence position within the search range — i.e.
     the silence side of the first speech→silence transition after the boundary.
     Falls back to `zc_end_idx` if no silence found.
+
+    `silence_threshold` (SeparationConfig.seam_silence_threshold) is the VAD
+    cutoff below which a frame counts as silence; passed in because this is a
+    module-level free function with no config access.
 
     By construction the returned index is ≥ `zc_end_idx`, so the resulting
     emit region is never narrower than zero_crossing's.
@@ -491,7 +501,7 @@ def _extend_end_to_silence(
     if hi <= zc_end_idx:
         return zc_end_idx
     region = vad_mask[zc_end_idx:hi]
-    silent = np.where(region < 0.5)[0]
+    silent = np.where(region < silence_threshold)[0]
     if len(silent) == 0:
         return zc_end_idx
     return zc_end_idx + int(silent[0])
@@ -787,10 +797,12 @@ class SeparationStage(Stage):
         if cfg.seam_mode == "snap_to_silence":
             max_extend_n = int(cfg.snap_silence_max_extend_s * sample_rate)
             new_left = _extend_start_to_silence(
-                combined_vad_mask, zc_left, max_extend_n
+                combined_vad_mask, zc_left, max_extend_n,
+                cfg.seam_silence_threshold,
             )
             new_right = _extend_end_to_silence(
-                combined_vad_mask, zc_right, max_extend_n
+                combined_vad_mask, zc_right, max_extend_n,
+                cfg.seam_silence_threshold,
             )
         elif cfg.seam_mode == "zero_crossing":
             new_left = zc_left

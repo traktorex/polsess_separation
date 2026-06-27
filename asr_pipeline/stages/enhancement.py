@@ -105,9 +105,17 @@ class _ClearVoiceBackend:
     truncate themselves).
     """
 
-    def __init__(self, model_name: str, native_sample_rate: int) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        native_sample_rate: int,
+        resample_quality: str = "soxr_hq",
+    ) -> None:
         self.model_name = model_name
         self.native_sample_rate = native_sample_rate
+        # librosa/soxr resampling filter for the 16k↔native round-trip
+        # (EnhancementConfig.resample_quality).
+        self.resample_quality = resample_quality
         self._cv = None  # ClearVoice instance
         self._device: torch.device | None = None
         # ClearVoice's `one_time_decode_length` (seconds): audio longer than
@@ -158,7 +166,8 @@ class _ClearVoiceBackend:
 
         orig_len = len(audio_np)
         x = audio_np.astype(np.float32)
-        # soxr_hq (librosa) is inherited from the batch-script lineage
+        # The librosa/soxr filter is `EnhancementConfig.resample_quality`
+        # (default soxr_hq), inherited from the batch-script lineage
         # (scripts/enhance_clarin_debleed.py) the 48 kHz checkpoint was
         # characterised against; deliberately NOT unified with the separator's
         # torchaudio resampler — the two are not bit-identical and swapping
@@ -168,7 +177,7 @@ class _ClearVoiceBackend:
                 x,
                 orig_sr=sample_rate,
                 target_sr=self.native_sample_rate,
-                res_type="soxr_hq",
+                res_type=self.resample_quality,
             )
 
         out = self._enhance_native(x)
@@ -178,7 +187,7 @@ class _ClearVoiceBackend:
                 out,
                 orig_sr=self.native_sample_rate,
                 target_sr=sample_rate,
-                res_type="soxr_hq",
+                res_type=self.resample_quality,
             )
 
         if len(out) > orig_len:
@@ -223,9 +232,14 @@ class _ZipEnhancerBackend:
     native_sample_rate = 16_000
 
     def __init__(
-        self, model_id: str = "iic/speech_zipenhancer_ans_multiloss_16k_base"
+        self,
+        model_id: str = "iic/speech_zipenhancer_ans_multiloss_16k_base",
+        resample_quality: str = "soxr_hq",
     ) -> None:
         self.model_id = model_id
+        # librosa/soxr resampling filter (EnhancementConfig.resample_quality);
+        # only used when the working SR differs from this 16k backend's native.
+        self.resample_quality = resample_quality
         self._device: torch.device | None = None
         self._worker = None
 
@@ -259,7 +273,7 @@ class _ZipEnhancerBackend:
         if sample_rate != self.native_sample_rate:
             x = librosa.resample(
                 x, orig_sr=sample_rate, target_sr=self.native_sample_rate,
-                res_type="soxr_hq",
+                res_type=self.resample_quality,
             )
 
         out = self._run(x)
@@ -267,7 +281,7 @@ class _ZipEnhancerBackend:
         if sample_rate != self.native_sample_rate:
             out = librosa.resample(
                 out, orig_sr=self.native_sample_rate, target_sr=sample_rate,
-                res_type="soxr_hq",
+                res_type=self.resample_quality,
             )
 
         if len(out) > orig_len:
@@ -328,9 +342,13 @@ class EnhancementStage(Stage):
     def load(self, device: torch.device) -> None:
         if self.config.backend in _CLEARVOICE_BACKENDS:
             model_name, native_sr = _CLEARVOICE_BACKENDS[self.config.backend]
-            backend = _ClearVoiceBackend(model_name, native_sr)
+            backend = _ClearVoiceBackend(
+                model_name, native_sr, self.config.resample_quality
+            )
         elif self.config.backend == "zipenhancer_16k":
-            backend = _ZipEnhancerBackend()
+            backend = _ZipEnhancerBackend(
+                resample_quality=self.config.resample_quality
+            )
         else:
             raise ValueError(
                 f"Unknown enhancement backend: {self.config.backend!r}"
