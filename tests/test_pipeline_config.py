@@ -307,6 +307,42 @@ def test_v2_fields_yaml_round_trip(tmp_path):
     assert again.relabel.run_margin == 0.2
 
 
+# --- Solo onset boundary pad (assembly.solo_onset_pad_s) ---
+
+
+def test_solo_onset_pad_default_off():
+    """Default 0.0 = the byte-identical baseline (no pad ever applied)."""
+    assert PipelineConfig().assembly.solo_onset_pad_s == 0.0
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+def test_solo_onset_pad_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.assembly.solo_onset_pad_s = bad
+    with pytest.raises(ValueError, match="solo_onset_pad_s"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("good", [0.0, 0.15, 1.0])
+def test_solo_onset_pad_valid_accepted(good):
+    cfg = PipelineConfig()
+    cfg.assembly.solo_onset_pad_s = good
+    cfg.__post_init__()   # must not raise
+
+
+def test_solo_onset_pad_reaches_dataclass_from_dict():
+    cfg = load_pipeline_config_from_dict({"assembly": {"solo_onset_pad_s": 0.15}})
+    assert cfg.assembly.solo_onset_pad_s == 0.15
+
+
+def test_solo_onset_pad_yaml_round_trip(tmp_path):
+    cfg = PipelineConfig()
+    cfg.assembly.solo_onset_pad_s = 0.15
+    out_yaml = tmp_path / "pad.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    assert load_pipeline_config_from_yaml(str(out_yaml)).assembly.solo_onset_pad_s == 0.15
+
+
 def test_relabel_hf_token_redacted_in_snapshot():
     """A live relabel.hf_token must not survive into a saved snapshot."""
     snap = redact_config_snapshot({"relabel": {"hf_token": "LIVE_RELABEL_TOKEN"}})

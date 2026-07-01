@@ -920,3 +920,71 @@ def test_run_warns_on_more_than_two_speakers(capsys):
     assert set(out[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}
     logged = capsys.readouterr().out
     assert "WARNING" in logged and "SPK_C" in logged
+
+
+# ---------------------------------------------------------------------------
+# Solo onset boundary pad (assembly.solo_onset_pad_s) — stage wiring
+# ---------------------------------------------------------------------------
+
+
+def _pad_ctx(audio, segments, overlap_regions):
+    ctx = PipelineContext(sample_rate=SR)
+    ctx.audio = audio
+    ctx.enhanced_full = audio
+    ctx.diarization = _diarization(segments, total_duration_s=len(audio) / SR)
+    ctx.overlap_regions = overlap_regions
+    ctx.speakers = sorted({spk for spk, _, _ in segments})
+    ctx.overlap_separated = []
+    return ctx
+
+
+def test_run_solo_onset_pad_recovers_shaved_onset():
+    """Wiring: solo_onset_pad_s > 0 extends the solo piece's start earlier at
+    extraction (full_length places the recovered onset audio before the
+    diarization boundary); the 0.0 default leaves the boundary exactly where
+    it is today (byte-identical no-op)."""
+    audio = np.ones(3 * SR, dtype=np.float32)
+
+    def _run(pad):
+        stage = _make_stage(
+            output_mode="full_length", min_solo_for_anchor_s=1.0,
+            crossfade_ms=0.0, edge_fade_ms=0.0, overlap_rms_match_solo=False,
+            solo_onset_pad_s=pad,
+        )
+        ctx = _pad_ctx(audio, [("SPK_A", 1.0, 2.0)], overlap_regions=[])
+        stage.run(ctx)
+        return ctx
+
+    base = _run(0.0)
+    padded = _run(0.5)
+    half = SR // 2
+    # Default: piece starts exactly at the 1.0 s diarization boundary.
+    assert np.all(base.assembled["SPK_A"][:SR] == 0.0)
+    assert np.all(base.assembled["SPK_A"][SR : 2 * SR] == 1.0)
+    # Padded: the 0.5 s before the boundary is recovered; nothing before that.
+    assert np.all(padded.assembled["SPK_A"][SR - half : 2 * SR] == 1.0)
+    assert np.all(padded.assembled["SPK_A"][: SR - half] == 0.0)
+    # The timestamp map reflects the padded original span (end untouched).
+    entry = padded.timestamp_map.per_speaker["SPK_A"][0]
+    assert entry.orig_start == pytest.approx(0.5)
+    assert entry.orig_end == pytest.approx(2.0)
+
+
+def test_run_solo_onset_pad_clamped_by_overlap_region():
+    """Wiring of the overlap clamp through the real blocked-region derivation
+    (no 3b here → `_emit_blocked_regions` returns ctx.overlap_regions, the
+    mixture-fill path): an overlap ending 0.1 s before the solo caps the pad
+    at 0.9 — overlap audio never leaks into the solo piece."""
+    audio = np.ones(3 * SR, dtype=np.float32)
+    stage = _make_stage(
+        output_mode="full_length", min_solo_for_anchor_s=1.0,
+        crossfade_ms=0.0, edge_fade_ms=0.0, overlap_rms_match_solo=False,
+        solo_onset_pad_s=0.5,
+    )
+    ctx = _pad_ctx(audio, [("SPK_A", 1.0, 2.0)], overlap_regions=[(0.6, 0.9)])
+    stage.run(ctx)
+    solo_entries = [e for e in ctx.timestamp_map.per_speaker["SPK_A"]
+                    if e.kind == "solo"]
+    assert len(solo_entries) == 1
+    assert solo_entries[0].orig_start == pytest.approx(0.9)   # not 0.5
+    assert solo_entries[0].orig_end == pytest.approx(2.0)
