@@ -150,6 +150,31 @@ def per_fragment(cfg, gt, frags):
     return out
 
 
+def _check_frag_parity(label, ids_by_cfg):
+    """Abort loudly if any config's set of covered fragment ids differs from
+    the union across configs.
+
+    ``per_fragment`` silently ``continue``s past a fragment whose hypothesis
+    transcript is missing for THAT config. The recording-level coverage check
+    further down (``cov``/``common``) cannot see the fallout: a config
+    missing SOME fragments of a multi-segment recording still has an entry
+    for that recording (just a partial sum), so it still counts as "covered"
+    there. Left unchecked, ``by_recording`` would then sum different
+    underlying content on the two sides of a paired delta. Every config must
+    therefore cover the IDENTICAL set of fragments; a no-op when they do."""
+    if not ids_by_cfg:
+        return
+    union = set().union(*ids_by_cfg.values())
+    bad = {c: sorted(union - ids) for c, ids in ids_by_cfg.items() if ids != union}
+    if not bad:
+        return
+    lines = [f"  {c}: missing {len(m)} of {len(union)} fragment(s): {', '.join(m)}"
+             for c, m in bad.items()]
+    sys.exit(f"fragment-level pairing mismatch ({label}) — every config must cover "
+              "the IDENTICAL set of fragments, or a by-recording sum silently "
+              "mis-pairs different underlying content:\n" + "\n".join(lines))
+
+
 def by_recording(frag):
     """Collapse fragments -> recordings (sum errors/lengths)."""
     rec = defaultdict(lambda: defaultdict(float))
@@ -216,6 +241,32 @@ def cluster_boot_paired_draws(recs_a, recs_b, eK, lK, rng):
     draws = np.array([delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
                       for _ in range(B_DRAWS)])
     return point, draws[np.isfinite(draws)]
+
+
+def cluster_boot_2key(recs, eKa, lKa, eKb, lKb, rng):
+    """Paired Δ = micro(a) − micro(b) of TWO metrics over the SAME recordings,
+    cluster-bootstrapped by recording. For the separation-vs-mixture contrast a =
+    mixture content floor, b = pipeline content floor (both inside recs[anchor]),
+    so + = pipeline lower error = separation recovered content. Same recording
+    resample + nan-guard as cluster_boot_paired."""
+    ids = [r for r in recs if recs[r].get(lKa, 0) > 0 and recs[r].get(lKb, 0) > 0]
+    if not ids:
+        return float("nan"), float("nan"), float("nan")
+
+    def delta(sample):
+        ae = sum(recs[r][eKa] for r in sample); al = sum(recs[r][lKa] for r in sample)
+        be = sum(recs[r][eKb] for r in sample); bl = sum(recs[r][lKb] for r in sample)
+        return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
+
+    point = delta(ids)
+    idx = np.arange(len(ids))
+    draws = [delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
+             for _ in range(B_DRAWS)]
+    draws = [d for d in draws if np.isfinite(d)]
+    if not draws:
+        return point, float("nan"), float("nan")
+    lo, hi = np.percentile(draws, [2.5, 97.5])
+    return point, lo, hi
 
 
 def boot_pvalue(draws) -> float:
@@ -311,6 +362,37 @@ def _sig(lo, hi):
     return " *" if np.isfinite(lo) and np.isfinite(hi) and not (lo <= 0 <= hi) else ""
 
 
+def dump_per_fragment(perfrag, strat, comp, path):
+    """Write per-(config, fragment) metrics so analysis isn't limited to the
+    tertile tables (the adaptivity question needs per-fragment granularity).
+    cpWER/cpCER carry their error/length so any regrouping (by stratum, overlap,
+    recording) re-micro-averages correctly — per-fragment PERCENTAGES must never be
+    plain-averaged. Floors / mixture / purity are percentages. Returns (n_cfg, n_rows)."""
+    def pct(r, eK, lK):
+        return round(100 * r[eK] / r[lK], 2) if r.get(lK) else ""
+    cols = ["frag_id", "recid", "config", "stratum", "composite",
+            "cp_wer", "cp_cer", "cp_err", "cp_len", "cer_err", "cer_len",
+            "orc_wer", "mimo_wer", "orc_cer", "mix_mimo_wer", "mix_mimo_cer",
+            "purity_pct"]
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(cols)
+        for cfg, frd in perfrag.items():
+            for fid, r in sorted(frd.items()):
+                rid = _recid(fid)
+                w.writerow([
+                    fid, rid, cfg, strat.get(rid, ""),
+                    round(comp[fid], 3) if fid in comp else "",
+                    pct(r, "cpE", "cpL"), pct(r, "cerE", "cerL"),
+                    r.get("cpE", ""), r.get("cpL", ""),
+                    r.get("cerE", ""), r.get("cerL", ""),
+                    pct(r, "ctE", "ctL"), pct(r, "mwE", "mwL"), pct(r, "ocE", "ocL"),
+                    pct(r, "mixE", "mixL"), pct(r, "mixcE", "mixcL"),
+                    (round(100 * r["purE"] / r["purL"], 1) if r.get("purL") else ""),
+                ])
+    return len(perfrag), sum(len(v) for v in perfrag.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--anchor", default="f_oa03")
@@ -319,7 +401,15 @@ def main():
                     help="named fragment list asr_pipeline/eval/clarin_<split>.txt")
     ap.add_argument("--fragments-file", default=None,
                     help="explicit fragment-list file (overrides --split)")
-    ap.add_argument("--mixture", action="store_true", help="also print mixture floor")
+    ap.add_argument("--mixture", action="store_true",
+                    help="also print the mixture floor + the cluster-boot "
+                         "separation-vs-mixture content-floor contrast (per stratum)")
+    ap.add_argument("--perfrag-out", default=None,
+                    help="per-(config,fragment) metrics CSV (default "
+                         "EVAL/_rescore_perfrag_<split>.csv); saves every fragment's "
+                         "cpWER/cpCER (+err/len), content floors, mixture floor, "
+                         "purity, stratum, composite — so analysis isn't limited to "
+                         "the tertile tables.")
     args = ap.parse_args()
 
     frags = load_split(args)
@@ -327,6 +417,12 @@ def main():
     strat = _strata(frags)                       # {recid: stratum}
     allcfgs = [args.anchor] + [c for c in args.configs if c != args.anchor]
     perfrag = {c: per_fragment(c, gt, frags) for c in allcfgs}
+    _check_frag_parity("cpWER/cpCER per-fragment scores",
+                        {c: set(perfrag[c]) for c in allcfgs})
+    if args.mixture:
+        _check_frag_parity("mixture-floor per-fragment coverage",
+                            {c: {fid for fid, r in perfrag[c].items() if "mixE" in r}
+                             for c in allcfgs})
     purity = load_purity()
     if purity:
         for (fid, c), (pure, total) in purity.items():
@@ -380,6 +476,26 @@ def main():
             cells.append(f"{micro(rr,'mixE','mixL'):5.1f}/{micro(rr,'mixcE','mixcL'):4.1f}")
         print(f"{'MIXTURE floor':18}" + "".join(f"{x:>14}" for x in cells))
     print("(cells = cpWER / cp-CER)")
+
+    # ---- separation-vs-mixture content-floor contrast, with CI (idea R3) ----
+    # The "separation helps" headline needs its own CI: the per-arm bootstrap below
+    # is arm-vs-anchor, not pipeline-vs-mixture. This contrasts the anchor pipeline's
+    # MIMO-WER content floor against the raw mixture's MIMO-WER, paired by recording
+    # — attribution removed on BOTH sides, so it isolates *content recovery* (did
+    # separation let WhisperX hear more words), the assumption-light form of the claim.
+    if args.mixture:
+        print(f"\n=== Separation vs mixture (MIMO-WER content floor, cluster-boot; "
+              f"+ = separation recovers content) ===")
+        ra = {r: recs[args.anchor][r] for r in common}
+        for st in strata_order:
+            sub = ra if st == "ALL" else {r: ra[r] for r in common if strat.get(r) == st}
+            dW, loW, hiW = cluster_boot_2key(sub, "mixE", "mixL", "mwE", "mwL",
+                                             np.random.default_rng(SEED))
+            print(f"  {st:4} Δ {dW:+5.1f} [{loW:+5.1f},{hiW:+5.1f}]{_sig(loW,hiW)}")
+        print(f"(Δ = mixture MIMO-WER − {args.anchor} pipeline MIMO-WER, paired by "
+              "recording; + = pipeline lower = separation helps. Report per-stratum, "
+              "never averaged — the effect inverts. CER floor needs pipeline MIMO-CER "
+              "(slow); add if wanted.)")
 
     # ---- attribution-gap tables (cp{WER,CER} - content floor; ORC and MIMO) ----
     def _gap_table(title, cpe, cpl, oe, ol, me, ml, note):
@@ -496,6 +612,15 @@ def main():
                   f"{star(r['dW'], holmW[i])}")
         print("(p = two-sided bootstrap p from the cluster-boot draws; Holm = "
               "family-wise, BH = FDR. * = favourable Δ AND Holm-adjusted p < 0.05.)")
+
+    # ---- per-fragment dump (analysis beyond the tertile tables) ----
+    with open(EVAL / "composite_scores.csv", newline="") as fh:
+        comp = {r["frag_id"]: float(r["composite"]) for r in csv.DictReader(fh)}
+    tag = Path(args.fragments_file).stem if args.fragments_file else args.split
+    out = (Path(args.perfrag_out).expanduser() if args.perfrag_out
+           else EVAL / f"_rescore_perfrag_{tag}.csv")
+    nconf, nrows = dump_per_fragment(perfrag, strat, comp, out)
+    print(f"\n[per-fragment] {nrows} rows ({nconf} configs) -> {out}")
 
 
 if __name__ == "__main__":
