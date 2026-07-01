@@ -1309,6 +1309,12 @@ def _build_cfg(overrides: dict):
 # recomputing the micro-averaged cpWER from each fragment's (errors, ref_words).
 # This is the correct unit because cpWER is micro-averaged (sum errors / sum ref
 # words), NOT an average of per-fragment rates.
+#
+# FRAGMENT-level, non-clustered — descriptive only. Multi-segment recordings
+# contribute more than one draw each, so this understates the true unit of
+# independence and overstates significance relative to the authoritative
+# recording-clustered bootstrap in scripts/rescore_stratified.py. For
+# inference (CIs/Holm/FDR you'd actually quote), use that script instead.
 
 BOOTSTRAP_RESAMPLES = 2000
 BOOTSTRAP_SEED = 1234
@@ -1865,6 +1871,9 @@ def main() -> int:
     pd.set_option("display.width", 200)
     print("\n=== ranked by micro-averaged cpWER (lower is better) ===")
     print(df.to_string(index=False))
+    print("(cpwer_ci_* / vs_base_* CIs above are a FRAGMENT-level, non-clustered "
+          "bootstrap — descriptive only, not for inference. For a citable CI/"
+          "significance call, use scripts/rescore_stratified.py.)")
     df.to_csv(csv, index=False)
     print(f"\nwrote {csv}")
 
