@@ -1085,6 +1085,65 @@ CONFIGS: dict[str, dict] = {
                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                           "transcription.model_name": "large-v3",
                           "post_separation_processing.backend": "naive"},
+
+    # ======================================================================
+    # CAMPAIGN v2 — attribution-repair levers (2026-07-02). All anchored on the
+    # `dr_oa050` finalist knob set (OA-0.5 + ECAPA2 diar + B+ global relabel,
+    # enhanced), inlined per row like the dr_* arms above; each adds only its new
+    # attribution lever(s). Diagnosis: the concentrated cpWER tax is 89% class-A
+    # chunk swaps (contiguous same-speaker solo runs filed to the wrong stream)
+    # that the GLOBAL B+ relabel provably cannot repair — the repair is LOCAL.
+    # See GROUPS["v2dev"]. Levers:
+    #   v2_ngram3    - anti-hallucination guard (recognition-floor lever, not
+    #                  attribution; the block's non-attribution control).
+    #   v2_cluster   - assembly cluster2 (global 2-means over overlap streams;
+    #                  ~= argmax on symmetric pairs, tests the fall-through win).
+    #   v2_runrelabel- run-level relabel (flips whole contiguous mis-clustered
+    #                  solo runs — the on-target class-A repair).
+    #   v2_continuity- continuity tie-break (local bracketing-solo anchors break
+    #                  near-tie overlap pairings; knobs ARE live, gated behind
+    #                  overlap_assignment=continuity_tiebreak + margin > 0).
+    #   v2_attr      - cluster2 + run_level + continuity (all attribution levers).
+    #   v2_full      - v2_attr + ngram3 (everything).
+    # ----------------------------------------------------------------------
+    "v2_ngram3": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "transcription.no_repeat_ngram_size": 3},
+    "v2_cluster": {"enhancement.observation_mix_ratio": 0.50,
+                   "diarization.embedding": "ecapa2",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "assembly.assignment_mode": "cluster2"},
+    "v2_runrelabel": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.run_level": True},
+    "v2_continuity": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "assembly.overlap_assignment": "continuity_tiebreak",
+                      "assembly.continuity_tiebreak_margin": 0.2},
+    "v2_attr": {"enhancement.observation_mix_ratio": 0.50,
+                "diarization.embedding": "ecapa2",
+                "relabel.enabled": True, "relabel.source": "global",
+                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                "assembly.assignment_mode": "cluster2",
+                "relabel.run_level": True,
+                "assembly.overlap_assignment": "continuity_tiebreak",
+                "assembly.continuity_tiebreak_margin": 0.2},
+    "v2_full": {"enhancement.observation_mix_ratio": 0.50,
+                "diarization.embedding": "ecapa2",
+                "relabel.enabled": True, "relabel.source": "global",
+                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                "assembly.assignment_mode": "cluster2",
+                "relabel.run_level": True,
+                "assembly.overlap_assignment": "continuity_tiebreak",
+                "assembly.continuity_tiebreak_margin": 0.2,
+                "transcription.no_repeat_ngram_size": 3},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -1273,6 +1332,13 @@ GROUPS: dict[str, list[str]] = {
     "phase2": [
         "dr_oa045_v3", "dr_oa050_v3", "dr_oa070_v3",
         "dr_oa075", "dr_oa080", "dr_oa050_v3_naive",
+    ],
+    # Campaign v2 attribution-repair levers, OFAT + combined off the dr_oa050
+    # finalist (the anchor reference; baseline auto-included by the runner).
+    "v2dev": [
+        "dr_oa050",
+        "v2_ngram3", "v2_cluster", "v2_runrelabel", "v2_continuity",
+        "v2_attr", "v2_full",
     ],
 }
 

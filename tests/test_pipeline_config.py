@@ -246,6 +246,67 @@ def test_relabel_yaml_round_trip(tmp_path):
     assert again.assembly.anchor_embedding == "ecapa2"
 
 
+# ---------------------------------------------------------------------------
+# Campaign v2 attribution levers — assembly.assignment_mode + relabel.run_level
+# ---------------------------------------------------------------------------
+
+
+def test_v2_attribution_lever_defaults_are_noops():
+    """The two new v2 levers default to the current pipeline: cluster2 off,
+    run-level off (so default.yaml stays byte-identical / the pin test green)."""
+    cfg = PipelineConfig()
+    assert cfg.assembly.assignment_mode == "anchor_argmax"
+    assert cfg.relabel.run_level is False
+    assert cfg.relabel.run_margin == 0.05
+
+
+def test_assignment_mode_enum_guard():
+    cfg = PipelineConfig()
+    cfg.assembly.assignment_mode = "cluster3"
+    with pytest.raises(ValueError, match="assembly.assignment_mode"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+def test_run_margin_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.relabel.run_margin = bad
+    with pytest.raises(ValueError, match="run_margin"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("good", [0.0, 0.05, 0.5, 2.0])
+def test_run_margin_valid_accepted(good):
+    cfg = PipelineConfig()
+    cfg.relabel.run_margin = good
+    cfg.__post_init__()   # must not raise
+
+
+def test_v2_fields_reach_dataclasses_from_dict():
+    """A YAML/dict override for the v2 levers reaches the stage dataclasses."""
+    cfg = load_pipeline_config_from_dict({
+        "assembly": {"assignment_mode": "cluster2"},
+        "relabel": {"enabled": True, "source": "global", "audio_source": "raw",
+                    "run_level": True, "run_margin": 0.12},
+    })
+    assert cfg.assembly.assignment_mode == "cluster2"
+    assert cfg.relabel.run_level is True
+    assert cfg.relabel.run_margin == 0.12
+
+
+def test_v2_fields_yaml_round_trip(tmp_path):
+    cfg = PipelineConfig()
+    cfg.assembly.assignment_mode = "cluster2"
+    cfg.relabel.run_level = True
+    cfg.relabel.run_margin = 0.2
+    out_yaml = tmp_path / "v2.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    again = load_pipeline_config_from_yaml(str(out_yaml))
+    assert again.assembly.assignment_mode == "cluster2"
+    assert again.relabel.run_level is True
+    assert again.relabel.run_margin == 0.2
+
+
 def test_relabel_hf_token_redacted_in_snapshot():
     """A live relabel.hf_token must not survive into a saved snapshot."""
     snap = redact_config_snapshot({"relabel": {"hf_token": "LIVE_RELABEL_TOKEN"}})
