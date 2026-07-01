@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.eval.metrics import (
@@ -44,26 +44,6 @@ from asr_pipeline.eval.transcript_parser import (
     parse_gt_txt,
 )
 
-# A hypothesis filter rewrites one hypothesis stream before scoring. EdAcc uses
-# it to excise the Stella elicitation passage (see ``eval.edacc``); it returns
-# (filtered_utterances, report). Default None = identity = every non-EdAcc path
-# is byte-identical. The report is surfaced by the filter itself (dlog).
-HypFilter = Callable[[list[Utterance]], tuple[list[Utterance], object]]
-
-
-def _apply_hyp_filter(
-    hyp_filter: Optional[HypFilter], utts: list[Utterance]
-) -> list[Utterance]:
-    """Run an optional hypothesis filter, returning just the filtered stream.
-
-    The filter's report is logged inside the filter (dlog); we drop it here
-    because L3's return shape stays a plain WER dict. None filter = passthrough.
-    """
-    if hyp_filter is None:
-        return utts
-    filtered, _report = hyp_filter(utts)
-    return filtered
-
 
 def _resolve_lang(rec: Recording) -> str:
     """Transcription language for this recording, for language-aware WER
@@ -73,7 +53,7 @@ def _resolve_lang(rec: Recording) -> str:
     snapshot (``config.transcription.language``, written by
     ``io.write_pipeline_outputs``). Falls back to ``"pl"`` when no metadata or
     config snapshot is present — the project default and the pre-E13 behaviour.
-    The number speller for English (EdAcc/LibriCSS) hypotheses would otherwise
+    The number speller for English hypotheses would otherwise
     spell digits in Polish, fabricating substitutions.
     """
     for d in (rec.pipeline_dir, rec.pipeline_nosep_dir, rec.pipeline_noenh_dir,
@@ -124,7 +104,6 @@ def read_mixture(pipeline_dir: Path) -> Optional[list]:
 def compute_layer3(
     rec: Recording,
     tcp_collar_s: float = 5.0,
-    hyp_filter: Optional[HypFilter] = None,
 ) -> Optional[dict]:
     """ASR error rates per ablation mode + ORC-WER baseline.
 
@@ -147,12 +126,7 @@ def compute_layer3(
             "tcp_collar_s": float,
         }
 
-    ``hyp_filter`` (default None) rewrites each hypothesis stream — per-speaker
-    AND the mixture — before scoring. EdAcc passes ``eval.edacc`` here to excise
-    the Stella elicitation passage that has no timestamps to gate on; every
-    other dataset leaves it None (identity, byte-identical to before).
-
-    When the reference is **untimed** (EdAcc GT, ``start=end=None``), tcpWER is
+    When the reference is **untimed** (``start=end=None``), tcpWER is
     skipped — scoring it on placeholder times would fabricate a number
     (SCOPE §4.1). ``ref_untimed=True`` and each mode's ``tcpwer`` is ``None``
     with ``tcp_skipped=True``; cpWER and ORC/MIMO (time-agnostic) are unaffected.
@@ -163,7 +137,7 @@ def compute_layer3(
     ref_lengths = {label: len(utts) for label, utts in ref_utts.items()}
     lang = _resolve_lang(rec)
 
-    # Untimed GT (EdAcc) → no per-word time gating is possible; skip tcpWER
+    # Untimed GT → no per-word time gating is possible; skip tcpWER
     # rather than score it on placeholder times. Visible via ref_untimed +
     # each mode's tcp_skipped flag (surfaced by summarize_layer3).
     ref_untimed = any(is_untimed(utts) for utts in ref_utts.values())
@@ -185,10 +159,6 @@ def compute_layer3(
         if hyp is None:
             modes_out[mode] = None
             continue
-        hyp = {
-            label: _apply_hyp_filter(hyp_filter, utts)
-            for label, utts in hyp.items()
-        }
         modes_out[mode] = cpwer_meeteval(
             ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s,
             lang=lang, skip_tcp=ref_untimed,
@@ -210,12 +180,6 @@ def compute_layer3(
         mixture_utts = read_mixture(d)
         if mixture_utts is not None:
             break
-    # The Stella passage appears in the mixture transcript too (both speakers
-    # read it into the single un-separated stream), so the hyp_filter must run
-    # here as well — otherwise the ORC/MIMO mixture floor is scored against a
-    # reference that already dropped the passage, inflating it with insertions.
-    if mixture_utts is not None:
-        mixture_utts = _apply_hyp_filter(hyp_filter, mixture_utts)
     # Mixture floor scored two ways: ORC (time-fixed reference merge) and
     # MIMO (optimised interleaving). MIMO <= ORC always; it doesn't penalise
     # the unpredictable order Whisper interleaves the speakers in overlaps,

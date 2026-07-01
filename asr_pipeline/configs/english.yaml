@@ -1,6 +1,6 @@
 # English preset — frcrn_vadstrict.yaml with the transcription stage retargeted
-# to English. Intended for English eval runs (LibriCSS_2spk / EdAcc), where the
-# input is 2-speaker English rather than the Polish CLARIN universe.
+# to English. Intended for English eval runs, where the input is 2-speaker
+# English rather than the Polish CLARIN universe.
 #
 # Deltas from frcrn_vadstrict.yaml:
 #   transcription.language:         pl -> en

@@ -346,7 +346,7 @@ def cpwer_meeteval(
     by default — fine for our use since GT segments come from Whisper's
     own segmentation.
 
-    `skip_tcp` exists for untimed references (e.g. EdAcc, which ships no
+    `skip_tcp` exists for untimed references (datasets that ship no
     per-utterance timing): tcpWER on fake/placeholder times would be a
     fabricated number (SCOPE §4.1), so the caller sets `skip_tcp=True` and
     tcpWER is returned as `None` with `tcp_skipped=True`. cpWER, which ignores

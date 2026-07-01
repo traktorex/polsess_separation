@@ -16,8 +16,7 @@
 
   It *also* reads an UNTIMED variant — a `# untimed` header line followed by
   one utterance per line, no timestamps — for datasets that ship no per-
-  utterance timing at all (EdAcc, where the official eval time-gated against
-  an STM that isn't distributed). Untimed utterances carry `start=end=None`;
+  utterance timing at all. Untimed utterances carry `start=end=None`;
   callers that need timing (tcpWER) must check `is_untimed(...)` and skip.
 
 Both return lists of `Utterance(start, end, text)` named tuples; `start`/`end`
