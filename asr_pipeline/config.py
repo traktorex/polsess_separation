@@ -480,6 +480,28 @@ class AssemblyConfig:
     # continuity anchor is built. A speaker with no solo audio in the window
     # yields no local anchor → that overlap falls back to the global argmax.
     continuity_window_s: float = 10.0
+    # Overlap-stream routing MODE — orthogonal to `overlap_assignment` above,
+    # which selects the per-overlap strategy:
+    #   "anchor_argmax" (default) -> current behaviour: each overlap's
+    #     straight/swapped is decided independently, governed by
+    #     `overlap_assignment`. Byte-identical to the pre-knob pipeline.
+    #   "cluster2" -> a global pre-pass (`_cluster2_pairings`) collects EVERY
+    #     separated overlap-stream embedding in the fragment, runs cosine 2-means
+    #     seeded from the two solo anchors (deterministic, no RNG), maps the two
+    #     clusters back onto stream A/B by centroid-to-anchor similarity, and
+    #     emits a per-overlap pairing. All streams are clustered jointly, so a run
+    #     can no longer defect one overlap at a time to a weak anchor; and an
+    #     overlap whose two streams land in the SAME cluster (a separation
+    #     failure) is left undecided and falls through to the `overlap_assignment`
+    #     ladder rather than being forced into a guessed pairing. NOTE (measured
+    #     in-code): with the anchors used as BOTH the 2-means seeds and the
+    #     cluster→stream mapping, cluster2 is algebraically ~= per-overlap argmax
+    #     on symmetric (A,B) overlap pairs — its only distinct behaviour is the
+    #     same-cluster fall-through — so like `consensus_2means` it is expected to
+    #     be a near-no-op; it exists as a documentable sweep lever. Overlaps the
+    #     B+ relabel handoff (`ctx.overlap_speaker_assignment`) already covers
+    #     still win (a strictly stronger global decision); cluster2 fills the rest.
+    assignment_mode: str = "anchor_argmax"   # "anchor_argmax" | "cluster2"
 
 
 @dataclass
@@ -737,6 +759,26 @@ class RelabelConfig:
     # (SECOND_PASS_PLAN.md §3.2). Kept as an A/B knob only; duration weighting is
     # used in ALIGNMENT regardless (where long anchors SHOULD pin identity).
     duration_weighted: bool = False
+    # Run-level (contiguous-run) relabel pass, applied AFTER the global solo
+    # relabel above. OFF by default → byte-identical no-op. When True, the usable
+    # solo segments are ordered by time and grouped into maximal contiguous
+    # SAME-stream runs; a whole run flips to the other stream when its mean
+    # embedding is closer to the other stream's centroid than to its own by more
+    # than `run_margin` (cosine). This targets the class-A chunk swap the GLOBAL
+    # relabel provably cannot repair — a single global A<->B flip is cpWER-free,
+    # so it never fixes a stream that is only PARTIALLY mixed. Deterministic:
+    # centroids are computed ONCE from the post-global-relabel assignment and runs
+    # are processed in a fixed time order (no centroid drift, no RNG). Never flips
+    # a run that IS its entire stream (a whole-stream flip is just a free global
+    # swap, and this guards the degenerate flip-everything case). Solo-only: like
+    # the global relabel it never touches the overlap streams / the B+ overlap
+    # handoff (consistent with `exclude_overlap`).
+    run_level: bool = False
+    # Cosine margin the other-stream centroid must beat the own-stream centroid by
+    # before a whole run is flipped (only consulted when `run_level=True`). Cosine
+    # on unit ECAPA2 embeddings lies in [-1, 1], so the gap is in [-2, 2]; 0.05
+    # requires a clear (not marginal) pull to the other speaker. >= 0.
+    run_margin: float = 0.05
     # hf_token for a pyannote-format embedder id (unused for the custom "ecapa2"
     # name, whose loader hits the HF hub directly). Masked in saved snapshots.
     hf_token: Optional[str] = field(
@@ -813,9 +855,18 @@ class PipelineConfig:
         _one_of(self.diarization.clustering_method, "diarization.clustering_method",
                 ("average", "centroid", "complete", "median", "single",
                  "ward", "weighted"))
+        _one_of(self.assembly.assignment_mode, "assembly.assignment_mode",
+                ("anchor_argmax", "cluster2"))
         _one_of(self.relabel.source, "relabel.source", ("solos", "global"))
         _one_of(self.relabel.audio_source, "relabel.audio_source",
                 ("enhanced", "raw"))
+        # run_margin is a cosine gap floor (only used when run_level=True); a
+        # negative value would flip every run. 0 = flip on any improvement.
+        if not math.isfinite(self.relabel.run_margin) or self.relabel.run_margin < 0:
+            raise ValueError(
+                f"relabel.run_margin must be a finite value >= 0 (cosine margin; "
+                f"only used when run_level=True), got {self.relabel.run_margin}"
+            )
         # Relabel cross-checks (fail loud at config time, SCOPE §4.1 — never a
         # silent raw fallback / quiet downgrade at runtime):
         if (self.relabel.enabled and self.relabel.audio_source == "enhanced"

@@ -17,6 +17,7 @@ from asr_pipeline.stages.assembly import (
     AssemblyStage,
     _assign_overlaps,
     _build_events,
+    _cluster2_pairings,
     _consensus_pairings,
     _derive_solo_intervals,
     _mixture_fill_overlaps,
@@ -415,6 +416,115 @@ def test_consensus_no_anchor_returns_empty():
     anchors = {"SPK_A": None, "SPK_B": torch.tensor([0.0, 1.0])}
     assert _consensus_pairings(ovls, anchors, ["SPK_A", "SPK_B"],
                                _StubEcapa(), DEVICE, SR) == {}
+
+
+# ---------------------------------------------------------------------------
+# Attribution lever: cluster2 (global unconstrained 2-means over overlap streams)
+# ---------------------------------------------------------------------------
+
+
+def test_cluster2_clean_case_all_straight():
+    """Two clean overlaps (s1→A-voice [1,0], s2→B-voice [0,1]): the 2-means seeded
+    from the anchors recovers the two voices, mapping s1→A and s2→B → 'straight'
+    for both, keyed by i_ovl."""
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)
+    o1 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=1)
+    p = _cluster2_pairings([o0, o1], _anchors(), ["SPK_A", "SPK_B"],
+                           _StubEcapa(), DEVICE, SR)
+    assert p == {0: "straight", 1: "straight"}
+
+
+def test_cluster2_deterministic():
+    """Same input twice → identical pairing dict (no RNG anywhere)."""
+    ovls = [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=i) for i in range(3)]
+    p1 = _cluster2_pairings(ovls, _anchors(), ["SPK_A", "SPK_B"],
+                            _StubEcapa(), DEVICE, SR)
+    p2 = _cluster2_pairings(ovls, _anchors(), ["SPK_A", "SPK_B"],
+                            _StubEcapa(), DEVICE, SR)
+    assert p1 == p2 == {0: "straight", 1: "straight", 2: "straight"}
+
+
+def test_cluster2_equivalent_to_argmax_under_corrupted_anchor():
+    """DESIGN NOTE (measured): with the anchors used as BOTH the 2-means seeds and
+    the cluster→stream map, cluster2 reproduces the per-overlap argmax permutation
+    on a symmetric (A,B) pair — even a corrupted anchor that (wrongly) favours
+    'swapped' is followed identically by both. cluster2's only distinct behaviour
+    is the same-cluster fall-through (below). Contaminated anchors [0.6,0.8] /
+    [0.8,0.6] make argmax pick 'swapped' on a truly-straight overlap; cluster2
+    agrees."""
+    corrupt = {"SPK_A": torch.tensor([0.6, 0.8]), "SPK_B": torch.tensor([0.8, 0.6])}
+    ecapa = _TableEcapa({0.5: [1.0, 0.0], -0.5: [0.0, 1.0]})
+    ovl = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)   # true straight
+    # per-overlap argmax (baseline) picks swapped under the corrupted anchors...
+    argmax = _assign_overlaps([dict(ovl)], corrupt, ["SPK_A", "SPK_B"],
+                              _TableEcapa({0.5: [1.0, 0.0], -0.5: [0.0, 1.0]}),
+                              DEVICE, SR)
+    assert argmax[0]["pairing"] == "swapped"
+    # ...and cluster2 reaches the same permutation.
+    p = _cluster2_pairings([ovl], corrupt, ["SPK_A", "SPK_B"], ecapa, DEVICE, SR)
+    assert p == {0: "swapped"}
+
+
+def test_cluster2_degenerate_overlap_omitted():
+    """Both streams of an overlap land in one cluster (a separation failure, both
+    A-voice) → cluster2 leaves it UNDECIDED (omitted) rather than forcing a
+    guessed pairing. This is cluster2's one distinct behaviour vs per-overlap
+    argmax, which would force straight/swapped."""
+    # s1 and s2 both positive → both [1,0] via _StubEcapa → same cluster.
+    ovl = _ovl(np.full(SR, 0.5), np.full(SR, 0.4), idx=0)
+    p = _cluster2_pairings([ovl], _anchors(), ["SPK_A", "SPK_B"],
+                           _StubEcapa(), DEVICE, SR)
+    assert p == {}
+
+
+def test_cluster2_single_embeddable_stream_returns_empty():
+    """< 2 embeddable overlap streams → clustering undefined → empty dict, every
+    overlap falls through to the anchor-argmax ladder (logged no-op)."""
+    n_short = SR // 20  # 0.05 s → below the 0.1 s floor
+    ovl = _ovl(np.full(SR, 0.5), np.full(n_short, -0.5), idx=0)   # only s1 usable
+    p = _cluster2_pairings([ovl], _anchors(), ["SPK_A", "SPK_B"],
+                           _StubEcapa(), DEVICE, SR)
+    assert p == {}
+
+
+def test_cluster2_no_anchor_returns_empty():
+    ovls = [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)]
+    anchors = {"SPK_A": None, "SPK_B": torch.tensor([0.0, 1.0])}
+    assert _cluster2_pairings(ovls, anchors, ["SPK_A", "SPK_B"],
+                              _StubEcapa(), DEVICE, SR) == {}
+
+
+def test_assign_overlaps_cluster2_mode_labels_and_pieces():
+    """assignment_mode='cluster2' routes through the pre-pass: a clean overlap is
+    labelled '(cluster2)' with the correct emit pieces."""
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)
+    out = _assign_overlaps([o0], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(),
+                           DEVICE, SR, assignment_mode="cluster2")
+    assert out[0]["pairing"] == "straight (cluster2)"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"], o0["s1_gated"])
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_B"], o0["s2_gated"])
+
+
+def test_assign_overlaps_cluster2_degenerate_falls_through_to_argmax():
+    """A cluster2-undecided overlap (both streams one cluster) falls through to the
+    per-overlap argmax path in the same call — labelled with the bare argmax label,
+    NOT '(cluster2)', and the region is never dropped."""
+    ovl = _ovl(np.full(SR, 0.5), np.full(SR, 0.4), idx=0)   # both → [1,0]
+    out = _assign_overlaps([ovl], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(),
+                           DEVICE, SR, assignment_mode="cluster2")
+    # argmax on two equal [1,0] streams ties → straight (bare label, fall-through).
+    assert out[0]["pairing"] == "straight"
+    assert set(out[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}
+
+
+def test_external_pairings_overrides_cluster2_mode():
+    """B+ handoff outranks cluster2 for the overlaps it covers (strictly stronger
+    global decision); cluster2 only fills the residual."""
+    o0 = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)   # cluster2 → straight
+    out = _assign_overlaps([o0], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(),
+                           DEVICE, SR, assignment_mode="cluster2",
+                           external_pairings={0: "swapped"})
+    assert out[0]["pairing"] == "swapped (relabel_global)"
 
 
 # ---------------------------------------------------------------------------

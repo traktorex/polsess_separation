@@ -311,6 +311,64 @@ def _overlap_pairings(
     return pairings
 
 
+def _run_level_flips(
+    order: np.ndarray,
+    emb: np.ndarray,
+    stream: list[str],
+    speakers: list[str],
+    run_margin: float,
+) -> set[int]:
+    """Indices (into `emb`/`stream`) whose solo label should flip, by the
+    contiguous-run rule. Pure + deterministic.
+
+    `order` is the point indices sorted by segment start time; `emb[i]` is the
+    solo embedding and `stream[i]` its CURRENT (post-global-relabel) speaker
+    label. Walks the time-ordered points, forms maximal contiguous SAME-stream
+    runs, and marks a whole run for flipping when its mean embedding is closer to
+    the OTHER stream's centroid than to its own by more than `run_margin` (cosine).
+
+    Centroids are the mean of each stream's CURRENT members, computed ONCE (fixed
+    across the walk), so the result is independent of run-processing order — the
+    simplest deterministic choice. A run that IS its entire stream is never
+    flipped (the whole-stream guard: a whole-stream flip is a cpWER-free global
+    swap and the flip-everything degeneracy; it also cannot help, since such a
+    run's mean IS its own centroid → own-similarity is 1.0). Returns an empty set
+    when either stream has no current members (nothing to compare against).
+    """
+    a, b = speakers[0], speakers[1]
+    unit = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-12)
+    members = {spk: [i for i in range(len(stream)) if stream[i] == spk]
+               for spk in (a, b)}
+    if not members[a] or not members[b]:
+        return set()
+    centroid: dict[str, np.ndarray] = {}
+    for spk in (a, b):
+        c = unit[members[spk]].mean(axis=0)
+        centroid[spk] = c / (np.linalg.norm(c) + 1e-12)
+    stream_size = {spk: len(members[spk]) for spk in (a, b)}
+
+    flips: set[int] = set()
+    seq = [int(i) for i in order]
+    i = 0
+    while i < len(seq):
+        run_spk = stream[seq[i]]
+        j = i
+        while j + 1 < len(seq) and stream[seq[j + 1]] == run_spk:
+            j += 1
+        run_idx = seq[i:j + 1]
+        i = j + 1
+        if len(run_idx) >= stream_size[run_spk]:
+            continue   # whole-stream guard (never flip everything)
+        other = b if run_spk == a else a
+        mean = unit[run_idx].mean(axis=0)
+        mean = mean / (np.linalg.norm(mean) + 1e-12)
+        sim_own = float(mean @ centroid[run_spk])
+        sim_other = float(mean @ centroid[other])
+        if sim_other - sim_own > run_margin:
+            flips.update(run_idx)
+    return flips
+
+
 # ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
@@ -513,6 +571,30 @@ class RelabelStage(Stage):
             f"relabel: overwrote {len(solo_idx)} solo label(s), "
             f"{n_changed} changed from pass-1."
         )
+
+        # --- Run-level (contiguous-run) pass, applied after the global relabel ---
+        # Flips whole contiguous same-stream runs that sit closer to the other
+        # stream's centroid — the class-A chunk swap the global relabel cannot
+        # reach. Solo-only (never touches the overlap streams / B+ handoff below).
+        if self.config.run_level:
+            cur_stream = [cluster_to_spk[int(c)] for c in solo_clusters]
+            starts = seg_df["start"].to_numpy()[solo_idx].astype(np.float64)
+            order = np.argsort(starts, kind="stable")
+            flips = _run_level_flips(
+                order, solo_pts, cur_stream, speakers, self.config.run_margin
+            )
+            if flips:
+                labels_now = seg_df["speaker"].tolist()
+                for k in flips:
+                    seg_pos = solo_spans[solo_idx[k]][0]
+                    labels_now[seg_pos] = (
+                        speakers[1] if cur_stream[k] == speakers[0] else speakers[0]
+                    )
+                seg_df["speaker"] = labels_now
+            _log(
+                f"run-level relabel: flipped {len(flips)} solo segment(s) "
+                f"(run_margin={self.config.run_margin})."
+            )
 
         # --- B+ overlap handoff ---
         if self.config.source == "global":
