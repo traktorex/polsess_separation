@@ -22,7 +22,8 @@ it writes ``<drive>/<frag_id>/nzr_aids/<NN>_<tier>_<start>s/`` containing:
    ``mix_slow060.wav`` — pitch-preserving tempo-stretched copies of mix.wav
                         (librosa phase-vocoder ``time_stretch``; rate < 1 = slower).
 4. ``sep_A.wav``,
-   ``sep_B.wav``      — SepFormer separation of the slice.
+   ``sep_B.wav``      — MossFormer2 (the deployed pipeline separator) separation
+                        of the slice.
 5. ``enh.wav``        — MossFormerGAN-enhanced slice (16 kHz).
 6. ``guesses.txt``    — Whisper-large-v2 (language=pl) candidate readings of
                         mix / sep_A / sep_B / enh: primed with the preceding
@@ -41,7 +42,7 @@ silently, every skipped item is reported):
   ``~/datasets/eval/clarin_fragments/<id>/<id>.wav``, always present), never from
   the F: copy, which the spec flags as possibly missing. Only the *outputs* land
   on F:.
-* **Separator output rate.** The SepFormer checkpoint runs at 8 kHz; its two
+* **Separator output rate.** The separator (MossFormer2 matched-128k) runs at 8 kHz; its two
   streams are upsampled back to 16 kHz before writing so all wavs in a bundle
   share one sample rate (the author can drag any of them onto the same player).
 * **Occurrence granularity.** One occurrence == one *annotation* containing at
@@ -64,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass, field
@@ -97,6 +99,10 @@ SHORT_PAD_S = 1.0                # drowns the slot in neighbour speech — use
 SLOW_RATES = (0.80, 0.60)       # librosa time_stretch rates (< 1 = slower)
 CONTEXT_NEIGHBOURS = 2          # utterances of context on each side, both tiers
 SAMPLE_RATE = 16_000            # pipeline / output sample rate
+PEAK_LIMIT = 0.95               # attenuate-only before PCM_16 write: separator
+                                # output isn't amplitude-bounded and was hard-
+                                # clipping sep_*.wav ("overdrive"); mix/enh (<1.0)
+                                # pass through untouched.
 WHISPER_MODEL = "large-v2"
 # Decode grid per variant: (temperature, primed-with-preceding-utterance).
 # The un-primed 0.0 control exists because the priming prompt sometimes leaks
@@ -105,8 +111,10 @@ WHISPER_MODEL = "large-v2"
 DECODE_SPECS = ((0.0, True), (0.6, True), (0.0, False))
 # Kept for guesses.txt back-compat in recover_best_guess tests.
 WHISPER_TEMPS = (0.0, 0.6)
-SEP_CHECKPOINT = "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"
-SEP_SAMPLE_RATE = 8_000         # rate the SepFormer checkpoint operates at
+# The pipeline's deployed separator — keep in sync with configs/default.yaml and
+# SeparationConfig.checkpoint_path so the aids reflect the system the GT serves.
+SEP_CHECKPOINT = "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt"
+SEP_SAMPLE_RATE = 8_000         # rate the separator operates at (separator_sample_rate)
 ENH_BACKEND_KEY = "mossformer_gan_se_16k"
 INDEX_NAME = "NZR_AIDS_INDEX.md"
 
@@ -214,6 +222,32 @@ def bundle_dir_name(occ: NzrOccurrence) -> str:
     return f"{occ.index:02d}_{tier}_{start_str}s"
 
 
+# Matches a bundle dir name (``00_B_6_08s``, ``07_SPEAKER_1_x_123_40s``). The
+# prune step only deletes dirs that look like bundles, never arbitrary content.
+_BUNDLE_NAME_RE = re.compile(r"^\d{2}_.+_\d+_\d{2}s$")
+
+
+def prune_orphan_bundles(nzr_dir: Path, current: set[str]) -> list[str]:
+    """Delete bundle dirs that no longer match a current ``<nzr>`` occurrence.
+
+    The dir name encodes the occurrence's running index, so editing the GT
+    (adding/removing/moving an ``<nzr>``) renumbers the names and orphans the old
+    dirs — they linger as stale aids (e.g. carrying the pre-fix clipped streams,
+    which once confused the author). The index is regenerated fully each run; the
+    bundles are derived state too, so stale ones are pruned to match. Returns the
+    removed names (reported by the caller, never silent); the name guard ensures
+    only bundle-shaped dirs are ever removed.
+    """
+    if not nzr_dir.is_dir():
+        return []
+    removed: list[str] = []
+    for d in sorted(nzr_dir.iterdir()):
+        if d.is_dir() and d.name not in current and _BUNDLE_NAME_RE.match(d.name):
+            shutil.rmtree(d)
+            removed.append(d.name)
+    return removed
+
+
 def _fmt_time(t: float) -> str:
     """``mm:ss.cc`` for human-readable context lines."""
     m = int(t // 60)
@@ -270,6 +304,24 @@ def slice_with_pad(
         lo = max(0, min(lo, n - 1))
         hi = min(n, lo + 1)
     return audio[lo:hi].astype(np.float32)
+
+
+def write_wav(path: Path, audio: np.ndarray) -> None:
+    """Write a bundle wav, attenuating hot signals to avoid PCM_16 clipping.
+
+    soundfile writes WAV as PCM_16 by default, so any sample > 1.0 is hard-
+    clipped. The separator streams are *not* amplitude-bounded (the aid skips the
+    pipeline's ``sum_equals_mix`` volume step) and were clipping ~10% of samples
+    at full scale — the "overdrive" the author heard on sep_*.wav. We only ever
+    *attenuate* (peak > ``PEAK_LIMIT`` -> scale to ``PEAK_LIMIT``); already-safe
+    audio (mix, enh, real-audio slices) passes through unchanged so its level
+    stays faithful.
+    """
+    audio = np.asarray(audio, dtype=np.float32)
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > PEAK_LIMIT:
+        audio = audio * (PEAK_LIMIT / peak)
+    sf.write(path, audio, SAMPLE_RATE)
 
 
 # --------------------------------------------------------------------------- #
@@ -386,10 +438,10 @@ def _separate_slice(
 
 
 def phase_separation(items: list[WorkItem], device: torch.device) -> None:
-    """Load SepFormer once, write sep_A/sep_B for every item, unload."""
+    """Load the separator once, write sep_A/sep_B for every item, unload."""
     from utils.model_utils import load_model_for_inference
 
-    print(f"[sep] loading SepFormer {SEP_CHECKPOINT} on {device}")
+    print(f"[sep] loading separator {SEP_CHECKPOINT} on {device}")
     t0 = time.perf_counter()
     separator, _ = load_model_for_inference(SEP_CHECKPOINT, device=str(device))
     separator.eval()
@@ -399,8 +451,8 @@ def phase_separation(items: list[WorkItem], device: torch.device) -> None:
         for it in items:
             try:
                 s1, s2 = _separate_slice(it.mix, separator, device)
-                sf.write(it.bundle / "sep_A.wav", s1, SAMPLE_RATE)
-                sf.write(it.bundle / "sep_B.wav", s2, SAMPLE_RATE)
+                write_wav(it.bundle / "sep_A.wav", s1)
+                write_wav(it.bundle / "sep_B.wav", s2)
             except Exception as exc:  # noqa: BLE001 — per-item isolation
                 it.note_error("separation", exc)
     finally:
@@ -423,7 +475,7 @@ def phase_enhancement(items: list[WorkItem], device: torch.device) -> None:
         for it in items:
             try:
                 enh = backend.enhance(it.mix, SAMPLE_RATE)
-                sf.write(it.bundle / "enh.wav", enh.astype(np.float32), SAMPLE_RATE)
+                write_wav(it.bundle / "enh.wav", enh)
             except Exception as exc:  # noqa: BLE001
                 it.note_error("enhancement", exc)
     finally:
@@ -562,7 +614,7 @@ def write_slow_versions(it: WorkItem) -> None:
     for rate in SLOW_RATES:
         try:
             slow = librosa.effects.time_stretch(it.mix, rate=rate)
-            sf.write(it.bundle / names[rate], slow.astype(np.float32), SAMPLE_RATE)
+            write_wav(it.bundle / names[rate], slow)
         except Exception as exc:  # noqa: BLE001
             it.note_error(f"slow[{rate}]", exc)
 
@@ -633,6 +685,10 @@ def build_items(
             skips.append(f"{frag}: no annotation.eaf (not yet annotated?)")
             continue
         occurrences = scan_eaf_for_nzr(eaf, frag)
+        current_names = {bundle_dir_name(occ) for occ in occurrences}
+        for name in prune_orphan_bundles(drive_root / frag / "nzr_aids", current_names):
+            skips.append(f"{frag}/{name}: pruned stale orphan bundle "
+                         f"(GT edit renumbered occurrences)")
         if not occurrences:
             continue
         try:
@@ -665,7 +721,7 @@ def build_items(
             # CPU-only artefacts, written immediately so a later GPU crash still
             # leaves a usable (if incomplete) bundle on disk.
             (bundle / "context.txt").write_text(render_context(occ), encoding="utf-8")
-            sf.write(bundle / "mix.wav", mix, SAMPLE_RATE)
+            write_wav(bundle / "mix.wav", mix)
             write_slow_versions(it)
             items.append(it)
             entries.append(IndexEntry(occ=occ, bundle=bundle, item=it))

@@ -299,3 +299,70 @@ def test_recover_best_guess_ignores_unprimed_control_line():
         "mix    @ 0.0  ->  primed reading\n"
     )
     assert bna.recover_best_guess(body) == "primed reading"
+
+
+# ---------------------------------------------------------------------------
+# write_wav — attenuate-only de-clip (separator output exceeds full scale)
+# ---------------------------------------------------------------------------
+
+
+def test_write_wav_attenuates_hot_signal_no_clipping(tmp_path):
+    # Separator streams peak well above 1.0 (observed e46 peaks ~9-17); a raw
+    # PCM_16 write would hard-clip them. write_wav must attenuate to PEAK_LIMIT.
+    import numpy as np
+    import soundfile as sf
+    hot = (np.sin(np.linspace(0, 50, bna.SAMPLE_RATE)) * 17.0).astype(np.float32)
+    out = tmp_path / "sep.wav"
+    bna.write_wav(out, hot)
+    back, sr = sf.read(out)
+    back = back.astype(np.float32)
+    assert sr == bna.SAMPLE_RATE
+    assert np.max(np.abs(back)) <= bna.PEAK_LIMIT + 1e-3
+    assert int(np.sum(np.abs(back) >= 0.999)) == 0  # nothing pinned at full scale
+
+
+def test_write_wav_passes_safe_signal_through_unchanged(tmp_path):
+    # Already-safe audio (mix/enh: peak < 1.0) must keep its level — we only
+    # ever attenuate, never amplify.
+    import numpy as np
+    import soundfile as sf
+    safe = (np.sin(np.linspace(0, 50, bna.SAMPLE_RATE)) * 0.5).astype(np.float32)
+    out = tmp_path / "mix.wav"
+    bna.write_wav(out, safe)
+    back, _ = sf.read(out)
+    # unchanged within PCM_16 quantisation (~3e-5), i.e. NOT scaled to PEAK_LIMIT
+    assert abs(float(np.max(np.abs(back))) - 0.5) < 1e-3
+
+
+def test_write_wav_handles_silence_without_dividing(tmp_path):
+    import numpy as np
+    import soundfile as sf
+    out = tmp_path / "silent.wav"
+    bna.write_wav(out, np.zeros(1000, dtype=np.float32))
+    back, _ = sf.read(out)
+    assert len(back) == 1000 and float(np.max(np.abs(back))) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# prune_orphan_bundles — remove stale bundle dirs after a GT edit renumbers them
+# ---------------------------------------------------------------------------
+
+
+def test_prune_orphan_bundles_removes_only_stale_bundle_dirs(tmp_path):
+    nzr = tmp_path / "nzr_aids"
+    nzr.mkdir()
+    (nzr / "00_B_6_08s").mkdir()       # current
+    (nzr / "01_A_12_50s").mkdir()      # orphan (not in current)
+    (nzr / "02_B_17_19s").mkdir()      # orphan
+    (nzr / "notes").mkdir()            # not bundle-shaped -> must be left alone
+    (nzr / "00_B_6_08s" / "mix.wav").write_bytes(b"x")
+    removed = bna.prune_orphan_bundles(nzr, current={"00_B_6_08s"})
+    assert sorted(removed) == ["01_A_12_50s", "02_B_17_19s"]
+    assert (nzr / "00_B_6_08s").is_dir()   # current kept
+    assert (nzr / "notes").is_dir()        # non-bundle dir untouched
+    assert not (nzr / "01_A_12_50s").exists()
+    assert not (nzr / "02_B_17_19s").exists()
+
+
+def test_prune_orphan_bundles_missing_dir_is_noop(tmp_path):
+    assert bna.prune_orphan_bundles(tmp_path / "nope", current=set()) == []
