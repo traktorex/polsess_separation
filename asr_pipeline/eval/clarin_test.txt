@@ -37,7 +37,6 @@
 489c15fb__seg00
 48a1f966__cand01
 4cad95d8__seg00
-4d93b275__seg00
 5761c96c__seg00
 59149ef6__seg00
 59d7b795__seg00
@@ -94,7 +93,6 @@ ce622a38__seg00
 d1e63652__seg00
 d1e63652__seg01
 d1e63652__seg02
-d64c055b__seg00
 d67f47f6__seg00
 d851b532__cand01
 d8b36241__seg00
