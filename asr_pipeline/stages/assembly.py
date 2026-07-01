@@ -11,8 +11,10 @@ Inputs from upstream stages:
 For each speaker:
 
 1. Derive that speaker's solo intervals on the fly: pyannote's segments
-   for the speaker, minus `ctx.overlap_regions`. No padding — pyannote's
-   boundaries are used as-is.
+   for the speaker, minus `ctx.overlap_regions`. No padding by default —
+   pyannote's boundaries are used as-is. (`solo_onset_pad_s` > 0 extends
+   piece STARTS at extraction time only, clamped to never enter overlap
+   regions or adjacent pieces; see `_pad_solo_onsets`.)
 2. Build an ECAPA-TDNN *anchor* embedding from a concatenation of
    `enhanced_full` sliced at those solo intervals. If any speaker has
    less than `min_solo_for_anchor_s` of solo audio, set the diagnostic
@@ -615,6 +617,21 @@ def _apply_fade(audio: np.ndarray, in_n: int, out_n: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _emit_blocked_regions(ctx: PipelineContext) -> list[Interval]:
+    """The intervals solo audio must not come from: Stage 3b's emit regions when
+    they exist, else the raw routing overlap regions. Shared by
+    `_derive_solo_intervals` (which subtracts them from the speaker segments)
+    and `_pad_solo_onsets` (whose onset pad must never reach into them), so the
+    two can't drift apart.
+    """
+    if ctx.overlap_separated:
+        return [
+            (float(o["emit_start"]), float(o["emit_end"]))
+            for o in ctx.overlap_separated
+        ]
+    return ctx.overlap_regions or []
+
+
 def _derive_solo_intervals(
     ctx: PipelineContext, speakers: list[str]
 ) -> dict[str, list[Interval]]:
@@ -627,17 +644,69 @@ def _derive_solo_intervals(
     `ctx.overlap_regions` when 3b didn't run.
     """
     assert ctx.diarization is not None  # checked by AssemblyStage.run
-    if ctx.overlap_separated:
-        blocked: list[Interval] = [
-            (float(o["emit_start"]), float(o["emit_end"]))
-            for o in ctx.overlap_separated
-        ]
-    else:
-        blocked = ctx.overlap_regions or []
+    blocked = _emit_blocked_regions(ctx)
     return {
         spk: _speaker_solo_intervals(ctx.diarization.segments_df, spk, blocked)
         for spk in speakers
     }
+
+
+def _pad_solo_onsets(
+    solo_intervals_by_spk: dict[str, list[Interval]],
+    blocked: list[Interval],
+    pad_s: float,
+) -> dict[str, list[Interval]]:
+    """Extend each solo piece's START earlier by up to ``pad_s`` seconds.
+
+    Motivation (ear pass, 2026-07): pyannote turn starts lag true speech onsets
+    slightly, and the assembler slices exactly at the diarization boundary — so
+    first phonemes get shaved ("szefie" audible as "efie") or onset slivers get
+    split into / duplicated in the other stream. A small bounded pad recovers
+    them. Onset side only: piece ENDS are never moved (offsets did not show the
+    failure, and padding ends would double speech against the next piece's
+    onset). Kept deliberately simpler than the seam logic's extend-toward-
+    silence: a fixed bounded pad, no VAD.
+
+    Hard clamps — the padded start is the LATEST of:
+
+    - ``start − pad_s``;
+    - 0.0;
+    - the end of any ``blocked`` (overlap emit) region before the start — that
+      audio contains BOTH speakers, so injecting it into a single-speaker
+      stream would leak the other speaker past separation;
+    - the end of ANY adjacent solo piece, in EITHER stream. Same-stream: the
+      previous piece must not be overwritten (full_length mode places pieces at
+      their padded original times). Other-stream: routing can drop overlaps
+      shorter than ``min_overlap_dur``, so the other speaker's solo span can sit
+      (or even reach) directly before this piece — padding into it would inject
+      their voice, the exact failure the overlap clamp prevents.
+
+    ``pad_s <= 0`` returns the input unchanged (the byte-identical no-op that
+    the 0.0 default pins). Pure and deterministic — plain interval arithmetic.
+    """
+    if pad_s <= 0:
+        return solo_intervals_by_spk
+    # Everything the pad must not reach into: all speakers' solo pieces plus
+    # the blocked (overlap) regions.
+    occupied: list[Interval] = list(blocked)
+    for intervals in solo_intervals_by_spk.values():
+        occupied.extend(intervals)
+    out: dict[str, list[Interval]] = {}
+    for spk, intervals in solo_intervals_by_spk.items():
+        padded: list[Interval] = []
+        for s, e in intervals:
+            new_start = max(0.0, s - pad_s)
+            for o_s, o_e in occupied:
+                # `o_s < s` skips the piece itself (its own start IS `s`) and
+                # anything starting at/after our start (irrelevant to an onset
+                # pad). An occupied interval overlapping our start (o_e > s —
+                # possible for the other stream when routing dropped a short
+                # overlap) clamps the pad away entirely (min(o_e, s) == s).
+                if o_s < s and o_e > new_start:
+                    new_start = max(new_start, min(float(o_e), s))
+            padded.append((float(new_start), float(e)))
+        out[spk] = padded
+    return out
 
 
 def _compute_anchors(
@@ -1309,8 +1378,17 @@ class AssemblyStage(Stage):
 
         # Phase 4: combine solo + overlap events.
         _log("building per-speaker event lists + post-processing...")
+        # Onset pad (solo_onset_pad_s > 0 only; 0.0 default returns the input
+        # unchanged): extend solo piece STARTS slightly earlier at extraction so
+        # shaved first phonemes are recovered. Applied HERE only — the anchors
+        # and the continuity intervals computed above keep the unpadded
+        # diarization boundaries.
+        solo_event_intervals = _pad_solo_onsets(
+            solo_intervals_by_spk, _emit_blocked_regions(ctx),
+            cfg.solo_onset_pad_s,
+        )
         events = _build_events(
-            speakers, solo_intervals_by_spk, assignments, assembly_audio, sr
+            speakers, solo_event_intervals, assignments, assembly_audio, sr
         )
 
         # Phase 5: per-piece RMS match / norm / fades (in place).

@@ -16,6 +16,7 @@ from asr_pipeline.stages.assembly import (
     _concat_full_length,
     _concat_shortened,
     _match_overlap_rms_to_solo,
+    _pad_solo_onsets,
     _rms,
     _rms_normalise,
     _slice_emit,
@@ -314,3 +315,81 @@ def test_concat_full_length_clamps_negative_orig_start():
     assert np.all(stream[0:5] == 1.0)   # 5-sample head trimmed, 5 placed at 0
     assert np.all(stream[5:] == 0.0)
     assert len(tmap) == 1
+
+
+# ---------------------------------------------------------------------------
+# _pad_solo_onsets (solo onset boundary pad)
+# ---------------------------------------------------------------------------
+
+
+def test_pad_zero_returns_input_unchanged():
+    """pad_s = 0 (the default) is the byte-identical no-op: the very same dict
+    object comes back, so downstream behaviour cannot differ from today's."""
+    ivs = {"A": [(1.0, 2.0)], "B": [(3.0, 4.0)]}
+    assert _pad_solo_onsets(ivs, [(0.5, 0.8)], 0.0) is ivs
+
+
+def test_pad_extends_start_into_free_space():
+    ivs = {"A": [(1.0, 2.0)]}
+    out = _pad_solo_onsets(ivs, [], 0.15)
+    assert out["A"][0][0] == pytest.approx(0.85)
+    assert out["A"][0][1] == 2.0                    # end untouched
+
+
+def test_pad_clamped_by_overlap_region():
+    """A blocked (overlap emit) region ending 0.05 s before the piece start
+    caps the pad at its end — overlap audio contains both speakers and must
+    never leak into a single-speaker stream."""
+    ivs = {"A": [(1.0, 2.0)]}
+    out = _pad_solo_onsets(ivs, [(0.5, 0.95)], 0.15)
+    assert out["A"][0][0] == pytest.approx(0.95)
+
+
+def test_pad_clamped_by_same_stream_previous_piece():
+    """The previous piece in the SAME stream caps the pad (full_length mode
+    places pieces at padded original times — no overwriting). The first piece
+    also exercises the t=0 clamp (start 0.0 stays 0.0)."""
+    ivs = {"A": [(0.0, 0.9), (1.0, 2.0)]}
+    out = _pad_solo_onsets(ivs, [], 0.15)
+    assert out["A"][0] == (0.0, 0.9)
+    assert out["A"][1][0] == pytest.approx(0.9)
+
+
+def test_pad_clamped_by_other_stream_piece():
+    """A piece of the OTHER stream directly before this one caps the pad —
+    padding into the other speaker's solo span would inject their voice into
+    this stream (routing can leave cross-stream pieces time-adjacent)."""
+    ivs = {"A": [(1.0, 2.0)], "B": [(0.0, 0.92)]}
+    out = _pad_solo_onsets(ivs, [], 0.15)
+    assert out["A"][0][0] == pytest.approx(0.92)
+    assert out["B"][0][0] == 0.0                    # B itself only clamps at 0
+
+
+def test_pad_other_stream_piece_overlapping_start_disables_pad():
+    """When the other stream's piece reaches past this piece's start (possible
+    when routing dropped a sub-min_overlap_dur overlap), the pad is clamped
+    away entirely — never a negative pad, never foreign audio."""
+    ivs = {"A": [(1.0, 2.0)], "B": [(0.5, 1.5)]}
+    out = _pad_solo_onsets(ivs, [], 0.15)
+    assert out["A"][0][0] == pytest.approx(1.0)
+
+
+def test_pad_clamped_at_zero():
+    ivs = {"A": [(0.1, 1.0)]}
+    out = _pad_solo_onsets(ivs, [], 0.5)
+    assert out["A"][0][0] == 0.0
+
+
+def test_pad_never_moves_ends():
+    ivs = {"A": [(1.0, 2.0), (3.0, 4.0)], "B": [(5.0, 6.0)]}
+    out = _pad_solo_onsets(ivs, [(2.5, 2.9)], 0.2)
+    for spk in ivs:
+        assert [e for _, e in out[spk]] == [e for _, e in ivs[spk]]
+
+
+def test_pad_deterministic():
+    ivs = {"A": [(1.0, 2.0), (4.0, 5.0)], "B": [(2.5, 3.5)]}
+    blocked = [(3.6, 3.9)]
+    out1 = _pad_solo_onsets(ivs, blocked, 0.15)
+    out2 = _pad_solo_onsets(ivs, blocked, 0.15)
+    assert out1 == out2

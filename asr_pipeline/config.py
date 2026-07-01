@@ -502,6 +502,20 @@ class AssemblyConfig:
     #     B+ relabel handoff (`ctx.overlap_speaker_assignment`) already covers
     #     still win (a strictly stronger global decision); cluster2 fills the rest.
     assignment_mode: str = "anchor_argmax"   # "anchor_argmax" | "cluster2"
+    # Onset boundary pad for SOLO pieces (seconds). pyannote turn starts lag true
+    # speech onsets slightly, and assembly slices exactly at the diarization
+    # boundary — so first phonemes get shaved ("szefie" audible as "efie") or
+    # onset slivers split into / duplicated in the other stream (ear pass,
+    # 2026-07). When > 0, each solo piece's START is extended earlier by up to
+    # this much at audio-extraction time (`_pad_solo_onsets`), hard-clamped so
+    # the pad can never enter an overlap region (that audio contains BOTH
+    # speakers), never reach into ANY adjacent piece (either stream — the other
+    # speaker's solo span right before this piece would inject their voice), and
+    # never go below 0. Onset side only — piece ENDS are never padded. The
+    # anchors / continuity intervals keep the unpadded boundaries (the pad is an
+    # extraction detail, not a diarization change). 0.0 = off (byte-identical
+    # baseline). Finite, >= 0.
+    solo_onset_pad_s: float = 0.0
 
 
 @dataclass
@@ -989,6 +1003,14 @@ class PipelineConfig:
             raise ValueError(
                 f"assembly.continuity_window_s must be a positive finite number, "
                 f"got {acfg.continuity_window_s}"
+            )
+        # solo_onset_pad_s needs its own guard (not the >= 0 loop above): NaN
+        # passes a bare `< 0` check and would silently disable every clamp
+        # comparison downstream.
+        if not math.isfinite(acfg.solo_onset_pad_s) or acfg.solo_onset_pad_s < 0:
+            raise ValueError(
+                f"assembly.solo_onset_pad_s must be a finite value >= 0 "
+                f"(0 = off), got {acfg.solo_onset_pad_s}"
             )
 
         # --- Diarization front-end knobs (pyannote instantiate params) ---

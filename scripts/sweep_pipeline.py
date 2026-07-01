@@ -1105,6 +1105,11 @@ CONFIGS: dict[str, dict] = {
     #                  overlap_assignment=continuity_tiebreak + margin > 0).
     #   v2_attr      - cluster2 + run_level + continuity (all attribution levers).
     #   v2_full      - v2_attr + ngram3 (everything).
+    #   v2_pad       - solo onset boundary pad (0.15 s; ear-pass repair for
+    #                  shaved/split first phonemes at solo piece starts —
+    #                  boundary recovery, not stream re-routing, so it is OFAT
+    #                  here and deliberately NOT folded into v2_attr/v2_full,
+    #                  which were already sweeping when it landed).
     # ----------------------------------------------------------------------
     "v2_ngram3": {"enhancement.observation_mix_ratio": 0.50,
                   "diarization.embedding": "ecapa2",
@@ -1144,6 +1149,11 @@ CONFIGS: dict[str, dict] = {
                 "assembly.overlap_assignment": "continuity_tiebreak",
                 "assembly.continuity_tiebreak_margin": 0.2,
                 "transcription.no_repeat_ngram_size": 3},
+    "v2_pad": {"enhancement.observation_mix_ratio": 0.50,
+               "diarization.embedding": "ecapa2",
+               "relabel.enabled": True, "relabel.source": "global",
+               "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+               "assembly.solo_onset_pad_s": 0.15},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -1338,7 +1348,7 @@ GROUPS: dict[str, list[str]] = {
     "v2dev": [
         "dr_oa050",
         "v2_ngram3", "v2_cluster", "v2_runrelabel", "v2_continuity",
-        "v2_attr", "v2_full",
+        "v2_attr", "v2_full", "v2_pad",
     ],
 }
 
