@@ -8,8 +8,32 @@ comments — read those first.
 What lives here:
 
 - `default.yaml` — POC-equivalent values; loaded by default.
+- `english.yaml` — English preset (per-language WhisperX alignment).
+- `frcrn_vadstrict.yaml` — knob variant: FRCRN enhancement + strict VAD.
 - `p4_fixed_pad.yaml` — knob-smoke variant: `context_window_mode: fixed_pad`.
 - `p5_full_length.yaml` — knob-smoke variant: `output_mode: full_length`.
+- `sweep_best_e31.yaml`, `sweep_best_e31_refineplus.yaml` — dev-era finalist
+  snapshots (see "Which 'best' is authoritative?" below).
+
+## Which "best" is authoritative? (read before trusting any `sweep_best_*`)
+
+The held-out **TEST finalist is the sweep arm `dr_oa050`** — the `dr_refineplus`
+recipe (e31 Observation-Adding + ECAPA2 diarization + 2nd-pass B+ relabel) with
+`enhancement.observation_mix_ratio` raised **0.3 → 0.5**. It exists only as an arm
+in `scripts/sweep_pipeline.py`, **not** as a standalone YAML here. The authoritative
+analysis is `docs/sweep_plan/TEST_ANALYSIS.md`: on the test set only the **separator**
+(pipeline vs `nosep`) clears multiple-comparison correction, so `dr_oa050` is kept as
+a *justified default*, not a proven-optimal knob setting.
+
+The `sweep_best_e31*.yaml` files are **dev-selected snapshots**, kept for provenance:
+
+- `sweep_best_e31.yaml` — dev OA-0.3 + ECAPA2-diar winner (2026-06-15).
+- `sweep_best_e31_refineplus.yaml` — the above + 2nd-pass B+ relabel ("dr_refineplus",
+  2026-06-19); `dr_oa050` is this recipe with OA 0.3 → 0.5.
+
+(The older pre-e31 `sweep_best.yaml` and `sweep_best_excl_db15fc57.yaml` snapshots,
+and the dev-era `asr_pipeline/SWEEP_FINAL.md` / `SWEEP_RUNLOG.md` writeups, were
+removed 2026-07-01 as superseded by `docs/sweep_plan/`.)
 
 What lives below (notes that don't fit in a YAML comment):
 

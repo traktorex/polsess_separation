@@ -14,11 +14,11 @@
 # ap_bwe BWE, detect-and-retry on, large-v2, no_repeat_ngram_size OFF — nrng3
 # HURTS OA once retry is on).
 #
-# Honest framing (SWEEP_FINAL.md): on n=23 no single config survives multiple-
+# Honest framing (dev-sweep analysis, docs/sweep_plan/): on n=23 no single config survives multiple-
 # comparison correction — OA is a robust *mechanism*, not a per-config p-value.
 # Round 2: OA r=0.3 is the ratio optimum; large-v3 (`g_oa03_v3`, 20.30) is a
 # within-noise heavier-model alternative. NOT yet validated on the held-out TEST
-# split (test annotation still in progress; split frozen in eval/CLARIN_SPLIT.md).
+# split (as of 2026-06-15; split later frozen in eval/SPLIT.md).
 
 sample_rate: 16000
 device: cuda
