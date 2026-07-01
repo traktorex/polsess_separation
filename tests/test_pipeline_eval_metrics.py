@@ -125,7 +125,7 @@ def test_normalize_splits_hyphenated():
 def test_normalize_alphanumeric_split_en_matches_spelled_out():
     # Mixed letter/digit tokens split into letter/digit runs with the digit
     # runs spelled out, so a compact recognizer form matches a written-out
-    # reference. EdAcc's participant codes (`C3P2`) vs ref `C THREE P TWO`.
+    # reference — e.g. a participant code `C3P2` vs written-out `C THREE P TWO`.
     pytest.importorskip("num2words")
     assert _normalize_text("C3P2", "en") == "c three p two"
     assert _normalize_text("C3P2", "en") == _normalize_text("C THREE P TWO", "en")

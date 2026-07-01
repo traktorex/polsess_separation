@@ -78,7 +78,7 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
       - ``no_sep_cpwer``    cpWER of pipeline run with separation disabled
       - ``full_cpwer``      cpWER of the full pipeline
       - ``full_tcpwer``     tcpWER (time-constrained) of the full pipeline, or
-                            None when the reference is untimed (EdAcc)
+                            None when the reference is untimed
       - ``tcp_skipped``     True when tcpWER was skipped — untimed reference, no
                             GT times to gate on (then ``full_tcpwer`` is None,
                             never a fabricated number; SCOPE §4.1)
