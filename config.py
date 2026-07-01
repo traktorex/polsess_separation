@@ -116,6 +116,36 @@ class SPMambaParams:
 
 
 @dataclass
+class SPMamba3Params:
+    """SPMamba3 (SPMamba with Mamba-3 blocks) model-specific parameters.
+
+    Mirrors SPMambaParams plus the Mamba-3-specific knobs. Note Mamba-3 has no
+    causal conv (no d_conv) and no single hidden-units knob — capacity is set by
+    d_state, headdim, expand, emb_dim and n_layers (lstm_hidden_units is unused,
+    kept only for config symmetry with SPMamba).
+    """
+
+    input_dim: int = 64  # STFT input dimension (kept for compatibility)
+    n_srcs: int = 1  # Number of output sources (1 for enhancement, 2 for separation)
+    n_fft: int = 256  # FFT size (paper uses 256)
+    stride: int = 64  # STFT hop length (paper uses 64)
+    window: str = "hann"  # Window function
+    n_layers: int = 6  # Number of GridNet blocks (paper uses 6)
+    lstm_hidden_units: int = 256  # Unused (kept for API/config symmetry with SPMamba)
+    attn_n_head: int = 4  # Number of attention heads
+    attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
+    emb_dim: int = 16  # Embedding dimension
+    emb_ks: int = 8  # Embedding kernel size (original librimix config uses 8)
+    emb_hs: int = 1  # Embedding hop size
+    activation: str = "prelu"  # Activation function
+    eps: float = 1.0e-5  # Epsilon for numerical stability
+    # Mamba-3 specific
+    d_state: int = 64  # SSM state dimension (Mamba-3's own default is 128)
+    headdim: int = 32  # Head dim; expand*emb_dim*emb_ks must be divisible by it
+    expand: int = 2  # Inner-dim expansion factor (Mamba-3 default)
+
+
+@dataclass
 class MambaTasNetParams:
     """Mamba-TasNet model-specific parameters."""
 
@@ -185,6 +215,7 @@ class ModelConfig:
     mossformer2: Optional[MossFormer2Params] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    spmamba3: Optional[SPMamba3Params] = None
     mamba_tasnet: Optional[MambaTasNetParams] = None
     dpmamba: Optional[DPMambaParams] = None
 
@@ -200,6 +231,8 @@ class ModelConfig:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "spmamba3" and self.spmamba3 is None:
+            self.spmamba3 = SPMamba3Params()
         elif self.model_type == "mamba_tasnet" and self.mamba_tasnet is None:
             self.mamba_tasnet = MambaTasNetParams()
         elif self.model_type == "dpmamba" and self.dpmamba is None:
@@ -277,6 +310,8 @@ class Config:
                 self.model.dprnn.C = 1
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 1
+            elif self.model.model_type == "spmamba3":
+                self.model.spmamba3.n_srcs = 1
             elif self.model.model_type == "mamba_tasnet":
                 self.model.mamba_tasnet.C = 1
             elif self.model.model_type == "dpmamba":
@@ -292,6 +327,8 @@ class Config:
                 self.model.dprnn.C = 2
             elif self.model.model_type == "spmamba":
                 self.model.spmamba.n_srcs = 2
+            elif self.model.model_type == "spmamba3":
+                self.model.spmamba3.n_srcs = 2
             elif self.model.model_type == "mamba_tasnet":
                 self.model.mamba_tasnet.C = 2
             elif self.model.model_type == "dpmamba":
@@ -377,6 +414,15 @@ class Config:
                 f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
                 f"  Output: n_srcs={p.n_srcs}",
             ])
+        elif mt == "spmamba3":
+            p = self.model.spmamba3
+            lines.extend([
+                f"  STFT: n_fft={p.n_fft}, stride={p.stride}, window={p.window}",
+                f"  Model: layers={p.n_layers}, emb_dim={p.emb_dim}, emb_ks={p.emb_ks}",
+                f"  Mamba-3: d_state={p.d_state}, headdim={p.headdim}, expand={p.expand}",
+                f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
+                f"  Output: n_srcs={p.n_srcs}",
+            ])
         elif mt == "mamba_tasnet":
             p = self.model.mamba_tasnet
             lines.extend([
@@ -411,7 +457,7 @@ class Config:
             + (
                 " (bf16, no GradScaler)"
                 if self.training.use_amp
-                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2")
+                and mt in ("spmamba", "spmamba3", "mamba_tasnet", "dpmamba", "mossformer2")
                 else " (fp16 + GradScaler)" if self.training.use_amp else ""
             ),
         ])
@@ -479,6 +525,9 @@ def load_config_from_dict(config_dict: dict) -> Config:
         spmamba_dict.pop("sample_rate", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
 
+    spmamba3_dict = model_dict.pop("spmamba3", None)
+    spmamba3_params = SPMamba3Params(**spmamba3_dict) if spmamba3_dict else None
+
     mamba_tasnet_dict = model_dict.pop("mamba_tasnet", None)
     mamba_tasnet_params = MambaTasNetParams(**mamba_tasnet_dict) if mamba_tasnet_dict else None
 
@@ -493,6 +542,7 @@ def load_config_from_dict(config_dict: dict) -> Config:
         mossformer2=mossformer2_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        spmamba3=spmamba3_params,
         mamba_tasnet=mamba_tasnet_params,
         dpmamba=dpmamba_params,
     )
@@ -535,11 +585,13 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
+        elif key == "spmamba3" and value is not None:
+            model_dict["spmamba3"] = value
         elif key == "mamba_tasnet" and value is not None:
             model_dict["mamba_tasnet"] = value
         elif key == "dpmamba" and value is not None:
             model_dict["dpmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "mossformer2", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
+        elif key not in ["convtasnet", "sepformer", "mossformer2", "dprnn", "spmamba", "spmamba3", "mamba_tasnet", "dpmamba"]:
             model_dict[key] = value
 
     config_dict = {

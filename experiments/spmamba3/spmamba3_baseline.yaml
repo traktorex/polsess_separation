@@ -1,0 +1,83 @@
+# SPMamba3 Baseline Configuration
+# SPMamba with Mamba-3 blocks (exp-trapezoidal discretization, complex RoPE
+# states, no causal conv). Architecture otherwise identical to the SPMamba SB
+# baseline (experiments/spmamba/spmamba_sb.yaml) — a like-for-like swap so the
+# two are directly comparable. Requires Mamba-3 (venv_mamba3).
+#
+# AMP: use_amp: true routes through bf16 autocast (no GradScaler), the dispatch
+# for all mamba models incl. spmamba3 — the Mamba-3 SISO kernel runs in bf16.
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: spmamba3
+  spmamba3:
+    input_dim: 64
+    n_srcs: 2         # Number of speakers
+    n_fft: 256        # Paper uses 256
+    stride: 64        # Paper uses 64
+    window: "hann"
+    n_layers: 6       # Paper uses 6 GridNet blocks
+    lstm_hidden_units: 256  # Unused for Mamba-3 (kept for config symmetry)
+    attn_n_head: 4    # 4 attention heads
+    attn_approx_qk_dim: 512  # Q/K dimension
+    emb_dim: 16       # Embedding dimension
+    emb_ks: 8         # Embedding kernel size (-> in_channels = 128)
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-5
+    # Mamba-3 specific. Constraint: expand * emb_dim * emb_ks must be divisible
+    # by headdim. Here 2 * 16 * 8 = 256, headdim 32 -> 8 heads.
+    d_state: 64       # SSM state dim (Mamba-3's own default is 128)
+    headdim: 32
+    expand: 2
+
+training:
+  # Optimizer settings
+  lr: 0.001
+  weight_decay: 1.0e-5
+  grad_clip_norm: 5.0
+
+  # Learning rate scheduler (ReduceLROnPlateau from paper)
+  lr_factor: 0.5
+  lr_patience: 2
+
+  # Training configuration
+  num_epochs: 100
+  use_amp: true
+
+  # Checkpointing and logging
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: "polsess-separation"
+  wandb_entity: null
+  wandb_run_name: "spmamba3_sb_baseline"
+  log_file: null
+  log_level: "INFO"
+
+  early_stopping_patience: 6
+
+  # Hardware
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  # Validation and curriculum learning
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

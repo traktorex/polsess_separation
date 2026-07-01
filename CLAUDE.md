@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset. Part of a master's thesis on speech separation for downstream Polish ASR preprocessing.
+PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, SPMamba3, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset. Part of a master's thesis on speech separation for downstream Polish ASR preprocessing.
 
 Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian vault on Windows, tracked by its own git repo (ignored here). Read freely; when editing thesis content, `cd thesis/` so `thesis/CLAUDE.md` stacks in on top of this file.
 
@@ -91,6 +91,7 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 - `convtasnet` (~8M), `sepformer` (~26M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M) — cross-platform
   - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched); `attn_dropout` (default 0.1, upstream hard-coded) covers attention-path dropout — FSMN-gate dropout stays fixed at 0.1. Sweep override key `dropout` routes to `attn_dropout`. Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
 - `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.6M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only
+- `spmamba3` — SPMamba with the Mamba-1 selective-scan blocks swapped for **Mamba-3** (SISO: exp-trapezoidal discretization, complex RoPE states, no causal conv). Separate file `models/spmamba3.py`, mirrors `spmamba.py` with only the recurrent block changed (like-for-like comparison). Needs Mamba-3, which is **not** in the PyPI mamba-ssm wheels — only in the dedicated **`venv_mamba3`** (see Virtual Environments); the main `venv` keeps the Mamba-1 mamba-ssm, so `spmamba3` is registered only when `MAMBA3_AVAILABLE`. Has its own availability flag separate from `MAMBA_AVAILABLE`. Configs: `experiments/spmamba3/spmamba3_{baseline,sb_reduced}.yaml`. Knobs: `d_state`, `headdim`, `expand` (constraint: `expand * emb_dim * emb_ks` must be divisible by `headdim`).
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
 
@@ -204,7 +205,7 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 
 **Main (`venv/`)** — all models except SPMamba3. Alias: `polsess_venv`.
 
-**SPMamba3 (`venv_mamba3/`)** — torch 2.11.0+cu130, triton 3.6.0, Mamba-3 kernels. Clone of main venv with Mamba-3 files manually copied from bare repo clone of `state-spaces/mamba`. Additional deps: `tilelang`, `quack-kernels`, `cuda-bindings`, `nvidia-cutlass-dsl`.
+**SPMamba3 (`venv_mamba3/`)** — for the `spmamba3` model (Mamba-3). Rebuilt from scratch 2026-06-27: a **copy of the main `venv`** (so torch 2.8.0+cu128, and it can also run the Mamba-1 models — it's a superset) with two changes: (1) `mamba-ssm` **built from source** at `state-spaces/mamba`@`0048fbf2` (reports version `2.3.2.post1`, brings in `Mamba3`) via `MAMBA_FORCE_BUILD=TRUE CUDA_HOME=/usr/local/cuda-12.9 pip install --no-build-isolation --no-deps "git+https://github.com/state-spaces/mamba.git@<sha>"` (CUDA 12.9 toolkit, not the default 13.0, to match torch's cu128); (2) **triton bumped 3.4.0→3.5.1** (`pip install --no-deps triton==3.5.1`) — Mamba-3 requires `triton>=3.5` and the SISO Triton kernel fails to compile on 3.4. The torch↔triton pin mismatch is benign (only matters for `torch.compile`, which is skipped for all mamba models). The SISO path needs **only Triton** — the CLAUDE-historical `tilelang`/`quack`/`cutlass` deps were over-spec for MIMO/decode and are **not** installed. Recreate recipe + verification in `docs/spmamba3_plan/PLAN.md`.
 
 ## Cloud Setup
 
