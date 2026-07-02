@@ -9,6 +9,7 @@ exercised here (CLAUDE.md: trust internal code, validate at boundaries).
 """
 
 import json
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -25,6 +26,10 @@ from asr_pipeline.stages.transcription import (
     _finite_or_zero,
     _normalise_result,
     _temperature_schedule,
+)
+from asr_pipeline.text_metrics import (
+    LOOP_SCORE_THRESHOLD,
+    repetition_loop_score,
 )
 
 # The silence floor is now a config field (TranscriptionConfig.silence_floor),
@@ -848,6 +853,217 @@ def test_whisperx_backend_default_asr_options_match_whisperx_defaults(monkeypatc
     assert opts["suppress_numerals"] is False
     assert opts["length_penalty"] == 1
     assert captured["vad_options"] == {"vad_onset": 0.500, "vad_offset": 0.363}
+
+
+# ---------------------------------------------------------------------------
+# Conditional repetition-loop retry (WhisperX)
+# ---------------------------------------------------------------------------
+
+
+# A merged window transcribed as one token repeated — the hallucination the
+# collapse detector cannot catch. >= LOOP_MIN_TOKENS tokens, top token >= 8×.
+_LOOP_TEXT = "No " + "tak " * 20        # "tak" ×20 among 21 tokens → score ~0.95
+
+
+def test_loop_score_flags_synthetic_loop():
+    """A short phrase repeated 20+ times scores above the threshold."""
+    ls = repetition_loop_score("No " + "tak, " * 25)
+    assert ls.top_token == "tak"
+    assert ls.top_count == 25
+    assert ls.score >= LOOP_SCORE_THRESHOLD
+    assert ls.score > 0.9
+
+
+@pytest.mark.parametrize("text", [
+    "zawsze w tej tej koszuli chodzi",          # mild disfluency, short
+    "no tak, no tak",                            # repeated once
+    # long but genuinely varied — exercises the non-looping path, not just the
+    # min-token gate:
+    "to jest zupełnie normalne zdanie po polsku bez żadnych powtórzeń wcale naprawdę",
+])
+def test_loop_score_below_threshold_for_natural_speech(text):
+    assert repetition_loop_score(text).score < LOOP_SCORE_THRESHOLD
+
+
+def test_loop_score_gated_by_min_tokens():
+    """A pure repeat that is still short (< LOOP_MIN_TOKENS) is gated to 0.0, so
+    natural short repeats never fire the detector."""
+    ls = repetition_loop_score("tak tak tak tak tak")
+    assert ls.n_tokens == 5 and ls.top_count == 5
+    assert ls.score == 0.0
+
+
+@dataclass
+class _FakeOptions:
+    """Stand-in for faster-whisper's TranscriptionOptions carrying only the field
+    the loop retry overrides. A dataclass so `dataclasses.replace` works — the
+    exact route _retry_loops (and WhisperX itself, for suppress_numerals) uses."""
+
+    no_repeat_ngram_size: int = 0
+
+
+class _LoopFakeASR:
+    """Fake faster-whisper pipeline for the loop-retry path.
+
+    First transcribe() (the main pass) returns first_segments; each later call
+    (a per-window loop retry) returns retry_segments and records the
+    no_repeat_ngram_size live on self.options at call time — proving the override
+    reached the decode and was restored afterwards.
+    """
+
+    def __init__(self, first_segments, retry_segments) -> None:
+        self.first_segments = first_segments
+        self.retry_segments = retry_segments
+        self.options = _FakeOptions()
+        self.calls: list[dict] = []
+        self.retry_ngram_seen: list[int] = []
+
+    def transcribe(self, audio, language, chunk_size):
+        self.calls.append({"chunk_size": chunk_size, "n_samples": len(audio)})
+        if len(self.calls) == 1:
+            segs = self.first_segments
+        else:
+            self.retry_ngram_seen.append(self.options.no_repeat_ngram_size)
+            segs = self.retry_segments
+        return {"segments": [dict(s) for s in segs], "language": language}
+
+
+def _loop_backend(monkeypatch, first_segments, retry_segments, **cfg_kwargs):
+    """A _WhisperXBackend wired to a _LoopFakeASR, loop_retry ON, collapse OFF.
+
+    retry_collapsed_chunk_size=0 isolates the loop retry so call #2 is
+    deterministically the loop-retry pass.
+    """
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(
+        backend="whisperx", word_timestamps=False, loop_retry=True,
+        retry_collapsed_chunk_size=0, **cfg_kwargs,
+    )
+    backend = _WhisperXBackend(cfg)
+    backend._asr = _LoopFakeASR(first_segments, retry_segments)
+    return backend
+
+
+def test_loop_retry_default_off_does_not_run(monkeypatch):
+    """loop_retry defaults to False → the loop-retry pass never executes even on a
+    clearly-looping window; the segment passes through unchanged (byte-identical
+    shipped behaviour). Only the single main transcribe call happens."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(backend="whisperx", word_timestamps=False,
+                              retry_collapsed_chunk_size=0)
+    assert cfg.loop_retry is False
+    backend = _WhisperXBackend(cfg)
+    backend._asr = _LoopFakeASR(
+        [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}], retry_segments=[]
+    )
+    out = backend.transcribe(np.zeros(12 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 1                 # no retry pass
+    assert out["segments"][0]["text"] == _LOOP_TEXT
+
+
+def test_loop_retry_accepts_when_retry_breaks_loop(monkeypatch):
+    """A looped window is retried with the ngram override; a clean retry is
+    spliced in with timestamps offset by the window start, and the override is
+    restored afterwards."""
+    looped = [{"start": 4.0, "end": 14.0, "text": _LOOP_TEXT}]
+    clean = [{"start": 0.0, "end": 5.0,
+              "text": "to jest zupełnie normalne zdanie po polsku bez powtórzeń naprawdę wcale"}]
+    backend = _loop_backend(monkeypatch, looped, clean, loop_retry_ngram=3)
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                       # retry ran
+    assert backend._asr.retry_ngram_seen == [3]               # override reached decode
+    assert backend._asr.options.no_repeat_ngram_size == 0     # ...and was restored
+    # Retry was fed exactly the looped window's audio span (4-14 s).
+    assert backend._asr.calls[1]["n_samples"] == int(14.0 * 16_000) - int(4.0 * 16_000)
+    # Clean text spliced in, timestamps offset by the window start (4 s).
+    assert out["segments"][0]["text"].startswith("to jest")
+    assert out["segments"][0]["start"] == 4.0 and out["segments"][0]["end"] == 9.0
+
+
+def test_loop_retry_rejects_when_retry_still_loops(monkeypatch):
+    """Inverted accept guard: if the retry still loops (score >= threshold) it is
+    rejected and the original window kept."""
+    looped = [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}]
+    still = [{"start": 0.0, "end": 5.0, "text": "nie " * 15}]      # still a loop
+    backend = _loop_backend(monkeypatch, looped, still)
+    out = backend.transcribe(np.zeros(12 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 2                  # retry ran...
+    # ...but was rejected; the original survives unchanged.
+    assert out["segments"] == [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}]
+
+
+def test_loop_retry_keeps_original_when_retry_empty(monkeypatch):
+    """A retry that produces no content never empties a window that had content —
+    the original is kept."""
+    looped = [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}]
+    backend = _loop_backend(monkeypatch, looped, retry_segments=[])
+    out = backend.transcribe(np.zeros(12 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 2
+    assert out["segments"] == [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}]
+
+
+def test_loop_retry_leaves_normal_segments_untouched(monkeypatch):
+    """Only looped windows are retried; a normal window in the same stream is not
+    re-decoded and stays in place after the re-sort."""
+    segs = [
+        {"start": 0.0, "end": 4.0, "text": "zwykłe zdanie które nie jest pętlą wcale"},
+        {"start": 5.0, "end": 15.0, "text": _LOOP_TEXT},
+    ]
+    clean = [{"start": 0.0, "end": 3.0,
+              "text": "poprawnie odzyskane słowa bez pętli tutaj naprawdę teraz zdanie"}]
+    backend = _loop_backend(monkeypatch, segs, clean)
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 2                  # exactly one retry
+    texts = [s["text"] for s in out["segments"]]
+    assert texts[0] == "zwykłe zdanie które nie jest pętlą wcale"    # untouched, first
+    assert texts[1].startswith("poprawnie odzyskane")                # spliced, offset 5 s
+    assert out["segments"][1]["start"] == 5.0
+
+
+def test_loop_retry_restores_live_global_ngram(monkeypatch):
+    """The retry overrides no_repeat_ngram_size only for its own decode and
+    restores whatever global value was live before — the global knob and the
+    loop-retry ngram stay independent (task interaction rule 5)."""
+    looped = [{"start": 0.0, "end": 10.0, "text": _LOOP_TEXT}]
+    clean = [{"start": 0.0, "end": 3.0,
+              "text": "czyste zdanie bez pętli po polsku naprawdę teraz już koniec"}]
+    backend = _loop_backend(monkeypatch, looped, clean, loop_retry_ngram=4)
+    backend._asr.options.no_repeat_ngram_size = 2        # a live global setting
+    backend.transcribe(np.zeros(12 * 16_000, dtype=np.float32))
+    assert backend._asr.retry_ngram_seen == [4]          # retry used loop_retry_ngram
+    assert backend._asr.options.no_repeat_ngram_size == 2  # global restored, not 4
+
+
+@pytest.mark.parametrize("backend_name", ["whisper", "coherex"])
+def test_loop_retry_rejected_on_non_whisperx_backend(backend_name):
+    """loop_retry re-decodes via faster-whisper's TranscriptionOptions, which only
+    the whisperx backend carries; loop_retry=True on any other backend fails loud
+    at stage load — before any model is loaded — never a silent no-op (SCOPE
+    §4.1). Backend-level (not config-level) so a sweep arm may override loop_retry
+    onto a whisperx default.yaml base without re-declaring the backend."""
+    stage = TranscriptionStage(
+        TranscriptionConfig(backend=backend_name, loop_retry=True)
+    )
+    with pytest.raises(ValueError, match="loop_retry"):
+        stage.load(torch_cpu())
+
+
+def test_loop_retry_accepted_on_whisperx_backend(monkeypatch):
+    """loop_retry=True + whisperx passes the guard and dispatches normally (the
+    backend's own load is stubbed so no model is fetched)."""
+    monkeypatch.setattr(_WhisperXBackend, "load", lambda self, device: None)
+    stage = TranscriptionStage(
+        TranscriptionConfig(backend="whisperx", loop_retry=True)
+    )
+    stage.load(torch_cpu())        # must not raise
+    assert isinstance(stage._backend, _WhisperXBackend)
 
 
 # ---------------------------------------------------------------------------

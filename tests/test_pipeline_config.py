@@ -180,12 +180,53 @@ def test_anchor_embedding_enum_guard():
 @pytest.mark.parametrize("field,bad", [
     ("source", "everything"),
     ("audio_source", "denoised"),
+    ("solo_clustering_init", "kmeanspp"),
 ])
 def test_relabel_enum_guards(field, bad):
     cfg = PipelineConfig()
     setattr(cfg.relabel, field, bad)
     with pytest.raises(ValueError, match=f"relabel.{field}"):
         cfg.__post_init__()
+
+
+def test_degeneracy_rescue_defaults():
+    """The rescue is off by default (pass1) with the validated balance thresholds
+    — so default.yaml stays the shipped pass-1-seeded pipeline."""
+    cfg = PipelineConfig()
+    assert cfg.relabel.solo_clustering_init == "pass1"
+    assert cfg.relabel.rescue_trigger_bal == 0.10
+    assert cfg.relabel.rescue_candidate_bal == 0.20
+
+
+@pytest.mark.parametrize("field", ["rescue_trigger_bal", "rescue_candidate_bal"])
+@pytest.mark.parametrize("bad", [-0.1, 1.1, float("nan"), float("inf")])
+def test_rescue_bal_out_of_range_rejected(field, bad):
+    """The rescue balance thresholds are duration shares → finite, [0, 1]; a
+    YAML typo fails loud at config time, naming the knob."""
+    cfg = PipelineConfig()
+    setattr(cfg.relabel, field, bad)
+    with pytest.raises(ValueError, match=field):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field", ["rescue_trigger_bal", "rescue_candidate_bal"])
+@pytest.mark.parametrize("good", [0.0, 0.1, 0.5, 1.0])
+def test_rescue_bal_valid_accepted(field, good):
+    cfg = PipelineConfig()
+    setattr(cfg.relabel, field, good)
+    cfg.__post_init__()   # must not raise
+
+
+def test_rescue_fields_reach_dataclass_from_dict():
+    """A YAML/dict override for the rescue knobs reaches the RelabelConfig."""
+    cfg = load_pipeline_config_from_dict({
+        "relabel": {"enabled": True, "source": "global", "audio_source": "raw",
+                    "solo_clustering_init": "rescue", "rescue_trigger_bal": 0.12,
+                    "rescue_candidate_bal": 0.25},
+    })
+    assert cfg.relabel.solo_clustering_init == "rescue"
+    assert cfg.relabel.rescue_trigger_bal == 0.12
+    assert cfg.relabel.rescue_candidate_bal == 0.25
 
 
 def test_relabel_enhanced_without_enhancement_raises():
@@ -341,6 +382,50 @@ def test_solo_onset_pad_yaml_round_trip(tmp_path):
     out_yaml = tmp_path / "pad.yaml"
     save_pipeline_config_to_yaml(cfg, str(out_yaml))
     assert load_pipeline_config_from_yaml(str(out_yaml)).assembly.solo_onset_pad_s == 0.15
+
+
+# ---------------------------------------------------------------------------
+# Conditional repetition-loop retry (transcription)
+# ---------------------------------------------------------------------------
+
+
+def test_loop_retry_defaults_are_noop():
+    """loop_retry defaults OFF so default.yaml stays byte-identical; the ngram
+    and threshold defaults are the shipped values."""
+    cfg = PipelineConfig()
+    assert cfg.transcription.loop_retry is False
+    assert cfg.transcription.loop_retry_ngram == 3
+    assert cfg.transcription.loop_score_threshold == 0.4
+
+
+@pytest.mark.parametrize("bad", [0, -1])
+def test_loop_retry_ngram_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.transcription.loop_retry_ngram = bad
+    with pytest.raises(ValueError, match="loop_retry_ngram"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, float("nan")])
+def test_loop_score_threshold_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.transcription.loop_score_threshold = bad
+    with pytest.raises(ValueError, match="loop_score_threshold"):
+        cfg.__post_init__()
+
+
+def test_loop_retry_fields_yaml_round_trip(tmp_path):
+    cfg = PipelineConfig()
+    cfg.transcription.backend = "whisperx"      # loop_retry is whisperx-only
+    cfg.transcription.loop_retry = True
+    cfg.transcription.loop_retry_ngram = 4
+    cfg.transcription.loop_score_threshold = 0.55
+    out_yaml = tmp_path / "loop.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    back = load_pipeline_config_from_yaml(str(out_yaml)).transcription
+    assert back.loop_retry is True
+    assert back.loop_retry_ngram == 4
+    assert back.loop_score_threshold == 0.55
 
 
 def test_relabel_hf_token_redacted_in_snapshot():

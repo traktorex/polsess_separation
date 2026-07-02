@@ -16,6 +16,7 @@ from __future__ import annotations
 import gc
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,7 @@ from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
+from asr_pipeline.text_metrics import repetition_loop_score
 from asr_pipeline.transcript_format import format_transcript, to_jsonable
 
 
@@ -448,6 +450,11 @@ class _WhisperXBackend:
         if self.cfg.retry_collapsed_chunk_size and result.get("segments"):
             result = {**result,
                       "segments": self._retry_collapsed(audio, result["segments"])}
+        # Conditional repetition-loop retry — the OVER-production mirror of the
+        # collapse retry above. Also on the RAW segments, before alignment.
+        if self.cfg.loop_retry and result.get("segments"):
+            result = {**result,
+                      "segments": self._retry_loops(audio, result["segments"])}
         # `result` has segments with .text / .start / .end but no word-level
         # timing. Alignment adds word timestamps from wav2vec2.
         if self.cfg.word_timestamps and result.get("segments"):
@@ -500,6 +507,75 @@ class _WhisperXBackend:
                 f"retry: collapsed window [{s0:.1f}-{e0:.1f}] "
                 f"({nw}w, {nw / max(dur, 1e-9):.2f} w/s) re-transcribed at "
                 f"chunk_size={cs} → {retry_words}w"
+            )
+            for rs in rsegs:
+                out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
+        out.sort(key=lambda s: s["start"])
+        return out
+
+    def _retry_loops(self, audio: np.ndarray, segments: list) -> list:
+        """Re-transcribe repetition-loop windows with no_repeat_ngram_size, splice.
+
+        A *repetition loop* is a merged window whose text is one token repeated
+        (`No tak, tak, tak, ...`) — a hallucination the collapse detector cannot
+        catch (it is OVER-production; collapse is under-production). Detected with
+        the shared ``repetition_loop_score`` metric (the offline scanner
+        ``docs/sweep_plan/scan_repetition_loops.py`` uses the same function, so a
+        spliced window is never re-flagged). For each window scoring
+        ``>= loop_score_threshold`` we re-run the SAME backend on just that span,
+        temporarily overriding faster-whisper's ``TranscriptionOptions.no_repeat_
+        ngram_size`` to ``loop_retry_ngram`` (the global ``no_repeat_ngram_size``
+        knob is untouched) via ``dataclasses.replace`` — the exact route WhisperX
+        itself uses for suppress_numerals — restored in a ``finally``.
+
+        Accept guard (the INVERTED mirror of the collapse guard: for a loop the
+        goal is FEWER repeats, not more words): splice the retry in ONLY if it is
+        non-empty AND every retry segment scores below the threshold; otherwise
+        keep the original window and log the rejection. A retry is never allowed
+        to empty a window that had content. Returns a new list (never mutates the
+        input segments); the spliced list is re-sorted by start time.
+        """
+        thr = self.cfg.loop_score_threshold
+        ngram = self.cfg.loop_retry_ngram
+        out: list = []
+        for seg in segments:
+            score = repetition_loop_score(seg["text"]).score
+            if score < thr:
+                out.append(seg)
+                continue
+            s0, e0 = seg["start"], seg["end"]
+            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
+            saved_options = self._asr.options
+            self._asr.options = replace(saved_options, no_repeat_ngram_size=ngram)
+            try:
+                retry = self._asr.transcribe(
+                    sub, language=self.cfg.language, chunk_size=self.cfg.chunk_size
+                )
+            finally:
+                # Restore the original options no matter what — the ngram override
+                # must never leak into the next window / stream.
+                self._asr.options = saved_options
+            rsegs = retry.get("segments") or []
+            retry_text = " ".join((rs.get("text") or "") for rs in rsegs).strip()
+            retry_score = max(
+                (repetition_loop_score(rs.get("text")).score for rs in rsegs),
+                default=0.0,
+            )
+            # Guard: keep the original unless the retry broke the loop AND left
+            # content behind. `retry_score >= thr` = a segment still loops;
+            # `not retry_text` = the retry emptied the window.
+            if not retry_text or retry_score >= thr:
+                _log(
+                    f"loop-retry REJECTED window [{s0:.1f}-{e0:.1f}] "
+                    f"score {score:.2f} -> {retry_score:.2f} "
+                    f"(no_repeat_ngram_size={ngram}); keeping original"
+                )
+                out.append(seg)
+                continue
+            _log(
+                f"loop-retry window [{s0:.1f}-{e0:.1f}] score {score:.2f} -> "
+                f"{retry_score:.2f} (no_repeat_ngram_size={ngram}); accepted, "
+                f"{len(rsegs)} segment(s)"
             )
             for rs in rsegs:
                 out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
@@ -621,6 +697,20 @@ class TranscriptionStage(Stage):
     # Lifecycle
     # ------------------------------------------------------------------
     def load(self, device: torch.device) -> None:
+        # loop_retry re-decodes repetition-loop windows by overriding faster-
+        # whisper's TranscriptionOptions.no_repeat_ngram_size — machinery only the
+        # whisperx backend carries. Fail loud here (at pipeline init, before any
+        # audio) rather than silently no-op on whisper/coherex (SCOPE §4.1). Same
+        # backend-level deferral as the other WhisperX-only knobs.
+        if self.config.loop_retry and self.config.backend != "whisperx":
+            raise ValueError(
+                "transcription.loop_retry=True is only supported by the "
+                "'whisperx' backend (it re-decodes repetition-loop windows with "
+                "no_repeat_ngram_size via faster-whisper's TranscriptionOptions); "
+                f"backend={self.config.backend!r} has no equivalent. Use "
+                "backend='whisperx' or set loop_retry=False. (No silent no-op — "
+                "SCOPE §4.1.)"
+            )
         if self.config.backend == "whisper":
             self._backend = _WhisperBackend(self.config)
         elif self.config.backend == "whisperx":
