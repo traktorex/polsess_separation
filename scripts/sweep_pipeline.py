@@ -1579,16 +1579,22 @@ def run_config(name, overrides, force, eval_root, recordings) -> None:
 # --- Score ----------------------------------------------------------------
 
 
-def _read_run_seconds(run_dir: Path) -> float:
-    """Wall-clock seconds for one (config, recording) run, or NaN if absent.
+def _read_run_seconds(run_dir: Path) -> tuple[float, float]:
+    """(wall-clock seconds, run_meta mtime epoch) for one (config, recording) run.
 
-    Older runs predate ``run_meta.json``; a missing/garbled file degrades to NaN
-    (→ blank ``secs_per_frag``), never a crash."""
+    The mtime dates WHEN the outputs were produced — run_config skips fragments
+    that already have outputs, so a config row can mix runs from different days
+    (different GPU-contention regimes). ``secs_per_frag`` alone made a June run
+    look comparable to a July one; the ``runs_span`` column built from these
+    mtimes makes that staleness visible. Older runs predate ``run_meta.json``;
+    a missing/garbled file degrades to (NaN, NaN) (→ blank columns), never a
+    crash."""
     meta = run_dir / "run_meta.json"
     try:
-        return float(json.loads(meta.read_text(encoding="utf-8"))["seconds"])
+        secs = float(json.loads(meta.read_text(encoding="utf-8"))["seconds"])
+        return secs, meta.stat().st_mtime
     except (OSError, ValueError, KeyError, TypeError):
-        return float("nan")
+        return float("nan"), float("nan")
 
 
 def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.DataFrame:
@@ -1602,7 +1608,12 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
 
     Appended (additive) columns:
       - ``secs_per_frag`` — mean wall-clock per fragment from each run's
-        ``run_meta.json`` (blank if no run_meta on disk).
+        ``run_meta.json`` (blank if no run_meta on disk). CAVEAT: run_config
+        skips already-done fragments, so this is the timing of whenever the
+        outputs were PRODUCED, not of the current sweep — check ``runs_span``.
+      - ``runs_span`` — mm-dd (or mm-dd..mm-dd) range of the run_meta mtimes
+        behind this row. Rows with different spans ran under different GPU-load
+        regimes; their secs_per_frag are not comparable.
       - ``cpwer_ci_lo`` / ``cpwer_ci_hi`` — bootstrap 95% CI for the config's
         micro-averaged cpWER, resampling the FRAGMENTS with replacement
         (``BOOTSTRAP_RESAMPLES`` draws, seed ``BOOTSTRAP_SEED``). This captures
@@ -1645,6 +1656,7 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
         per_rec = {}
         frag_counts: dict[str, tuple[float, float]] = {}
         secs_list: list[float] = []
+        mtime_list: list[float] = []
         n_done = 0
         for fid in recordings:
             d = eval_root / fid / "sweep" / name
@@ -1662,7 +1674,9 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
             acc["mimo"][0] += mw["errors"]; acc["mimo"][1] += mw["length"]
             # Per-fragment cpWER counts for the bootstrap (errors, ref_words).
             frag_counts[fid] = (float(r["cp_errors"]), float(r["cp_length"]))
-            secs_list.append(_read_run_seconds(d))
+            run_secs, run_mtime = _read_run_seconds(d)
+            secs_list.append(run_secs)
+            mtime_list.append(run_mtime)
             o = orc_wer_multistream(ref, hyp, session_id=fid)
             acc["orc"][0] += o["errors"]; acc["orc"][1] += o["length"]
             cc = cp_cer_meeteval(ref, hyp, session_id=fid)
@@ -1691,6 +1705,16 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
         # Mean wall-clock per scored fragment; NaN (→ blank) if no run had meta.
         secs = np.array(secs_list, dtype=float)
         secs_per_frag = float(np.nanmean(secs)) if np.any(~np.isnan(secs)) else float("nan")
+        # When those outputs were produced (run_meta mtimes). A span crossing
+        # days = mixed-age row: its secs_per_frag averages different GPU-load
+        # regimes and must not be compared across configs as "current speed".
+        mtimes = np.array(mtime_list, dtype=float)
+        if np.any(~np.isnan(mtimes)):
+            lo = datetime.fromtimestamp(float(np.nanmin(mtimes))).strftime("%m-%d")
+            hi = datetime.fromtimestamp(float(np.nanmax(mtimes))).strftime("%m-%d")
+            runs_span = lo if lo == hi else f"{lo}..{hi}"
+        else:
+            runs_span = ""
         row = {
             "config": name,
             "n": n_done,
@@ -1699,6 +1723,7 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
             "cpwer_ci_lo": ci_lo,
             "cpwer_ci_hi": ci_hi,
             "secs_per_frag": secs_per_frag,
+            "runs_span": runs_span,
             "orcWER": orcwer,
             "attr_gap": cpwer - orcwer,      # speaker-attribution penalty
             "tcpWER": pct("tcp"),
@@ -1833,6 +1858,13 @@ def append_ledger(ledger_path: Path, df: pd.DataFrame, provenance: dict) -> None
     tagged.insert(3, "gt_snapshot_hash", provenance["gt_snapshot_hash"])
     tagged.insert(4, "anchor", provenance["anchor"])
     header = not ledger_path.exists()
+    if not header:
+        # Append-only + never rewritten ⇒ the on-disk header is the schema.
+        # Align to it so a column added to score_configs later (e.g. runs_span)
+        # can't silently shift values under the old header; brand-new columns
+        # simply don't enter the ledger until it is re-created.
+        on_disk = pd.read_csv(ledger_path, nrows=0).columns
+        tagged = tagged.reindex(columns=on_disk)
     tagged.to_csv(ledger_path, mode="a", header=header, index=False)
     prov_path = ledger_path.with_name(ledger_path.stem + "_provenance.json")
     with prov_path.open("a", encoding="utf-8") as fh:
