@@ -19,7 +19,12 @@ from typing import NamedTuple
 # repeats ("no tak, no tak") would score misleadingly high.
 LOOP_MIN_TOKENS = 10
 # ...and the single most-common token must itself recur at least this many times.
-LOOP_MIN_TOP_COUNT = 8
+# 12 sits in the observed gap between genuine disfluency and hallucination: every
+# real loop in the corpus repeats ×14-×112 (REPETITION_LOOP_HALLUCINATIONS.md;
+# tightest is `takie`×14), while the longest GENUINE repeat WhisperX transcribes
+# is ×8-9 ("Tak, tak, ..." — dev 4f9251fe, which an earlier ×8 gate clipped into
+# real deletions).
+LOOP_MIN_TOP_COUNT = 12
 # Default dominant-token-fraction threshold above which a segment is treated as a
 # repetition-loop hallucination. This is the scanner's validated operating point
 # (its former ``MIN_TOP_FRAC``); ``TranscriptionConfig.loop_score_threshold``

@@ -893,6 +893,21 @@ def test_loop_score_gated_by_min_tokens():
     assert ls.score == 0.0
 
 
+def test_loop_score_gate_sits_between_disfluency_and_real_loops():
+    """The min-top-count gate splits the corpus' observed gap: the longest
+    GENUINE repeat WhisperX transcribes is ×8-9 (dev 4f9251fe "Tak, tak, ...",
+    which a ×8 gate clipped into real deletions), while the tightest REAL loop
+    is `takie`×14 (test 150d1ccc). ×9 must be gated to 0.0; ×14 must fire."""
+    disfluency = "Tak jak ten, na przykład. " + "Tak, " * 9   # 'tak' ×10/14ish
+    ls = repetition_loop_score(disfluency)
+    assert ls.top_token == "tak" and ls.top_count < 12
+    assert ls.score == 0.0
+    loop = "No bo wiesz, to jest " + "takie " * 14 + "no i tyle wlasnie"
+    ls = repetition_loop_score(loop)
+    assert ls.top_token == "takie" and ls.top_count == 14
+    assert ls.score >= LOOP_SCORE_THRESHOLD
+
+
 @dataclass
 class _FakeOptions:
     """Stand-in for faster-whisper's TranscriptionOptions carrying only the field

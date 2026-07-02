@@ -1179,6 +1179,16 @@ CONFIGS: dict[str, dict] = {
                      "relabel.enabled": True, "relabel.source": "global",
                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                      "transcription.loop_retry": True},
+    # Campaign v2 FINALIST — dr_oa050 + the two levers that survived round 2
+    # (rescue: fires only on duration-degenerate solo partitions; loop_retry:
+    # touches only detector-flagged windows, min-repeat gate 12). Pre-registered
+    # for the ONE held-out test re-eval: docs/sweep_plan/V2_TEST_PREREG.md.
+    "v2_finalist": {"enhancement.observation_mix_ratio": 0.50,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "relabel.solo_clustering_init": "rescue",
+                    "transcription.loop_retry": True},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
