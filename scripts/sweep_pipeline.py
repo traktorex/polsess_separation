@@ -1154,6 +1154,31 @@ CONFIGS: dict[str, dict] = {
                "relabel.enabled": True, "relabel.source": "global",
                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                "assembly.solo_onset_pad_s": 0.15},
+    # ----------------------------------------------------------------------
+    # Campaign v2, round 2 — the two levers that survived diagnosis
+    # (see GROUPS["v2fix"]; anchor stays dr_oa050):
+    #   v2_reseed    - relabel degeneracy rescue: when the pass-1-seeded solo
+    #                  2-means lands on a duration-degenerate outlier-peel
+    #                  (min-cluster share < 0.10), search all pair-seeded
+    #                  Lloyd's fixed points and adopt the best BALANCED one.
+    #                  Validated analytically (+342 tax words, 0 harmed of 42);
+    #                  no dev fragment trips the trigger, so dev = do-no-harm.
+    #   v2_loopretry - repetition-loop detect-and-retry: score windows with the
+    #                  scanner metric, re-transcribe flagged windows with
+    #                  no_repeat_ngram_size on the retry only. Replaces the
+    #                  always-on v2_ngram3, whose dev collateral (+58 err across
+    #                  16 frags) ate 61% of its loop win (94a0d89a 124->29).
+    # ----------------------------------------------------------------------
+    "v2_reseed": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.embedding": "ecapa2",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue"},
+    "v2_loopretry": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "transcription.loop_retry": True},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -1350,6 +1375,9 @@ GROUPS: dict[str, list[str]] = {
         "v2_ngram3", "v2_cluster", "v2_runrelabel", "v2_continuity",
         "v2_attr", "v2_full", "v2_pad",
     ],
+    # Campaign v2 round 2 — post-diagnosis levers (dr_oa050 already run, so it
+    # is skipped on run and just anchors the rescore).
+    "v2fix": ["dr_oa050", "v2_reseed", "v2_loopretry"],
 }
 
 

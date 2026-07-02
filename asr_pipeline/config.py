@@ -17,6 +17,8 @@ from typing import List, Optional, Union
 
 import yaml
 
+from asr_pipeline.text_metrics import LOOP_SCORE_THRESHOLD
+
 
 # Placeholder written in place of a live HF token in any serialised snapshot.
 # Shared by the redactor (write side) and the loader (read side) so they can't
@@ -722,6 +724,38 @@ class TranscriptionConfig:
     # below this. Normal Polish speech is ~2-4 w/s, so a long window emitting
     # < 0.7 w/s has effectively dropped its speech. Must be positive and finite.
     collapse_max_wps: float = 0.7
+
+    # --- Conditional repetition-loop retry (WhisperX only) --------------------
+    # The OVER-production mirror of the collapse retry above. WhisperX's batched
+    # decode sometimes emits a repetition-loop hallucination — one merged VAD
+    # window transcribed as a single token repeated dozens of times ("No tak,
+    # tak, tak, ..." ×112). The collapse detector (an UNDER-production, low-wps
+    # detector) cannot catch it: a loop's word density is 4-6 w/s, far ABOVE
+    # collapse_max_wps, and its accept-if-more-words guard is inverted for a
+    # hallucination where the goal is FEWER words. Setting no_repeat_ngram_size
+    # GLOBALLY kills the loops but costs ~1 cpWER of cosmetic collateral in the
+    # non-looping strata, so the fix is CONDITIONAL: score each window with the
+    # dominant-token-fraction metric (asr_pipeline/text_metrics.repetition_loop_
+    # score — shared with docs/sweep_plan/scan_repetition_loops.py so detector
+    # and monitor agree), and re-transcribe ONLY the looped windows with
+    # no_repeat_ngram_size set. Same detect-and-retry structure as the collapse
+    # path (loop_retry runs after retry_collapsed, before wav2vec2 alignment).
+    #
+    # OFF by default → byte-identical to the shipped pipeline (nothing new runs).
+    # WhisperX-only: openai-whisper / coherex have no faster-whisper
+    # TranscriptionOptions to override, so loop_retry=True with backend != whisperx
+    # is a loud config error (SCOPE §4.1: no silent no-op).
+    loop_retry: bool = False
+    # no_repeat_ngram_size applied ONLY on the loop-retry pass (the global
+    # `no_repeat_ngram_size` knob above stays independent and untouched). Must be
+    # an int >= 1: 0 would leave the retry decode identical to the original and it
+    # could never break the loop. 3 = the value shown to suppress the loops.
+    loop_retry_ngram: int = 3
+    # Dominant-token-fraction at/above which a window is a repetition loop and is
+    # retried; a retry is accepted only if its own score falls back below it. In
+    # (0, 1]. Default = the scanner's validated operating point
+    # (text_metrics.LOOP_SCORE_THRESHOLD = 0.4).
+    loop_score_threshold: float = LOOP_SCORE_THRESHOLD
     # When True, additionally run the same backend on the whole mixture
     # (``ctx.audio``) as a single stream, writing the result to
     # ``ctx.mixture_transcript``. Used for the thesis ablation table
@@ -793,6 +827,36 @@ class RelabelConfig:
     # on unit ECAPA2 embeddings lies in [-1, 1], so the gap is in [-2, 2]; 0.05
     # requires a clear (not marginal) pull to the other speaker. >= 0.
     run_margin: float = 0.05
+    # Solo 2-means initialisation strategy (the "degeneracy rescue"). The
+    # pass-1-seeded Lloyd's in `_cluster_two` cannot escape a corrupt pass-1
+    # partition: on a handful of fragments pyannote pass-1 labels are near-random,
+    # so the seeded loop converges to a duration-degenerate "outlier peel" (one
+    # pseudo-speaker holding a vanishing share of solo duration) that a genuine
+    # 2-speaker conversation never produces. Validated offline
+    # (CLUSTERING_DIAGNOSIS.md §Re-seed validation): the ONLY do-no-harm fix is a
+    # *conditional* rescue — unconditional seed swaps HARM clean fragments (a
+    # corrupt peel scores BETTER than the genuine split on every compactness
+    # objective, so the two are separable only by a balance constraint).
+    #   "pass1"  (default): shipped behaviour — pass-1-seeded 2-means. Byte-identical.
+    #   "rescue": after the pass-1-seeded 2-means, if the solo partition's
+    #             min-cluster duration share is below `rescue_trigger_bal`,
+    #             exhaustively pair-seed the SAME Lloyd's loop from every solo
+    #             embedding pair, keep the fixed points whose share is at least
+    #             `rescue_candidate_bal`, and adopt the one with the highest
+    #             duration-weighted mean cosine of each piece to its own cluster
+    #             centroid (no balanced fixed point → keep the pass-1 partition,
+    #             logged). Deterministic; N<=~45 solos → <=~1000 millisecond Lloyd's
+    #             runs on CPU.
+    solo_clustering_init: str = "pass1"
+    # Rescue TRIGGER: fire only when the pass-1-seeded solo partition's min-cluster
+    # duration share is below this. 0.10 sits in the ~3.5x gap between the last
+    # validated win (0.039) and the first harm (0.135). Share, in [0, 1].
+    rescue_trigger_bal: float = 0.10
+    # Rescue CANDIDATE filter: a pair-seeded fixed point is an eligible replacement
+    # only if its min-cluster duration share is at least this (a genuine 2-speaker
+    # split is balanced; the corrupt peels this rescue escapes are not). Share, in
+    # [0, 1]; should be >= rescue_trigger_bal.
+    rescue_candidate_bal: float = 0.20
     # hf_token for a pyannote-format embedder id (unused for the custom "ecapa2"
     # name, whose loader hits the HF hub directly). Masked in saved snapshots.
     hf_token: Optional[str] = field(
@@ -874,6 +938,8 @@ class PipelineConfig:
         _one_of(self.relabel.source, "relabel.source", ("solos", "global"))
         _one_of(self.relabel.audio_source, "relabel.audio_source",
                 ("enhanced", "raw"))
+        _one_of(self.relabel.solo_clustering_init, "relabel.solo_clustering_init",
+                ("pass1", "rescue"))
         # run_margin is a cosine gap floor (only used when run_level=True); a
         # negative value would flip every run. 0 = flip on any improvement.
         if not math.isfinite(self.relabel.run_margin) or self.relabel.run_margin < 0:
@@ -881,6 +947,15 @@ class PipelineConfig:
                 f"relabel.run_margin must be a finite value >= 0 (cosine margin; "
                 f"only used when run_level=True), got {self.relabel.run_margin}"
             )
+        # Degeneracy-rescue balance thresholds are duration shares → finite, [0, 1]
+        # (only consulted when solo_clustering_init="rescue").
+        for _knob in ("rescue_trigger_bal", "rescue_candidate_bal"):
+            _val = getattr(self.relabel, _knob)
+            if not math.isfinite(_val) or not (0.0 <= _val <= 1.0):
+                raise ValueError(
+                    f"relabel.{_knob} must be a finite duration-share in [0, 1], "
+                    f"got {_val}"
+                )
         # Relabel cross-checks (fail loud at config time, SCOPE §4.1 — never a
         # silent raw fallback / quiet downgrade at runtime):
         if (self.relabel.enabled and self.relabel.audio_source == "enhanced"
@@ -1133,6 +1208,27 @@ class PipelineConfig:
                 f"transcription.collapse_max_wps must be a positive finite "
                 f"words/second threshold, got {tcfg.collapse_max_wps}"
             )
+        # Conditional repetition-loop retry (WhisperX-only).
+        if tcfg.loop_retry_ngram < 1:
+            raise ValueError(
+                f"transcription.loop_retry_ngram must be an int >= 1 (the "
+                f"no_repeat_ngram_size applied on the loop-retry pass; 0 would "
+                f"leave the retry unable to break the loop), got "
+                f"{tcfg.loop_retry_ngram}"
+            )
+        if not math.isfinite(tcfg.loop_score_threshold) or not (
+            0.0 < tcfg.loop_score_threshold <= 1.0
+        ):
+            raise ValueError(
+                f"transcription.loop_score_threshold must be a dominant-token "
+                f"fraction in (0, 1] (0.4 = default), got "
+                f"{tcfg.loop_score_threshold}"
+            )
+        # NB the loop_retry-requires-whisperx cross-check is enforced at
+        # TranscriptionStage.load() (backend level), not here — matching the
+        # convention for the other WhisperX-only knobs (a config may override
+        # loop_retry onto a default.yaml base whose backend is already whisperx
+        # without re-declaring the backend). Still fails loud, before any audio.
         # WhisperX internal-VAD onset/offset are probabilities → strictly in (0, 1).
         for knob in ("vad_onset", "vad_offset"):
             value = getattr(tcfg, knob)

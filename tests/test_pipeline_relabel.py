@@ -571,6 +571,124 @@ def test_run_level_stage_threaded_and_safe(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Degeneracy rescue (solo_clustering_init="rescue")
+# ---------------------------------------------------------------------------
+
+
+def _degenerate_scenario():
+    """Two genuine, duration-balanced voice groups (A-voice + B-voice) plus one
+    short far-outlier piece, with ADVERSARIAL pass-1 labels: every genuine piece is
+    lumped into one pass-1 speaker and only the outlier carries the other. The
+    pass-1-seeded 2-means then freezes into the outlier-peel — {10 genuine} vs
+    {outlier} — a fixed point whose min-cluster duration share is ~0.015. Returns
+    (table, marks, rows)."""
+    # A-voice = [1,0], B-voice = [0,1], outlier = [-1,-1] (cos -0.71 to both).
+    table = {0.5: [1.0, 0.0], -0.5: [0.0, 1.0], 0.9: [-1.0, -1.0]}
+    marks, rows = [], []
+    for i in range(5):                       # 5 A-voice pieces, pass-1 = SPK0
+        s = 2.0 * i
+        marks.append((s, s + 2.0, 0.5)); rows.append(("SPK0", s, s + 2.0))
+    for i in range(5, 10):                   # 5 B-voice pieces, ALSO pass-1 = SPK0
+        s = 2.0 * i
+        marks.append((s, s + 2.0, -0.5)); rows.append(("SPK0", s, s + 2.0))
+    marks.append((20.0, 20.3, 0.9)); rows.append(("SPK1", 20.0, 20.3))  # outlier
+    return table, marks, rows
+
+
+def _rescue_labels(init, table, marks, rows, total_s=20.5):
+    stage = _stage(
+        RelabelConfig(enabled=True, audio_source="raw", solo_clustering_init=init),
+        _FakeEmbedder(table),
+    )
+    ctx = _ctx(rows, _audio_with(marks, total_s))
+    stage.run(ctx)
+    return ctx.diarization.segments_df["speaker"].tolist()
+
+
+def test_rescue_adopts_balanced_partition_on_degenerate_pass1():
+    """The core case. pass-1 seeding converges to the outlier-peel (one pseudo-
+    speaker holds a single piece); the rescue escapes it to a balanced 2-speaker
+    split. Contrast the two inits on the SAME geometry."""
+    table, marks, rows = _degenerate_scenario()
+
+    pass1 = _rescue_labels("pass1", table, marks, rows)
+    rescue = _rescue_labels("rescue", table, marks, rows)
+
+    p1_counts = {spk: pass1.count(spk) for spk in ("SPK0", "SPK1")}
+    rc_counts = {spk: rescue.count(spk) for spk in ("SPK0", "SPK1")}
+    # pass-1 seed = the corrupt peel: 10 genuine vs the lone outlier.
+    assert min(p1_counts.values()) == 1, f"pass1 not degenerate: {p1_counts}"
+    # rescue = a balanced split (each genuine voice group becomes a speaker).
+    assert min(rc_counts.values()) >= 4, f"rescue not balanced: {rc_counts}"
+
+
+def test_rescue_no_candidate_keeps_original():
+    """Degenerate trigger but NO balanced alternative: a single genuine voice that
+    pass-1 wrongly split as 2 speakers, plus a short outlier. The trigger fires, but
+    every pair-seeded fixed point is ALSO unbalanced (there is no real 2nd cluster),
+    so the original (degenerate) partition is kept — identical to the pass-1 run."""
+    # Only one real voice ([1,0], 10 pieces, pass-1 = SPK0) + a short outlier.
+    table = {0.5: [1.0, 0.0], 0.9: [-1.0, -1.0]}
+    marks, rows = [], []
+    for i in range(10):
+        s = 2.0 * i
+        marks.append((s, s + 2.0, 0.5)); rows.append(("SPK0", s, s + 2.0))
+    marks.append((20.0, 20.3, 0.9)); rows.append(("SPK1", 20.0, 20.3))
+
+    rescue = _rescue_labels("rescue", table, marks, rows)
+    pass1 = _rescue_labels("pass1", table, marks, rows)
+    assert rescue == pass1                                   # no-op: original kept
+    assert min(rescue.count(s) for s in ("SPK0", "SPK1")) == 1
+
+
+def test_rescue_deterministic():
+    """Two runs of the rescue on the same degenerate geometry produce the identical
+    labelling (fixed pair-enumeration order, first-found J_d tie-break, no RNG)."""
+    table, marks, rows = _degenerate_scenario()
+    assert _rescue_labels("rescue", table, marks, rows) == \
+        _rescue_labels("rescue", table, marks, rows)
+
+
+def test_pass1_default_is_byte_identical():
+    """The default init is 'pass1' and is inert: the db15fc57 miniature produces
+    the identical labelling whether the knob is left at its default or set
+    explicitly to 'pass1' — the shipped behaviour is untouched."""
+    table = {0.5: [1.0, 0.0], -0.5: [0.0, 1.0], 0.25: [0.95, 0.05]}
+    marks = [(0.0, 2.0, 0.5), (2.0, 4.0, -0.5), (4.0, 6.0, 0.5), (6.0, 8.5, 0.25)]
+    rows = [("A", 0.0, 2.0), ("B", 2.0, 4.0), ("A", 4.0, 6.0), ("B", 6.0, 8.5)]
+
+    def _labels(**kw):
+        stage = _stage(RelabelConfig(enabled=True, audio_source="raw", **kw),
+                       _FakeEmbedder(table))
+        ctx = _ctx(rows, _audio_with(marks, 9.0))
+        stage.run(ctx)
+        return ctx.diarization.segments_df["speaker"].tolist()
+
+    assert _labels() == _labels(solo_clustering_init="pass1") == ["A", "B", "A", "A"]
+
+
+def test_rescue_leaves_clean_balanced_recording_untouched():
+    """do-no-harm: a clean, balanced 2-speaker recording never trips the trigger,
+    so solo_clustering_init='rescue' produces the identical labelling as 'pass1'."""
+    table = {0.5: [1.0, 0.0], -0.5: [0.0, 1.0]}
+    marks, rows = [], []
+    for i in range(10):
+        s = float(2 * i)
+        if i % 2 == 0:
+            marks.append((s, s + 2.0, 0.5)); rows.append(("A", s, s + 2.0))
+        else:
+            marks.append((s, s + 2.0, -0.5)); rows.append(("B", s, s + 2.0))
+    assert _rescue_labels("rescue", table, marks, rows, total_s=21.0) == \
+        _rescue_labels("pass1", table, marks, rows, total_s=21.0)
+
+
+def test_unknown_solo_clustering_init_raises():
+    """A typo in solo_clustering_init fails loud at stage init (ValueError)."""
+    with pytest.raises(ValueError, match="solo_clustering_init"):
+        RelabelStage(RelabelConfig(solo_clustering_init="kmeanspp"))
+
+
+# ---------------------------------------------------------------------------
 # load_signature
 # ---------------------------------------------------------------------------
 

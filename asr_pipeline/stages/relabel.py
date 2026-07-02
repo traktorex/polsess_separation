@@ -52,7 +52,7 @@ from typing import Optional
 import numpy as np
 import torch
 
-from asr_pipeline.config import RelabelConfig
+from asr_pipeline.config import RelabelConfig, _one_of
 from asr_pipeline.context import Interval, PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.assembly import _coalesce, _subtract
@@ -174,6 +174,38 @@ def _embed_overlap_streams(
     return np.stack(embs).astype(np.float32), meta
 
 
+def _lloyd(unit: np.ndarray, centroids: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Run cosine 2-means Lloyd's iterations from `centroids` to a fixed point.
+
+    Shared by the pass-1-seeded primary path (`_cluster_two`) and the
+    degeneracy-rescue pair search (`_degeneracy_rescue`) so both use byte-identically
+    the same update + convergence rule: cosine = dot on unit vectors, and a
+    cluster's centroid is the renormalised UNWEIGHTED mean of its members.
+
+    `unit` is `(N, D)`, already unit-normalised; `centroids` is `(2, D)`, the
+    starting centroids (renormalised here); `labels` is `(N,)`, the assignment
+    `centroids` corresponds to AND the convergence reference. Seed a matching
+    `labels` (as `_cluster_two` does, from the pass-1 partition whose means are the
+    centroids) for the shipped early-exit; seed a never-matching value (e.g. all
+    -1) to force a full run from an arbitrary centroid pair (the rescue). Returns a
+    `(N,)` int array in {0, 1}.
+    """
+    centroids = np.array(centroids, dtype=np.float64, copy=True)
+    centroids /= np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12
+    labels = np.asarray(labels).copy()
+    for _ in range(50):  # converges in a handful; 50 is a safe ceiling
+        new = (unit @ centroids.T).argmax(axis=1)
+        if np.array_equal(new, labels):
+            break
+        labels = new
+        for k in (0, 1):
+            members = labels == k
+            if members.any():
+                centroids[k] = unit[members].mean(axis=0)
+        centroids /= np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12
+    return labels.astype(int)
+
+
 def _cluster_two(
     emb: np.ndarray,
     seed_labels: np.ndarray,
@@ -222,21 +254,137 @@ def _cluster_two(
             centroids[k] = np.average(unit[members], axis=0, weights=w)
         else:
             centroids[k] = unit[members].mean(axis=0)
-    centroids /= np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12
 
     # --- Lloyd's iterations under cosine similarity (dot on unit vectors). ---
-    labels = seed_labels.copy()
-    for _ in range(50):  # converges in a handful; 50 is a safe ceiling
-        new = (unit @ centroids.T).argmax(axis=1)
-        if np.array_equal(new, labels):
-            break
-        labels = new
-        for k in (0, 1):
-            members = labels == k
-            if members.any():
-                centroids[k] = unit[members].mean(axis=0)
-        centroids /= np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12
-    return labels.astype(int)
+    # Seed the convergence reference with the pass-1 partition: when the seed
+    # centroids already reproduce it, `_lloyd` early-exits — the shipped behaviour.
+    return _lloyd(unit, centroids, seed_labels)
+
+
+# ---------------------------------------------------------------------------
+# Degeneracy rescue (solo_clustering_init="rescue")
+# ---------------------------------------------------------------------------
+
+
+def _min_cluster_balance(labels: np.ndarray, durations: np.ndarray) -> float:
+    """Min over the 2 clusters of (its summed piece duration / total duration).
+
+    The degeneracy signal: a genuine 2-speaker solo partition is duration-balanced,
+    while the corrupt pass-1 fixed points this rescue escapes are outlier-peels
+    where one pseudo-speaker holds a vanishing share (0.014-0.039 on the validated
+    fragments — CLUSTERING_DIAGNOSIS.md). Returns 0.0 for an empty side or a
+    zero-duration point set.
+    """
+    total = float(durations.sum())
+    if total <= 0:
+        return 0.0
+    return min(float(durations[labels == k].sum()) / total for k in (0, 1))
+
+
+def _partition_signature(labels: np.ndarray) -> tuple:
+    """Swap-invariant signature of a 2-partition (cluster ids are arbitrary), so
+    pair-seeded fixed points are deduplicated by the split they induce, not by
+    which cluster happens to be numbered 0."""
+    labels = np.asarray(labels)
+    canon = labels if (len(labels) == 0 or labels[0] == 0) else 1 - labels
+    return tuple(int(x) for x in canon)
+
+
+def _duration_weighted_objective(
+    unit_solo: np.ndarray, labels: np.ndarray, durations: np.ndarray
+) -> float:
+    """The doc's duration-weighted objective J_d (CLUSTERING_DIAGNOSIS.md §Re-seed
+    validation): the duration-weighted mean cosine similarity of each solo piece to
+    its OWN cluster centroid, where a centroid is the renormalised unweighted
+    unit-mean of its members (`objective J = mean_i cos(x_i, own-centroid)
+    (unweighted unit-mean centroids, renormalized — the same centroid rule as the
+    shipped duration_weighted=False path)`, here weighted by piece duration). Higher
+    = tighter clusters. `unit_solo` is already unit-normalised.
+    """
+    centroids = np.zeros((2, unit_solo.shape[1]), dtype=np.float64)
+    for k in (0, 1):
+        members = labels == k
+        if members.any():
+            centroids[k] = unit_solo[members].mean(axis=0)
+    centroids /= np.linalg.norm(centroids, axis=1, keepdims=True) + 1e-12
+    sims = (unit_solo * centroids[labels]).sum(axis=1)   # cos(piece, own centroid)
+    total = float(durations.sum())
+    if total <= 0:
+        return float(sims.mean())
+    return float((durations * sims).sum() / total)
+
+
+def _degeneracy_rescue(
+    clusters: np.ndarray,
+    emb: np.ndarray,
+    n_solo: int,
+    solo_durations: np.ndarray,
+    trigger_bal: float,
+    candidate_bal: float,
+) -> np.ndarray:
+    """Duration-degeneracy rescue for the solo 2-means (CLUSTERING_DIAGNOSIS.md
+    §Degeneracy rescue). If the pass-1-seeded solo partition is duration-degenerate
+    (min-cluster share < `trigger_bal`), search ALL pair-seeded Lloyd's fixed
+    points, keep the balanced ones (share >= `candidate_bal`), and return the full
+    partition of the balanced fixed point with the highest duration-weighted J_d.
+    If the partition is NOT degenerate — or no balanced fixed point exists — return
+    `clusters` unchanged (a visible no-op, logged; SCOPE §4). The corrupt (shipped)
+    partition never survives the candidate filter (its share < trigger < candidate),
+    so a fired-and-adopted rescue always swaps to a genuinely balanced split.
+
+    `clusters` is the full `(M,)` partition `_cluster_two` produced; `emb` the
+    `(M, D)` joint point set it clustered — solos first, then the B+ overlap streams
+    which RIDE ALONG in every candidate run exactly as they do in the primary
+    clustering (their assignments follow the moved solo centroids). `n_solo` is the
+    number of leading solo rows; `solo_durations` `(n_solo,)` their durations. The
+    trigger, balance filter, and J_d are all computed on the SOLO points only.
+    Deterministic: fixed pair-enumeration order, first-found tie-break on equal J_d.
+    """
+    solo_labels = clusters[:n_solo]
+    old_bal = _min_cluster_balance(solo_labels, solo_durations)
+    if old_bal >= trigger_bal:
+        return clusters   # not degenerate — the pass-1-seeded partition stands
+
+    unit = emb / (np.linalg.norm(emb, axis=-1, keepdims=True) + 1e-12)
+    unit_solo = unit[:n_solo]
+    force = np.full(len(unit), -1, dtype=int)   # never-matching convergence ref
+
+    seen: set = set()
+    candidates: list[tuple[float, float, np.ndarray]] = []  # (J_d, bal, full_labels)
+    for i in range(n_solo):
+        for j in range(i + 1, n_solo):
+            labels = _lloyd(unit, np.stack([unit[i], unit[j]]), force)
+            sig = _partition_signature(labels[:n_solo])
+            if sig in seen:
+                continue
+            seen.add(sig)
+            bal = _min_cluster_balance(labels[:n_solo], solo_durations)
+            if bal < candidate_bal:
+                continue
+            j_d = _duration_weighted_objective(
+                unit_solo, labels[:n_solo], solo_durations
+            )
+            candidates.append((j_d, bal, labels))
+
+    if not candidates:
+        _log(
+            f"degeneracy rescue: solo partition degenerate (min-cluster duration "
+            f"share {old_bal:.3f} < {trigger_bal}) but NO balanced fixed point "
+            f"(share >= {candidate_bal}) among {len(seen)} distinct pair-seeded "
+            f"fixed point(s) — keeping the pass-1-seeded partition."
+        )
+        return clusters
+
+    # argmax duration-weighted J_d; `max` returns the FIRST maximal element, so a
+    # J_d tie keeps the candidate found first in pair-enumeration order.
+    best_j, best_bal, best_labels = max(candidates, key=lambda c: c[0])
+    _log(
+        f"degeneracy rescue: FIRED — pass-1-seeded solo partition degenerate "
+        f"(min-cluster duration share {old_bal:.3f} < {trigger_bal}); adopting a "
+        f"balanced pair-seeded fixed point (share {best_bal:.3f}, J_d={best_j:.4f}) "
+        f"from {len(candidates)} balanced candidate(s) / {len(seen)} distinct."
+    )
+    return best_labels
 
 
 def _align_to_old(
@@ -379,6 +527,11 @@ class RelabelStage(Stage):
 
     def __init__(self, config: RelabelConfig) -> None:
         super().__init__(enabled=config.enabled)
+        # Fail loud on an unknown solo-clustering strategy (matches the package's
+        # _one_of enum validation) — a typo here would otherwise silently fall
+        # through to the shipped pass-1 path.
+        _one_of(config.solo_clustering_init, "relabel.solo_clustering_init",
+                ("pass1", "rescue"))
         self.config = config
         self._embedder = None
         self._device: Optional[torch.device] = None
@@ -545,6 +698,16 @@ class RelabelStage(Stage):
         clusters = _cluster_two(
             all_emb, all_seed, self.config.duration_weighted, all_w
         )
+        # Degeneracy rescue: only when configured, and only if the pass-1-seeded
+        # solo partition is duration-degenerate (an outlier-peel that pass-1 poison
+        # freezes the seeded Lloyd's into). Escapes it to a balanced pair-seeded
+        # fixed point; a no-op otherwise (SCOPE §4, logged). The B+ overlap points
+        # ride along inside the search exactly as they do in `_cluster_two`.
+        if self.config.solo_clustering_init == "rescue":
+            clusters = _degeneracy_rescue(
+                clusters, all_emb, len(solo_pts), solo_durs,
+                self.config.rescue_trigger_bal, self.config.rescue_candidate_bal,
+            )
         solo_clusters = clusters[: len(solo_pts)]
         overlap_clusters = clusters[len(solo_pts):]
 
