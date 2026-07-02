@@ -82,6 +82,10 @@ relabel:
   audio_source: enhanced     # solos from enhanced_full; overlap streams are raw-derived
   exclude_overlap: true
   duration_weighted: false
+  # v2 lever 1 (adopted 2026-07-02, V2_TEST_PREREG.md): rescue duration-degenerate
+  # solo partitions (pass-1 seed poison). Fired on exactly the 3 predicted test
+  # fragments; trigger/candidate balance thresholds keep dataclass defaults .10/.20.
+  solo_clustering_init: rescue
 
 assembly:
   enabled: true
@@ -110,5 +114,9 @@ transcription:
   patience: 1.0
   no_repeat_ngram_size: 0
   retry_collapsed_chunk_size: 8
+  # v2 lever 2 (adopted 2026-07-02, V2_TEST_PREREG.md): repetition-loop
+  # detect-and-retry (ngram constraint on the retry decode only; gate x12).
+  # Killed 6/6 test loops, zero off-target rewrites. Always-on ngram stays 0.
+  loop_retry: true
   collapse_min_duration_s: 18.0
   collapse_max_wps: 0.7
