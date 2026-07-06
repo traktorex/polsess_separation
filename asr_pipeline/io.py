@@ -236,6 +236,10 @@ def write_pipeline_outputs(
         "n_overlap_regions": len(ctx.overlap_regions or []),
         "n_overlap_separated": len(ctx.overlap_separated or []),
     }
+    # Stage-1 diagnostics (sortformer backend only): the head-miscount / L1-merge /
+    # L3-L4-fallback census fields, so a later census can count v4.1 lever firings.
+    if ctx.diarization_diag is not None:
+        meta["diarization_diag"] = ctx.diarization_diag
     if config_snapshot is not None:
         meta["config"] = redact_config_snapshot(config_snapshot)
     with open(pipeline_dir / "metadata.json", "w") as f:

@@ -10,21 +10,23 @@ Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian 
 
 ## Style
 
-Do not skip your reasoning when Extended Thinking is enabled. 
-Always produce a CoT. 
-Don't be afraid of thinking too long - be afraid of thinking too briefly. The amount of thinking should be proportional to the complexity of the task you're given.
-Avoid undue verbosity by using CoT to structure your response.
+The amount of thinking should be proportional to the complexity of the task you're given.
+Avoid unnecessary verbosity by using CoT to structure your response.
+
+Important: when launching subagents, decide if the work needs an Opus or Sonnet agent (unless the user specifies). Never launch Fable subagents.
 
 ## Dataset Variants
 
 - `PolSESS_C_both` = `C_both_16k_faulty` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
 - `PolSESS_C_new_64` = `C_new_64` — correct 64k dataset generated 2026-04-15. Use `train_max_samples=16000` / `32000` / full for 16k / 32k / 64k scaling experiments.
+- `PolSESS_C_final_128_v2` - 128k dataset for final training runs. contains other languages speech alongside Polish.
 
 ## W&B Projects
 
 - `polsess-separation` — standalone runs (baselines, HPO validation), uses `PolSESS_C_both`.
 - `polsess-thesis-experiments` — sweeps.
 - `polsess-separation-real16k` / `-32k` / `-64k` — scaling runs on subsets of `PolSESS_C_new_64`.
+- `polsess-separation-128k` - final runs on 128k dataset.
 
 ## Thesis Code Principles
 
@@ -101,7 +103,7 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 - `evaluate_pipeline.ipynb`: two-layer evaluation (L2 audio quality + L3 WER) of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
 
 **`asr_pipeline/` package** — productionised pipeline. **Before changing code here, read `asr_pipeline/SCOPE.md`** — the scope contract (purpose, error philosophy, fallback ledger, rules for agents); it overrides reviewer instincts, and its `UNDECIDED` items are reserved for the author. `Pipeline` orchestrator runs seven stages in fixed order:
-1. **diarization** — pyannote `speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz. HF token via `$HF_TOKEN`.
+1. **diarization** — `pyannote` (dataclass/`default.yaml` default: `speaker-diarization-3.1`, HF token via `$HF_TOKEN`) or `sortformer` (NVIDIA Sortformer v1 offline EEND via isolated NeMo venv subprocess `scripts/sortformer_worker.py`, reached through `$SORTFORMER_VENV_PY` — no default, missing → loud crash). `num_speakers=2`, mono 16 kHz. The **shipped best config** (`configs/sweep_best_e31_refineplus.yaml`, adopted 2026-07-04) uses `backend: sortformer` + `sortformer_head_policy: merge` (the "fold": surplus-head runs re-assigned to the top-2 speakers by ECAPA2 match instead of discarded); streaming v2.1 model ids get the offline very-high-latency preset automatically in the worker (Life-2 track, NVIDIA Open license).
 2. **routing** — split overlap vs solo regions.
 3. **enhancement** — ClearerVoice backends only: `frcrn_se_16k` (interim default, SCOPE §10 q7), `mossformer_gan_se_16k`, `mossformer2_se_48k`. (Vendored MP-SENet backend removed 2026-06-11; final default ruling deferred.)
 4. **separation** — MossFormer2 matched-128k checkpoint by default (`checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42/`, swapped in 2026-06-13, ~0.6 dB SI-SDRi over the prior SepFormer 128k on val; runs at `separator_sample_rate=8000` like its predecessor). Dataclass defaults and `configs/default.yaml` agree; a pin test enforces that *consistency*, not the literal checkpoint — swappable by editing both the dataclass default and `default.yaml` (the generic `load_model_for_inference` reads `model_type` from the checkpoint config, so any trained architecture loads). Runs on overlap fragments only. Sweepable-knob inventory across all stages: `asr_pipeline/SWEEP_KNOBS.md`.
@@ -219,3 +221,4 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 - `HF_TOKEN` — HuggingFace token for the ASR pipeline's pyannote diarization stage
 - `AP_BWE_CHECKPOINT` — ASR pipeline post-separation AP-BWE backend (default: `~/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip`). FlowHigh needs no env var (auto-downloads).
 - `COHEREX_VENV_PY` — path to the isolated CohereX venv's python (e.g. `~/asr_model_compare/coherex_venv/bin/python`), required by `transcription.backend: coherex`. No default; missing → loud crash (SCOPE §4, no silent fall-back).
+- `SORTFORMER_VENV_PY` — path to the isolated NeMo venv's python (`~/sortformer_venv/bin/python`), required by `diarization.backend: sortformer` — which the shipped best ASR-pipeline config uses. No default; missing → loud crash (SCOPE §4).

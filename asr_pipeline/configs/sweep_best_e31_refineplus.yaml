@@ -1,6 +1,12 @@
-# CURRENT BEST config (2026-06-19) — "dr_refineplus" / B+.
-# = sweep_best_e31.yaml (the e31 OA-0.3 + ECAPA2-diar winner) PLUS the 2nd-pass
-# B+ relabel stage. This is the best dev result of the attribution campaign.
+# SHIPPED BEST config — "v41_merge" (2026-07-04, V5_INSTRUMENT_PREREG.md
+# §PHASE-2 VERDICT). Lineage: dr_refineplus (B+, 2026-06-19) -> + OA 0.5 +
+# rescue + loop retries (v2/v3 campaigns) -> + Sortformer-EEND diarizer with
+# the surplus-head fold (V5 instrument adoption).
+# Test (118 frags): 24.0 cpWER / 16.5 cpCER (pyannote finalist: 26.9/19.4);
+# separation effect +4.0 cpWER / +3.6 cpCER vs like-for-like no-separation
+# ablation, Holm-significant in every stratum; attribution CER-gap 2.9 -> 0.3.
+# Runtime prereq: $SORTFORMER_VENV_PY (isolated NeMo venv worker; loud crash
+# if missing — SCOPE §4).
 #
 # Dev (23 frags, vs the ECAPA2-diar baseline dr_emb_ecapa2): cpWER 20.3 -> 19.7
 # (ALL ΔcpWER +0.6 [+0.1,+1.4], significant), CER 13.2 -> 12.8; HIGH 28.8 -> 27.8.
@@ -17,13 +23,15 @@
 # consensus seam. The win comes from the OVERLAP re-assignment (per-overlap
 # cross-contamination), not solo re-clustering (which reconverges to pass-1).
 #
-# HONEST CAVEATS: (1) dev-selected on n=23, NOT validated on the held-out TEST
-# split; (2) small win (~0.6 cpWER) — the attribution gap is small (2.1 WER) and
-# mostly irreducible (forensic _forensics/TRANSCRIPT_ROOTCAUSE.md: ~1 WER
-# recoverable corpus-wide); (3) costs an extra ECAPA2 pass over sweep_best_e31.
-# (4) ECAPA2 is CC-BY-NC — fine for the thesis, not commercial Life-2.
-# The shipped/anchor config remains sweep_best_e31.yaml (= f_oa03 + ecapa2-diar);
-# this file is the best-candidate with the B+ 2nd pass enabled.
+# HONEST CAVEATS: (1) ECAPA2 + Sortformer v1 are CC-BY-NC — fine for the
+# thesis, not commercial Life-2 (the documented Life-2 path is the
+# NVIDIA-Open-licensed streaming v2.1 checkpoint, dev-validated near-parity,
+# one-line sortformer_model_id swap + wired worker preset); (2) 12 test
+# recordings regress >+3.0 cpCER vs the pyannote finalist (max +14.3 =
+# a known model-blind under-detection; all 12 inherited from the raw v4
+# backend, none introduced by the fold) — tail documented per prereg
+# guard 4; (3) the B+ relabel and rescue operate on separated overlap
+# streams, so they turn off with separation.enabled: false.
 
 sample_rate: 16000
 device: cuda
@@ -33,10 +41,20 @@ artifact_dir: null
 
 diarization:
   enabled: true
-  model_id: pyannote/speaker-diarization-3.1
+  # V5 instrument adoption (2026-07-04): Sortformer v1 offline EEND (pure
+  # end-to-end, never clusters embeddings — the structural escape from
+  # pyannote's cluster-fusion failures) via the isolated NeMo venv worker
+  # ($SORTFORMER_VENV_PY). Default sortformer_model_id = nvidia/diar_sortformer_4spk-v1.
+  backend: sortformer
+  # The fold: when >2 heads are active, surplus-head runs are re-assigned to
+  # one of the top-2 speakers by local ECAPA2 embedding match (margin >= 0.10)
+  # instead of being discarded. Test: repairs the head-miscount class with
+  # zero collateral (fold-touched recordings otherwise byte-match plain top2).
+  sortformer_head_policy: merge
+  model_id: pyannote/speaker-diarization-3.1   # pyannote-path knob; unused under sortformer
   # hf_token is read from $HF_TOKEN at load; never hardcode it here.
   num_speakers: 2
-  embedding: ecapa2          # ECAPA2 custom wrapper (small broad dev win)
+  embedding: ecapa2          # pyannote-path knob; no-op under sortformer
 
 routing:
   enabled: true
@@ -47,7 +65,12 @@ enhancement:
   enabled: true
   backend: frcrn_se_16k
   max_segment_length_s: 8.0
-  observation_mix_ratio: 0.3   # Observation-Adding r=0.3 (the e31 winning delta)
+  # Observation-Adding r=0.5 (dr_oa050, the definitive sweep's only
+  # Holm-significant dev arm; test showed 0.5-vs-0.3 is a wash, kept as
+  # "justified default, not proven-optimal"). NOTE: commit aa9c83b adopted
+  # v2_finalist but left this at the stale e31 value 0.3 — every measured
+  # v2/v3/v4/v5 arm ran 0.5; fixed 2026-07-04 to match the measured config.
+  observation_mix_ratio: 0.5
 
 separation:
   enabled: true
@@ -118,5 +141,13 @@ transcription:
   # detect-and-retry (ngram constraint on the retry decode only; gate x12).
   # Killed 6/6 test loops, zero off-target rewrites. Always-on ngram stays 0.
   loop_retry: true
+  # v3 lever (adopted 2026-07-03, V3_TEST_PREREG.md §AMENDMENT v3.1): PHRASE-loop
+  # detect-and-retry — catches multi-word loops ("tak to jest" x14) the single-
+  # token detector can't see (run>=4; max genuine GT run is 2). Same retry decode
+  # + length bound (retry may never emit more tokens than the window it replaces
+  # — rejects counting-evasion hallucinations, kept 152ed870 original). Test:
+  # fixed exactly the 1 predicted transcript (5bab2c34 mixture), pipeline output
+  # byte-identical, veto clean.
+  loop_retry_phrase: true
   collapse_min_duration_s: 18.0
   collapse_max_wps: 0.7

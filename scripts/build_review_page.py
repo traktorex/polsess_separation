@@ -28,9 +28,9 @@ names from it and never copy the file, so the token never reaches the bundle.
 
 Usage::
 
-    python scripts/build_review_page.py                 # 5 pilot fragments, default configs
+    python scripts/build_review_page.py                 # all 141 dev+test fragments, v41_merge + ablations
     python scripts/build_review_page.py --out ~/clarin_review
-    python scripts/build_review_page.py --configs frcrn_vad_strict enh_frcrn baseline nosep
+    python scripts/build_review_page.py --configs v41_merge baseline nosep
     python scripts/build_review_page.py --audio-format wav   # pristine audio (big)
 """
 
@@ -53,6 +53,7 @@ from asr_pipeline.eval.metrics import (  # noqa: E402
     cpwer_meeteval,
     mimo_cer_meeteval,
     mimo_wer_meeteval,
+    orc_cer_meeteval,
     orc_wer_meeteval,
     orc_wer_multistream,
 )
@@ -69,10 +70,15 @@ from asr_pipeline.eval.transcript_parser import (  # noqa: E402
 DEFAULT_EVAL_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
 DEFAULT_OUT = Path("~/clarin_review").expanduser()
 
-# Default recordings = the frozen DEV split (the 23 with hand-corrected GT).
-PILOT = (
-    Path(__file__).resolve().parent.parent / "asr_pipeline" / "eval" / "clarin_dev.txt"
-).read_text().split()
+# Default recordings = the frozen DEV + TEST splits (all 141 fragments with
+# hand-corrected GT). DEV_IDS tags each fragment so the recording list can
+# group dev vs. test.
+_EVAL_PKG = Path(__file__).resolve().parent.parent / "asr_pipeline" / "eval"
+DEV_IDS = set((_EVAL_PKG / "clarin_dev.txt").read_text().split())
+DEFAULT_RECORDINGS = (
+    (_EVAL_PKG / "clarin_dev.txt").read_text().split()
+    + (_EVAL_PKG / "clarin_test.txt").read_text().split()
+)
 
 # Recordings whose GT / sweep / mixture don't live under DEFAULT_EVAL_ROOT with
 # the standard `<id>/annotation.eaf` layout. Each spec gives explicit paths;
@@ -83,29 +89,33 @@ PILOT = (
 # here (with its explicit paths) to add a full-recording demo back.
 EXTRA_RECORDINGS = []
 
-# Curated set that tells the story without 24 near-duplicate rows. The first
-# entry is the default shown on load.
-# e31 clean sweep (2026-06-15): the winner + the enhancement×separation ablation
-# corners. First entry = default shown on load. (Just best + ablation — not the
-# 30+ swept configs.)
+# Curated set that tells the story without the ~10 near-duplicate swept rows.
+# The first entry is the default shown on load. v41_merge is the shipped best
+# (2026-07-04): Sortformer-v1 diarization + surplus-head "fold" merge, OA-0.5
+# enhancement mix, ECAPA2 B+ relabel, loop + phrase-loop retry. The comparison
+# arms are the separation ablation, the stock full pipeline, and the prior
+# (pyannote-based) instrument. (v41_merge_nosep exists on the TEST split only.)
 DEFAULT_CONFIGS = [
-    "f_oa03",
+    "v41_merge",
+    "v41_merge_nosep",
     "baseline",
-    "r1_noenh",
-    "r1_nosep",
-    "r1_nosep_noenh",
+    "v3_phraseloop",
 ]
 
 CONFIG_LABELS = {
-    "f_oa03": "OA-0.3 + FRCRN + separation  ★ best (e31)",
-    "baseline": "FRCRN + separation, no OA  (full pipeline)",
-    "r1_noenh": "no enhancement + separation  (ablation: enh off)",
-    "r1_nosep": "FRCRN enhancement, NO separation  (ablation: sep off)",
-    "r1_nosep_noenh": "no enhancement, NO separation  (ablation: both off)",
+    "v41_merge": "v41_merge  ★ shipped best (Sortformer + head-fold, OA-0.5, relabel + loop-retry)",
+    "v41_merge_nosep": "v41_merge, NO separation  (ablation: sep off · TEST split only)",
+    "baseline": "baseline  (stock full pipeline: pyannote + FRCRN + separation, no OA)",
+    "v3_phraseloop": "v3_phraseloop  (prior instrument: pyannote + ECAPA2, OA-0.5, relabel + loop-retry)",
 }
 
 # Description of what each layer of the eval measures — shown verbatim in the
 # page so the reader needs no separate briefing.
+# One entry per metric, phrased generically so the same text fits both the
+# pipeline (multi-stream) and mixture-floor (single-stream) chips. Naming
+# convention: {cp,ORC,MIMO}-{WER,CER}. Each CER reuses its WER's word-level
+# assignment (never re-optimised per character), so cpCER↔cpWER, ORC-CER↔ORC-WER,
+# MIMO-CER↔MIMO-WER share a matching.
 METRIC_HELP = {
     "cpWER": "concatenated-permutation WER: best speaker matching, then word "
     "errors. The headline number — recognition AND who-said-what.",
@@ -114,16 +124,19 @@ METRIC_HELP = {
     "ORC-WER": "attribution-blind WER: each reference utterance is matched to "
     "whichever stream recognised it best. cpWER − ORC-WER = the cost of "
     "routing words to the wrong speaker.",
-    "CER": "character error rate under the same speaker matching as cpWER.",
-    "floor": "ORC-WER of one Whisper transcript on the raw, unseparated "
-    "mixture — a no-pipeline baseline (fixes the reference merge by time).",
-    "MIMO": "MIMO-WER on the raw-mixture transcript: like ORC but optimises "
-    "how the two reference speakers interleave into the single stream. The "
-    "tighter, more principled no-pipeline floor (MIMO ≤ ORC) and more robust "
-    "to imperfect GT timestamps.",
-    "MIMO-CER": "Character error rate of the raw-mixture transcript with the "
-    "reference merged in MIMO's order (vs the time/ORC-ordered CER) — the CER "
-    "analog of the MIMO floor.",
+    "MIMO-WER": "attribution-blind WER that additionally forgives the order in "
+    "which the two speakers interleave (MIMO-WER ≤ ORC-WER ≤ cpWER); more "
+    "robust to imperfect GT timestamps.",
+    "cpCER": "character error rate under cpWER's speaker matching (same "
+    "who-said-what, characters not words).",
+    "ORC-CER": "character error rate under ORC-WER's routing (attribution-blind, "
+    "chars not words); cpCER − ORC-CER ≈ the attribution cost in characters "
+    "(word-optimal routing, so a single fragment can invert slightly).",
+    "MIMO-CER": "character error rate under MIMO-WER's interleaving "
+    "(attribution-blind + order-forgiving). Scored under the word-level MIMO "
+    "merge, not re-optimised per character.",
+    "floor": "no-pipeline baseline: one Whisper transcript on the raw, "
+    "unseparated mixture (the ORC/MIMO family collapses to a single stream here).",
 }
 
 
@@ -177,7 +190,24 @@ def _read_config(cdir: Path, gt: dict[str, list[Utterance]], fid: str) -> dict |
 
     cp = cpwer_meeteval(gt, hyp, fid)
     orc = orc_wer_multistream(gt, hyp, fid)
-    cer = cp_cer_meeteval(gt, hyp, fid)
+    mimo = mimo_wer_meeteval(gt, hyp, fid)          # attribution-blind WER
+    cer = cp_cer_meeteval(gt, hyp, fid)             # cpCER (cpWER assignment)
+    orc_cer = orc_cer_meeteval(gt, hyp, fid)        # ORC-CER (ORC-WER routing)
+    mimo_cer = mimo_cer_meeteval(gt, hyp, fid)      # MIMO-CER (MIMO-WER merge)
+
+    # Orient the pipeline's arbitrary stream_A/stream_B onto the GT's A/B labels
+    # for DISPLAY. The pipeline names its two streams without knowing which GT
+    # tier is "A", so "Pipeline A" is frequently the GT-B speaker. cpWER already
+    # computes the optimal GT→hyp assignment, and every score here is
+    # permutation-invariant, so reusing it to swap A/B changes presentation only
+    # — never a number. `swap` is set only when both streams exist and cpWER
+    # matched them crossed (GT-A↔hyp-B and GT-B↔hyp-A); `disp` maps each display
+    # slot to the hyp stream it should show. Applied to transcripts, the diar
+    # timeline lanes, the waveforms (here) and the stereo/mono audio (in build).
+    assign = dict(cp["cp_assignment"])          # {gt_spk: hyp_spk}
+    swap = ("A" in hyp and "B" in hyp
+            and assign.get("A") == "B" and assign.get("B") == "A")
+    disp = {"A": "B", "B": "A"} if swap else {"A": "A", "B": "B"}
 
     # Map pyannote SPEAKER_xx turns to the A/B labels via metadata.
     diar_rows: list[list] = []
@@ -204,6 +234,8 @@ def _read_config(cdir: Path, gt: dict[str, list[Utterance]], fid: str) -> dict |
     if diar_path.exists():
         for t in json.loads(diar_path.read_text(encoding="utf-8")).get("turns", []):
             lbl = spk_to_label.get(t["speaker"], t["speaker"])
+            if swap and lbl in ("A", "B"):
+                lbl = "B" if lbl == "A" else "A"
             diar_rows.append([lbl, round(t["start"], 2), round(t["end"], 2)])
 
     routing_path = cdir / "routing.json"
@@ -214,20 +246,27 @@ def _read_config(cdir: Path, gt: dict[str, list[Utterance]], fid: str) -> dict |
             overlaps.append([round(r["start"], 2), round(r["end"], 2)])
 
     return {
-        "transcript": {k: _utts_to_rows(hyp.get(k, [])) for k in ("A", "B")},
+        "transcript": {k: _utts_to_rows(hyp.get(disp[k], [])) for k in ("A", "B")},
         "diar": diar_rows,
         "overlaps": overlaps,
         "backends": backends,
-        "waveform": {"A": _peaks(sa), "B": _peaks(sb)},
+        "swap": swap,
+        "waveform": {"A": _peaks(sb if swap else sa), "B": _peaks(sa if swap else sb)},
         "metrics": {
             "cpwer": round(cp["cpwer"] * 100, 1),
             "tcpwer": round(cp["tcpwer"] * 100, 1),
             "orcwer": round(orc["orc_wer"] * 100, 1),
-            "cer": round(cer["cer"] * 100, 1),
+            "mimower": round(mimo["mimo_wer"] * 100, 1),
+            "cer": round(cer["cer"] * 100, 1),            # cpCER
+            "orccer": round(orc_cer["cer"] * 100, 1),
+            "mimocer": round(mimo_cer["cer"] * 100, 1),
             "cp_err": cp["cp_errors"], "cp_len": cp["cp_length"],
             "tcp_err": cp["tcp_errors"], "tcp_len": cp["tcp_length"],
             "orc_err": orc["errors"], "orc_len": orc["length"],
+            "mimo_err": mimo["errors"], "mimo_len": mimo["length"],
             "cer_err": cer["errors"], "cer_len": cer["length"],
+            "orccer_err": orc_cer["errors"], "orccer_len": orc_cer["length"],
+            "mimocer_err": mimo_cer["errors"], "mimocer_len": mimo_cer["length"],
         },
     }
 
@@ -389,16 +428,24 @@ def build(
             payload = _read_config(cdir, gt, fid)
             if payload is None:
                 continue
-            for lbl, stream in (("A", "stream_A.wav"), ("B", "stream_B.wav")):
+            # Encode audio under the GT-oriented slots (see _read_config `swap`):
+            # slot A = the stream cpWER matched to GT-A, so the player and the
+            # A→left/B→right "both" file agree with the timeline + transcripts.
+            # A swapped config's on-disk audio is stale (content flips), so force
+            # its re-encode even without --force; unswapped configs reuse cache.
+            src_a = "stream_B.wav" if payload["swap"] else "stream_A.wav"
+            src_b = "stream_A.wav" if payload["swap"] else "stream_B.wav"
+            cfg_force = force or payload["swap"]
+            for lbl, stream in (("A", src_a), ("B", src_b)):
                 _encode_audio(
                     cdir / stream,
                     out / "audio" / fid / f"{c}__{lbl}.{ext}",
                     audio_fmt,
-                    force,
+                    cfg_force,
                 )
             _encode_both(
-                cdir / "stream_A.wav", cdir / "stream_B.wav",
-                out / "audio" / fid / f"{c}__both.{ext}", audio_fmt, force,
+                cdir / src_a, cdir / src_b,
+                out / "audio" / fid / f"{c}__both.{ext}", audio_fmt, cfg_force,
             )
             payload["audio"] = {
                 "A": f"audio/{fid}/{c}__A.{ext}",
@@ -411,6 +458,7 @@ def build(
 
         frag_payloads.append({
             "id": fid,
+            "split": "dev" if fid in DEV_IDS else "test",
             "gt_source": str(eaf),
             "duration": round(duration, 2),
             "mixture_audio": f"audio/{fid}/mixture.{ext}",
@@ -454,7 +502,7 @@ _HTML_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CLARIN — separation-pipeline review (e31, dev set)</title>
+<title>CLARIN — separation-pipeline review (v41_merge · dev + test)</title>
 <style>
   :root{
     --A:#1f6feb; --B:#e36209; --ovl:rgba(220,38,38,.16); --ovl-line:rgba(220,38,38,.5);
@@ -474,6 +522,8 @@ _HTML_TEMPLATE = r"""<!doctype html>
   ul#fraglist li{padding:8px 10px;border-radius:7px;cursor:pointer;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
   ul#fraglist li:hover{background:#eef1f4}
   ul#fraglist li.sel{background:#1f6feb;color:#fff}
+  ul#fraglist li.grouphdr{background:transparent;color:var(--mut);font-family:inherit;font-weight:700;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;padding:12px 6px 3px;cursor:default}
+  ul#fraglist li.grouphdr:hover{background:transparent}
   table.agg{border-collapse:collapse;width:100%;font-size:11px}
   table.agg th,table.agg td{padding:4px 4px;text-align:right;border-bottom:1px solid var(--line)}
   table.agg td:first-child{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px}
@@ -552,13 +602,13 @@ _HTML_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>CLARIN — separation pipeline, manual review (dev set · e31 · best + ablation)</h1>
+  <h1>CLARIN — separation pipeline, manual review (dev + test · v41_merge best + ablations)</h1>
   <p class="note" id="genline"></p>
 </header>
 <main>
   <aside>
     <details class="aggwrap">
-      <summary>Config comparison (5 fragments, micro-avg)</summary>
+      <summary>Config comparison (<span id="aggn">…</span> fragments, micro-avg)</summary>
       <table class="agg" id="aggtable"></table>
     </details>
     <h3 style="margin-top:22px">Recordings</h3>
@@ -588,19 +638,20 @@ const fmt = s => { s=Math.max(0,s); const m=Math.floor(s/60), x=(s%60); return m
 let state = { fid: DATA.fragments[0]?.id, config: DATA.default_config, mode: "pipeline", streamMode: "both" };
 let RAF = null, audios = [], activeAudio = null;
 
-$("#genline").textContent = "Generated " + DATA.generated + " · scores vs. corrected GT · mixture floor = Whisper large-v2 on raw mixture.";
+$("#genline").textContent = "Generated " + DATA.generated + " · " + DATA.fragments.length + " fragments (dev + test) · scores vs. corrected GT · mixture floor = Whisper large-v2 on raw mixture.";
 
 /* ---- aggregate (micro-averaged across fragments) ---- */
 function aggregate(){
+  const aggn=$("#aggn"); if(aggn) aggn.textContent=DATA.fragments.length;
   const rows = [];
   for (const c of DATA.config_order){
-    let cpE=0,cpL=0,orcE=0,orcL=0,cerE=0,cerL=0,n=0;
+    let cpE=0,cpL=0,orcE=0,orcL=0,miE=0,miL=0,cerE=0,cerL=0,n=0;
     for (const f of DATA.fragments){
       const m = f.configs[c]?.metrics; if(!m) continue;
-      cpE+=m.cp_err; cpL+=m.cp_len; orcE+=m.orc_err; orcL+=m.orc_len; cerE+=m.cer_err; cerL+=m.cer_len; n++;
+      cpE+=m.cp_err; cpL+=m.cp_len; orcE+=m.orc_err; orcL+=m.orc_len; miE+=m.mimo_err; miL+=m.mimo_len; cerE+=m.cer_err; cerL+=m.cer_len; n++;
     }
     if(!n) continue;
-    rows.push({c, label:DATA.config_labels[c], cp:100*cpE/cpL, orc:100*orcE/orcL, cer:100*cerE/cerL});
+    rows.push({c, label:DATA.config_labels[c], cp:100*cpE/cpL, orc:100*orcE/orcL, mimo:100*miE/miL, cer:100*cerE/cerL});
   }
   rows.sort((a,b)=>a.cp-b.cp);
   // mixture floor (ORC + MIMO single-stream)
@@ -608,15 +659,15 @@ function aggregate(){
   for (const f of DATA.fragments){ const m=f.mixture_metrics; mO+=m.orc_err;mOl+=m.orc_len;mMi+=m.mimo_err;mMil+=m.mimo_len;mC+=m.cer_err;mCl+=m.cer_len;mMiC+=m.cer_mimo_err;mMiCl+=m.cer_mimo_len; }
   const t = $("#aggtable");
   t.innerHTML="";
-  const hdr = el("tr",{},[el("th",{text:"config"}),el("th",{text:"cpWER"}),el("th",{text:"ORC"}),el("th",{text:"MIMO"}),el("th",{text:"CER"})]);
-  hdr.querySelectorAll("th").forEach(th=>{ const k={cpWER:"cpWER",ORC:"ORC-WER",MIMO:"MIMO",CER:"CER"}[th.textContent]; if(k&&DATA.metric_help[k]) th.title=DATA.metric_help[k]; });
+  const hdr = el("tr",{},[el("th",{text:"config"}),el("th",{text:"cpWER"}),el("th",{text:"ORC-WER"}),el("th",{text:"MIMO-WER"}),el("th",{text:"cpCER"})]);
+  hdr.querySelectorAll("th").forEach(th=>{ if(DATA.metric_help[th.textContent]) th.title=DATA.metric_help[th.textContent]; });
   t.appendChild(hdr);
   rows.forEach((r,i)=>{
     const tr = el("tr",{class:i===0?"best":""},[
       el("td",{text:r.c}),
       el("td",{text:r.cp.toFixed(1)}),
       el("td",{text:r.orc.toFixed(1)}),
-      el("td",{text:"—"}),                       // MIMO is single-stream only
+      el("td",{text:r.mimo.toFixed(1)}),
       el("td",{text:r.cer.toFixed(1)}),
     ]);
     tr.title = r.label;
@@ -625,7 +676,7 @@ function aggregate(){
     t.appendChild(tr);
   });
   const floorCer = el("td",{text:(100*mMiC/mMiCl).toFixed(1)});
-  floorCer.title = "MIMO-merge CER · time-ordered CER: "+(100*mC/mCl).toFixed(1);
+  floorCer.title = "MIMO-CER (shown) · ORC-CER: "+(100*mC/mCl).toFixed(1);
   t.appendChild(el("tr",{class:"floor"},[
     el("td",{text:"mixture (floor)"}),
     el("td",{text:"—"}),
@@ -638,7 +689,13 @@ function aggregate(){
 /* ---- fragment list ---- */
 function fraglist(){
   const ul = $("#fraglist"); ul.innerHTML="";
+  let lastSplit=null;
   DATA.fragments.forEach(f=>{
+    if(f.split && f.split!==lastSplit){
+      const n = DATA.fragments.filter(g=>g.split===f.split).length;
+      ul.appendChild(el("li",{class:"grouphdr",text:(f.split==="dev"?"DEV":"TEST")+" · "+n}));
+      lastSplit=f.split;
+    }
     const li = el("li",{class:f.id===state.fid?"sel":"",text:f.id});
     li.addEventListener("click",()=>{ state.fid=f.id; render(); });
     ul.appendChild(li);
@@ -771,24 +828,32 @@ function render(){
   ]));
   if(cfg && DATA.config_backends[state.config])
     panel.appendChild(el("div",{class:"backends",text:DATA.config_backends[state.config]}));
+  if(state.mode==="pipeline" && cfg && cfg.swap)
+    panel.appendChild(el("div",{class:"backends",text:"↔ A/B oriented to GT: the pipeline emitted these two streams in the opposite order (cpWER-matched) — scores are permutation-invariant, so only the display was flipped."}));
 
   // chips
   const chips = el("div",{class:"chips"});
   if(state.mode==="pipeline" && cfg){
     const m=cfg.metrics;
+    // WER family
     chips.appendChild(chip("cpWER", m.cpwer+"%", "cpWER"));
     chips.appendChild(chip("tcpWER", m.tcpwer+"%", "tcpWER"));
     chips.appendChild(chip("ORC-WER", m.orcwer+"%", "ORC-WER"));
+    chips.appendChild(chip("MIMO-WER", m.mimower+"%", "MIMO-WER"));
     chips.appendChild(chip("attr-gap", (m.cpwer-m.orcwer).toFixed(1)+" pt", "ORC-WER"));
-    chips.appendChild(chip("CER", m.cer+"%", "CER"));
-    chips.appendChild(chip("floor MIMO", frag.mixture_metrics.mimower+"%", "MIMO", "floor"));
-    chips.appendChild(chip("floor ORC", frag.mixture_metrics.orcwer+"%", "floor", "floor"));
+    // CER family (each under its WER's assignment)
+    chips.appendChild(chip("cpCER", m.cer+"%", "cpCER"));
+    chips.appendChild(chip("ORC-CER", m.orccer+"%", "ORC-CER"));
+    chips.appendChild(chip("MIMO-CER", m.mimocer+"%", "MIMO-CER"));
+    // no-pipeline floors (mixture)
+    chips.appendChild(chip("floor MIMO-WER", frag.mixture_metrics.mimower+"%", "MIMO-WER", "floor"));
+    chips.appendChild(chip("floor ORC-WER", frag.mixture_metrics.orcwer+"%", "ORC-WER", "floor"));
   } else {
     const m=frag.mixture_metrics;
-    chips.appendChild(chip("MIMO-WER (floor)", m.mimower+"%", "MIMO"));
-    chips.appendChild(chip("ORC-WER (floor)", m.orcwer+"%", "floor"));
-    chips.appendChild(chip("CER (MIMO)", m.cer_mimo+"%", "MIMO-CER"));
-    chips.appendChild(chip("CER (time-ord)", m.cer+"%", "CER"));
+    chips.appendChild(chip("ORC-WER (floor)", m.orcwer+"%", "ORC-WER"));
+    chips.appendChild(chip("MIMO-WER (floor)", m.mimower+"%", "MIMO-WER"));
+    chips.appendChild(chip("ORC-CER", m.cer+"%", "ORC-CER"));
+    chips.appendChild(chip("MIMO-CER", m.cer_mimo+"%", "MIMO-CER"));
   }
   panel.appendChild(chips);
 
@@ -918,8 +983,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--eval-root", type=Path, default=DEFAULT_EVAL_ROOT)
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    ap.add_argument("--recordings", nargs="+", default=PILOT,
-                    help="recording ids (default: 5 pilot fragments)")
+    ap.add_argument("--recordings", nargs="+", default=DEFAULT_RECORDINGS,
+                    help="recording ids (default: all 141 dev + test fragments)")
     ap.add_argument("--configs", nargs="+", default=DEFAULT_CONFIGS,
                     help="sweep config names; first is the default shown")
     ap.add_argument("--audio-format", choices=["mp3", "wav"], default="mp3")

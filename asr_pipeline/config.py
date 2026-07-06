@@ -65,45 +65,25 @@ def _one_of(value, name: str, allowed: tuple) -> None:
 
 
 @dataclass
-class FusionConfig:
-    """Disagreement-aware diarization fusion (SECOND_PASS_PLAN.md option 3).
+class DiarizationConfig:
+    """Stage 1: speaker diarization. Two backends (see ``backend``):
 
-    OFF (default) = byte-identical no-op; the second pass never runs.
-
-    When enabled, a SECOND pyannote diarization runs on the ENHANCED audio
-    (`ctx.enhanced_full`) and is FUSED with the raw pass-1 result by the
-    asymmetry rule (plan §0): enhancement HELPS identity but HURTS presence (a
-    single-output SE model suppresses the quieter speaker → an enhanced
-    re-diarization under-detects overlaps / drops quiet turns). So PRESENCE
-    (segment boundaries, overlap timeline, speaker count) stays with the RAW
-    pass-1 result, and pass 2 may override only the IDENTITY label of a region
-    pass 1 already calls single-speaker — and only on confident disagreement.
-
-    Implemented as a separate post-enhancement stage (`FusionDiarizationStage`)
-    rather than a flag inside DiarizationStage, because pass 2 needs the enhanced
-    audio that does not exist at stage 1 (plan §7.9). The stage REPLACES the
-    `speaker` column of `ctx.diarization.segments_df` in place; everything else
-    (overlaps_df, boundaries, the label set) is untouched.
+      - ``"pyannote"`` (default): pyannote ``speaker-diarization-3.1`` plus the
+        embedding / clustering / segmentation front-end knobs below.
+      - ``"sortformer"``: NVIDIA Sortformer-v1 offline EEND
+        (``nvidia/diar_sortformer_4spk-v1``) — a clustering-free end-to-end
+        diarizer run via an isolated-venv subprocess (``$SORTFORMER_VENV_PY``;
+        see ``stages/diarization.py`` + ``scripts/sortformer_worker.py``). Probe
+        evidence: ``docs/sweep_plan/eend_probe.py`` + ``_forensics/EEND_PROBE.md``.
     """
 
-    enabled: bool = False
-    # Embedder for the pass-2 (identity) diarization. Same custom-name /
-    # pyannote-id contract as DiarizationConfig.embedding (None = stock 3.1).
-    embedding: Optional[str] = "ecapa2"
-    # Override a solo region's label with pass 2's only when pass 2 assigns at
-    # least this fraction of the region's duration to a SINGLE speaker (its
-    # confidence). In (0, 1]. Higher = stricter (fewer overrides).
-    confidence_min: float = 0.75
-    # Minimum solo-region duration (s) to even consider overriding. Below this a
-    # region's pass-2 label is too noisy to trust; keep pass 1. >= 0.
-    min_region_s: float = 0.5
-
-
-@dataclass
-class DiarizationConfig:
-    """Stage 1: pyannote speaker diarization."""
-
     enabled: bool = True
+    # Diarizer backend. "pyannote" = the shipped clustering pipeline (all the
+    # front-end knobs below apply). "sortformer" = the clustering-free EEND
+    # alternative; on that path the pyannote-only knobs (model_id, hf_token,
+    # embedding, clustering_*, segmentation_*) are IGNORED — only num_speakers
+    # (as a top-2-head POST-filter) and the sortformer_* fields matter.
+    backend: str = "pyannote"
     model_id: str = "pyannote/speaker-diarization-3.1"
     hf_token: Optional[str] = field(
         default_factory=lambda: os.getenv("HF_TOKEN", None)
@@ -146,11 +126,54 @@ class DiarizationConfig:
     # `embedding`) remain stock 3.1 and stay comparable to on-disk outputs; ECAPA2
     # is adopted ONLY in the shipped configs/sweep_best_e31.yaml.
     embedding: Optional[str] = None
-    # Disagreement-aware fusion (option 3). Default OFF (FusionConfig.enabled =
-    # False) → no second pass. See FusionConfig. Lives under diarization because
-    # it is a property of the diarization output, but is RUN by the separate
-    # post-enhancement FusionDiarizationStage (which needs enhanced audio).
-    fusion: "FusionConfig" = field(default_factory=FusionConfig)
+    # --- Sortformer (EEND) backend knobs (IGNORED when backend == "pyannote") ---
+    # Model id for the NeMo Sortformer offline EEND diarizer. Loaded in the
+    # isolated NeMo venv by scripts/sortformer_worker.py (fixed 4-speaker head;
+    # the 2 most-active heads are post-selected as our 2 speakers).
+    sortformer_model_id: str = "nvidia/diar_sortformer_4spk-v1"
+    # Sigmoid activity threshold turning Sortformer's per-frame speaker-activity
+    # into speaker turns (the probe's DEFAULT_THR; the fused-trio / dev purity is
+    # robust across {0.4, 0.5, 0.6} — EEND_PROBE.md threshold-robustness table).
+    # Strictly in (0, 1). The turn-building gap-fill / min-duration constants are
+    # fixed module-level in stages/diarization.py (ported from eend_probe.py).
+    sortformer_threshold: float = 0.5
+    # --- Sortformer v4.1 rehabilitation levers (docs/sweep_plan/V41_PREREG.md) ---
+    # All FOUR default to the current v4 behaviour (top-2 discard, flat threshold,
+    # no fallback), so an untouched sortformer config is byte-identical to `v4_eend`.
+    #
+    # L1 — surplus-head policy. "top2" (default) = the v4 rule: keep only the two
+    # most-active heads, DISCARD the rest. "merge" = assign each surplus-head run
+    # (>= the module floor `_SF_MERGE_MIN_DUR_S` in diarization.py) to the top-2
+    # speaker whose SOLO speech it embeds closest to, when the cosine margin clears
+    # `sortformer_merge_margin`; below-margin / too-short runs stay discarded. Local
+    # ECAPA2 embedding only — NO global clustering (V41_PREREG.md L1).
+    sortformer_head_policy: str = "top2"          # "top2" | "merge"
+    # Cosine margin (best - other) a surplus run's ECAPA2 match must clear to be
+    # merged into a top-2 speaker (only used when head_policy == "merge"). Anatomy
+    # (SORTFORMER_FAILURE_ANATOMY.md): true miscount-head margins were 0.15-0.57,
+    # so 0.10 splits cleanly. Finite, >= 0.
+    sortformer_merge_margin: float = 0.10
+    # L2 — binarization mode. "flat" (default) = the v4 single-threshold rule
+    # (prob >= sortformer_threshold). "hysteresis" = NeMo-style dual threshold: a
+    # head OPENS at `sortformer_onset`, stays open until `sortformer_offset`, each
+    # segment is then padded by `sortformer_pad_s`; the existing gap-fill /
+    # min-duration post-steps apply exactly as in flat mode. Recovers quiet-speaker
+    # speech at lower collateral without inflating head-3/4 leak (V41_PREREG.md L2).
+    sortformer_binarization: str = "flat"         # "flat" | "hysteresis"
+    sortformer_onset: float = 0.70                # hysteresis open threshold, (0, 1)
+    sortformer_offset: float = 0.30               # hysteresis close threshold, (0, 1), <= onset
+    sortformer_pad_s: float = 0.06                # symmetric segment pad (s), >= 0
+    # L3 / L4 — fallback policy. "none" (default) = never fall back; always emit the
+    # sortformer result. "gated" = fall back to the pyannote backend END-TO-END for
+    # THIS recording when either (L3) the pyannote segmentation-3.0 speech NOT
+    # covered by the sortformer output exceeds `sortformer_coverage_budget_s`, or
+    # (L4) the head-miscount warning fires AND the post-L1 unresolved leak still
+    # exceeds the leak-warning fraction. Loud + logged + recorded in metadata.json
+    # (SCOPE §4 — an explicit designed policy, never a silent substitution).
+    sortformer_fallback: str = "none"             # "none" | "gated"
+    # L3 coverage budget (s): uncovered reference speech above this triggers the
+    # pyannote fallback. Only used when fallback == "gated". Finite, > 0.
+    sortformer_coverage_budget_s: float = 5.0
 
 
 @dataclass
@@ -756,6 +779,22 @@ class TranscriptionConfig:
     # (0, 1]. Default = the scanner's validated operating point
     # (text_metrics.LOOP_SCORE_THRESHOLD = 0.4).
     loop_score_threshold: float = LOOP_SCORE_THRESHOLD
+    # The MULTI-TOKEN mirror of loop_retry. loop_retry's dominant-token detector
+    # is structurally blind to a repeated PHRASE — a repeated 3-token phrase caps
+    # every token's dominant fraction at ~1/3 < loop_score_threshold — yet WhisperX
+    # emits phrase loops too: "Tak, to jest..." ×6 inside one segment
+    # (152ed870__seg00) and "Jak pojedziemy do Dekathlonu... O!" ×14 across 14
+    # consecutive segments (5bab2c34__seg00). Detection = the max consecutive
+    # repeated 3–8-gram run (>= 2 distinct tokens) over the joined per-segment
+    # token stream, gated at text_metrics.PHRASE_RUN_MIN = 4 (GT-calibrated: the
+    # longest genuine run across 236 GT texts is 2, the hallucinations run 6 and
+    # 14). Retry mechanics are identical to loop_retry — the same loop_retry_ngram
+    # override on the retry decode, the same mirrored accept guard (splice only if
+    # the retry neither phrase-loops nor token-loops) — so loop_retry_ngram /
+    # loop_score_threshold are shared and need no extra validation. OFF by default
+    # → byte-identical pipeline; whisperx-only (same loud config error as
+    # loop_retry, enforced at TranscriptionStage.load).
+    loop_retry_phrase: bool = False
     # When True, additionally run the same backend on the whole mixture
     # (``ctx.audio``) as a single stream, writing the result to
     # ``ctx.mixture_transcript``. Used for the thesis ablation table
@@ -933,6 +972,8 @@ class PipelineConfig:
         _one_of(self.diarization.clustering_method, "diarization.clustering_method",
                 ("average", "centroid", "complete", "median", "single",
                  "ward", "weighted"))
+        _one_of(self.diarization.backend, "diarization.backend",
+                ("pyannote", "sortformer"))
         _one_of(self.assembly.assignment_mode, "assembly.assignment_mode",
                 ("anchor_argmax", "cluster2"))
         _one_of(self.relabel.source, "relabel.source", ("solos", "global"))
@@ -971,28 +1012,6 @@ class PipelineConfig:
                 "relabel.source='global' (B+) requires separation.enabled "
                 "(no overlap_separated streams to cluster)."
             )
-        # Fusion cross-checks (option 3). Pass 2 re-diarizes the ENHANCED audio
-        # for identity → fail loud at config time if there is no enhanced audio
-        # to re-diarize (SCOPE §4.1 — never a silent fallback to a single pass).
-        fcfg = self.diarization.fusion
-        if fcfg.enabled and not self.enhancement.enabled:
-            raise ValueError(
-                "diarization.fusion.enabled requires enhancement.enabled "
-                "(pass 2 re-diarizes the enhanced audio for identity)."
-            )
-        if not math.isfinite(fcfg.confidence_min) or not (
-            0.0 < fcfg.confidence_min <= 1.0
-        ):
-            raise ValueError(
-                f"diarization.fusion.confidence_min must be in (0, 1], "
-                f"got {fcfg.confidence_min}"
-            )
-        if not math.isfinite(fcfg.min_region_s) or fcfg.min_region_s < 0:
-            raise ValueError(
-                f"diarization.fusion.min_region_s must be >= 0, "
-                f"got {fcfg.min_region_s}"
-            )
-
         if self.separation.training_chunk_length_s <= 0:
             raise ValueError(
                 f"separation.training_chunk_length_s must be positive, got "
@@ -1107,6 +1126,66 @@ class PipelineConfig:
             raise ValueError(
                 f"diarization.clustering_min_cluster_size must be >= 1, "
                 f"got {dcfg.clustering_min_cluster_size}"
+            )
+        # Sortformer (EEND) backend cross-checks. Its 4-speaker head is
+        # post-filtered to the 2 most-active heads, so the pipeline's 2-speaker
+        # assumption is a HARD requirement on this path — fail loud, never a
+        # silent miscount (SCOPE §4). The turn threshold is a probability.
+        if dcfg.backend == "sortformer" and dcfg.num_speakers != 2:
+            raise ValueError(
+                "diarization.backend='sortformer' requires num_speakers == 2 "
+                "(the pipeline post-selects the 2 most-active of Sortformer's 4 "
+                f"output heads); got num_speakers={dcfg.num_speakers}."
+            )
+        if not math.isfinite(dcfg.sortformer_threshold) or not (
+            0.0 < dcfg.sortformer_threshold < 1.0
+        ):
+            raise ValueError(
+                f"diarization.sortformer_threshold must be a probability in "
+                f"(0, 1) (0.5 = probe default), got {dcfg.sortformer_threshold}"
+            )
+        # Sortformer v4.1 levers (V41_PREREG.md L1-L4). Validated unconditionally
+        # (like sortformer_threshold) so a YAML typo fails loud on any backend; the
+        # defaults preserve v4 behaviour. onset >= offset is the NeMo hysteresis
+        # invariant (offset closes what onset opened).
+        _one_of(dcfg.sortformer_head_policy, "diarization.sortformer_head_policy",
+                ("top2", "merge"))
+        _one_of(dcfg.sortformer_binarization, "diarization.sortformer_binarization",
+                ("flat", "hysteresis"))
+        _one_of(dcfg.sortformer_fallback, "diarization.sortformer_fallback",
+                ("none", "gated"))
+        if not math.isfinite(dcfg.sortformer_merge_margin) or \
+                dcfg.sortformer_merge_margin < 0:
+            raise ValueError(
+                f"diarization.sortformer_merge_margin must be a finite value >= 0 "
+                f"(cosine margin; only used when sortformer_head_policy='merge'), "
+                f"got {dcfg.sortformer_merge_margin}"
+            )
+        for _knob in ("sortformer_onset", "sortformer_offset"):
+            _val = getattr(dcfg, _knob)
+            if not math.isfinite(_val) or not (0.0 < _val < 1.0):
+                raise ValueError(
+                    f"diarization.{_knob} must be a probability in (0, 1) "
+                    f"(hysteresis binarization threshold), got {_val}"
+                )
+        if dcfg.sortformer_offset > dcfg.sortformer_onset:
+            raise ValueError(
+                f"diarization.sortformer_offset ({dcfg.sortformer_offset}) must be "
+                f"<= sortformer_onset ({dcfg.sortformer_onset}) — the offset closes "
+                f"a segment the onset opened (NeMo-style hysteresis)."
+            )
+        if not math.isfinite(dcfg.sortformer_pad_s) or dcfg.sortformer_pad_s < 0:
+            raise ValueError(
+                f"diarization.sortformer_pad_s must be a finite value >= 0 "
+                f"(hysteresis segment pad, seconds), got {dcfg.sortformer_pad_s}"
+            )
+        if not math.isfinite(dcfg.sortformer_coverage_budget_s) or \
+                dcfg.sortformer_coverage_budget_s <= 0:
+            raise ValueError(
+                f"diarization.sortformer_coverage_budget_s must be a positive "
+                f"finite number of seconds (L3 fallback budget; only used when "
+                f"sortformer_fallback='gated'), got "
+                f"{dcfg.sortformer_coverage_budget_s}"
             )
 
         omr = self.enhancement.observation_mix_ratio
@@ -1244,7 +1323,13 @@ class PipelineConfig:
                 "set artifact_dir (e.g. via --output) or disable spilling."
             )
 
-        if self.diarization.enabled and not self.diarization.hf_token:
+        # hf_token is a pyannote-backend requirement only: the sortformer worker
+        # reads $HF_TOKEN from the process env for its (public) NeMo model
+        # download, not from config.hf_token, so the sortformer path does not
+        # need it set here.
+        if (self.diarization.enabled
+                and self.diarization.backend == "pyannote"
+                and not self.diarization.hf_token):
             raise ValueError(
                 "diarization.enabled is True but hf_token is unset — "
                 "export HF_TOKEN or set diarization.hf_token in YAML."
@@ -1282,13 +1367,12 @@ def load_pipeline_config_from_dict(config_dict: dict) -> PipelineConfig:
             # dict, never mutating the caller's) so the config's default_factory
             # re-resolves $HF_TOKEN instead of handing the literal "REDACTED".
             sub_dict = {k: v for k, v in sub_dict.items() if k != "hf_token"}
-        if key == "diarization" and sub_dict and isinstance(sub_dict.get("fusion"), dict):
-            # `diarization.fusion` is the one nested dataclass inside a stage
-            # config (option 3). YAML / asdict() leaves it a plain dict, so
-            # rebuild it into a FusionConfig before constructing DiarizationConfig
-            # (a new dict, never mutating the caller's).
-            sub_dict = dict(sub_dict)
-            sub_dict["fusion"] = FusionConfig(**sub_dict["fusion"])
+        if key == "diarization" and sub_dict and "fusion" in sub_dict:
+            # Back-compat: the disagreement-aware fusion stage was removed
+            # (swept-and-rejected). Drop a stray `fusion` block from an old
+            # saved config so it still loads, instead of crashing on an
+            # unexpected keyword.
+            sub_dict = {k: v for k, v in sub_dict.items() if k != "fusion"}
         sub_configs[key] = cls(**sub_dict) if sub_dict else cls()
 
     return PipelineConfig(**config_dict, **sub_configs)
