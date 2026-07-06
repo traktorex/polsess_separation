@@ -37,21 +37,18 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-# Eval-module scoring — the SAME functions rescore_stratified.per_fragment uses,
-# so aggregates are consistent (mandatory, per the task). meeteval/rapidfuzz only;
-# no torch is imported on this path.
-from asr_pipeline.eval.metrics import (                                   # noqa: E402
-    cpwer_meeteval, cp_cer_meeteval,
-    mimo_wer_meeteval, mimo_cer_meeteval,
-    orc_wer_meeteval, orc_wer_multistream, orc_cer_multistream,
-)
+# Eval-module scoring — the SAME shared `per_fragment_metrics` the rescorer and
+# sweep harness call, so aggregates are consistent (mandatory, per the task).
+# meeteval/rapidfuzz only; no torch is imported on this path.
+from asr_pipeline.eval.metrics import per_fragment_metrics as _score_fragment  # noqa: E402
 from asr_pipeline.eval.layer3 import read_per_speaker, read_mixture       # noqa: E402
 from asr_pipeline.eval.recordings import (                                # noqa: E402
     load_recording, load_reference_utterances,
 )
 from scripts.rescore_stratified import _strata                            # noqa: E402
+from scripts.eval_harness import eval_root, load_purity, load_split       # noqa: E402
 
-EVAL = Path("~/datasets/eval/clarin_fragments").expanduser()
+EVAL = eval_root()
 SWEEP_PIPELINE = REPO / "scripts" / "sweep_pipeline.py"
 
 
@@ -122,8 +119,9 @@ def config_knobs(overrides: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Scoring. per_fragment_metrics mirrors rescore_stratified.per_fragment's metric
-# set + a couple extras the tidy CSV carries (tcpWER, mixture ORC/MIMO floors).
+# Scoring. The meeteval calls live in the shared per_fragment_metrics (imported
+# as `_score_fragment`); `_dump_row` reads the on-disk hyp/mix, delegates the
+# scoring, and shapes the tidy CSV row (rates + raw counts + attribution gaps).
 # ---------------------------------------------------------------------------
 def _rate(err, length):
     """100*err/length, or None when there are no reference units (empty GT) —
@@ -131,7 +129,7 @@ def _rate(err, length):
     return round(100.0 * err / length, 4) if length else None
 
 
-def per_fragment_metrics(cfg: str, fid: str, ref: dict) -> dict | None:
+def _dump_row(cfg: str, fid: str, ref: dict) -> dict | None:
     """All L3 metrics + raw counts for one (config, fragment). None when the
     pipeline produced no per-speaker hyp (then the caller records the gap)."""
     d = EVAL / fid / "sweep" / cfg
@@ -139,11 +137,13 @@ def per_fragment_metrics(cfg: str, fid: str, ref: dict) -> dict | None:
     if hyp is None:
         return None
 
-    cp = cpwer_meeteval(ref, hyp, session_id=fid)        # cpWER (+ tcpWER)
-    cc = cp_cer_meeteval(ref, hyp, session_id=fid)       # cpCER
-    orc = orc_wer_multistream(ref, hyp, session_id=fid)  # WER content floor (ORC)
-    mw = mimo_wer_meeteval(ref, hyp, session_id=fid)     # WER content floor (MIMO)
-    oc = orc_cer_multistream(ref, hyp, session_id=fid)   # CER content floor (ORC)
+    mix = read_mixture(d)
+    m = _score_fragment(ref, hyp, session_id=fid, mix=mix)
+    cp = m["cp"]        # cpWER (+ tcpWER)
+    cc = m["cpcer"]     # cpCER
+    orc = m["orc"]      # WER content floor (ORC)
+    mw = m["mimo"]      # WER content floor (MIMO)
+    oc = m["orccer"]    # CER content floor (ORC, char-reoptimised)
 
     cp_e, cp_l = cp["cp_errors"], cp["cp_length"]
     cer_e, cer_l = cc["errors"], cc["length"]
@@ -172,11 +172,8 @@ def per_fragment_metrics(cfg: str, fid: str, ref: dict) -> dict | None:
     }
 
     # Mixture baseline floor (single-stream Whisper on the raw mix), when written.
-    mix = read_mixture(d)
     if mix is not None:
-        m_orc = orc_wer_meeteval(ref, mix, session_id=fid)
-        m_mimo = mimo_wer_meeteval(ref, mix, session_id=fid)
-        m_cer = mimo_cer_meeteval(ref, mix, session_id=fid)
+        m_orc, m_mimo, m_cer = m["mix_orc"], m["mix_mimo"], m["mix_cer"]
         row.update(
             mix_orcwer=_rate(m_orc["errors"], m_orc["length"]),
             mix_orcwer_errors=m_orc["errors"], mix_orcwer_ref_words=m_orc["length"],
@@ -191,19 +188,6 @@ def per_fragment_metrics(cfg: str, fid: str, ref: dict) -> dict | None:
                   "mix_mimocer", "mix_mimocer_errors", "mix_mimocer_ref_chars"):
             row[k] = None
     return row
-
-
-# Optional reference-free attribution purity, joined per (fragment, config) from
-# score_attribution_purity.py's CSV when present (else the columns stay blank).
-def load_purity() -> dict:
-    path = EVAL / "_attribution_purity.csv"
-    if not path.exists():
-        return {}
-    out = {}
-    with open(path, newline="") as fh:
-        for r in csv.DictReader(fh):
-            out[(r["frag_id"], r["config"])] = (int(r["pure"]), int(r["total"]))
-    return out
 
 
 def load_acoustic() -> dict:
@@ -247,16 +231,6 @@ METRIC_COLS = [
 ALL_COLS = ID_COLS + KNOB_COLS + METRIC_COLS
 
 
-def load_split(split: str) -> list[str]:
-    path = REPO / "asr_pipeline" / "eval" / f"clarin_{split}.txt"
-    if not path.exists():
-        sys.exit(f"fragment list not found: {path}")
-    frags = path.read_text().split()
-    if not frags:
-        sys.exit(f"no fragments in {path}")
-    return frags
-
-
 def build_rows(configs, frags, gt, strat, comp, acoustic, purity):
     """Tidy rows for every (config, fragment); also collect the missing pairs."""
     rows, missing = [], []
@@ -273,7 +247,7 @@ def build_rows(configs, frags, gt, strat, comp, acoustic, purity):
                 **knobs,
             }
             ref = gt.get(fid, {})
-            metrics = per_fragment_metrics(cfg, fid, ref) if ref else None
+            metrics = _dump_row(cfg, fid, ref) if ref else None
             if metrics is None:
                 missing.append((cfg, fid))
                 # Still emit a row (no silent drop) with blank metrics.
@@ -372,7 +346,7 @@ def main() -> int:
     strat = _strata(frags)                       # {recid: LOW/MID/HIGH}
     comp = load_composite()
     acoustic = load_acoustic()
-    purity = load_purity()
+    purity = load_purity(EVAL)
 
     gt = {}
     for fid in frags:

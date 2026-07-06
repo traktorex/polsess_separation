@@ -16,9 +16,23 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from asr_pipeline.context import PipelineContext
+
+
+def match_length(x: np.ndarray, n: int) -> np.ndarray:
+    """Right-trim or zero-pad ``x`` to exactly ``n`` samples (tail-aligned).
+
+    Shared primitive for the several stages that reconcile a neural
+    backend's output length against a target: the separator's resample
+    round-trip, ClearerVoice enhancement's resample round-trip, and the
+    BWE backends' STFT/iSTFT framing can each drift by a handful of
+    samples. Trims from the tail when too long, zero-pads the tail when
+    too short, and preserves the input dtype.
+    """
+    return x[:n] if len(x) >= n else np.pad(x, (0, n - len(x)))
 
 
 class Stage(ABC):

@@ -46,7 +46,6 @@ say so via `dlog`, never quiet downgrades.
 
 from __future__ import annotations
 
-import gc
 from typing import Optional
 
 import numpy as np
@@ -57,7 +56,11 @@ from asr_pipeline.context import Interval, PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.assembly import _coalesce, _subtract
 from asr_pipeline.stages.base import Stage
-from asr_pipeline.stages.custom_embeddings import build_custom_embedding
+from asr_pipeline.stages.custom_embeddings import (
+    build_custom_embedding,
+    embed_intervals,
+    release_gpu_memory,
+)
 
 
 def _log(msg: str) -> None:
@@ -103,27 +106,19 @@ def _embed_spans(
 ) -> np.ndarray:
     """Embed one concatenated waveform per span list → `(N, dim)` array.
 
-    Slices each kept sub-span out of `audio`, concatenates per segment, and feeds
-    `(1, 1, T)` to the custom embedder (which returns `(1, dim)` with a NaN row
-    when the usable signal is below `min_num_samples`). A segment with no kept
-    span (empty list) gets a NaN row directly — the caller drops NaN rows before
-    clustering and keeps their pass-1 label. Done one-at-a-time (concat lengths
-    differ per segment; the embedder loops per item internally anyway).
+    Delegates the per-segment "slice sub-spans → concat → embed → drop-if-
+    unreliable" work to the shared `embed_intervals` helper (which returns None
+    for an empty span list, a below-`min_num_samples` concat, or a non-finite
+    embedding). Those all become a NaN row here — the caller drops NaN rows
+    before clustering and keeps their pass-1 label. Done one-at-a-time (concat
+    lengths differ per segment; the embedder loops per item internally anyway).
     """
     dim = embedder.dimension
     out = np.full((len(spans), dim), np.nan, dtype=np.float32)
     for i, span_list in enumerate(spans):
-        slices: list[np.ndarray] = []
-        for s, e in span_list:
-            lo = int(s * sr)
-            hi = int(e * sr)
-            if hi > lo:
-                slices.append(audio[lo:hi].astype(np.float32))
-        if not slices:
-            continue  # leave NaN — nothing to embed
-        concat = np.concatenate(slices)
-        wav = torch.from_numpy(concat).reshape(1, 1, -1)
-        out[i] = embedder(wav)[0]
+        emb = embed_intervals(span_list, audio, sr, embedder)
+        if emb is not None:
+            out[i] = emb
     return out
 
 
@@ -504,9 +499,7 @@ class RelabelStage(Stage):
     def unload(self) -> None:
         self._embedder = None
         self._device = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        release_gpu_memory()
 
     def load_signature(self) -> tuple:
         # Only the embedding name picks the model; source/audio_source/

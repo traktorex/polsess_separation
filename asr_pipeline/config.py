@@ -59,6 +59,61 @@ def _one_of(value, name: str, allowed: tuple) -> None:
         )
 
 
+def _range_phrase(lo, hi, lo_open, hi_open, allow_none, finite) -> str:
+    """Human description of the accepted range for a `_require_range` message."""
+    if lo is not None and hi is not None:
+        left = "(" if lo_open else "["
+        right = ")" if hi_open else "]"
+        body = f"in {left}{lo}, {hi}{right}"
+    elif lo is not None:
+        body = f"{'>' if lo_open else '>='} {lo}"
+    elif hi is not None:
+        body = f"{'<' if hi_open else '<='} {hi}"
+    else:
+        body = ""
+    if finite:
+        phrase = f"a finite number {body}".rstrip()
+    else:
+        phrase = body or "a number"
+    if allow_none:
+        phrase = f"None or {phrase}"
+    return phrase
+
+
+def _require_range(value, name: str, *, lo=None, hi=None, lo_open=False,
+                   hi_open=False, allow_none=False, finite=True, note="") -> None:
+    """Raise ValueError unless `value` sits within the given numeric bound(s).
+
+    Sibling of `_one_of` for the numeric-range checks in
+    `PipelineConfig.__post_init__`. Bounds are optional; `lo_open`/`hi_open`
+    make the respective side strict (`>`/`<` instead of `>=`/`<=`). `allow_none`
+    lets `None` pass (an "off"/"no cap" sentinel). `finite=True` additionally
+    rejects NaN/Inf; pass `finite=False` to reproduce a legacy check that had no
+    finiteness guard (there, a NaN slips through the bare bound comparison
+    exactly as it did before — behaviour-preserving). `note` appends a
+    parenthetical to the message. Every message names the knob, the bound, and
+    the offending value.
+    """
+    if value is None:
+        valid = allow_none
+    else:
+        # Bound tests are written as "below lo" / "above hi" (never their
+        # negation) so a NaN — for which every comparison is False — slips
+        # through when `finite=False`, exactly as the pre-helper checks did.
+        below_lo = lo is not None and (value <= lo if lo_open else value < lo)
+        above_hi = hi is not None and (value >= hi if hi_open else value > hi)
+        valid = (
+            (not finite or math.isfinite(value))
+            and not below_lo
+            and not above_hi
+        )
+    if valid:
+        return
+    suffix = f" ({note})" if note else ""
+    phrase = _range_phrase(lo, hi, lo_open, hi_open, allow_none, finite)
+    raise ValueError(f"{name} must be {phrase}{suffix}, got {value!r}")
+
+
 # ---------------------------------------------------------------------------
 # Per-stage configs
 # ---------------------------------------------------------------------------
@@ -376,11 +431,16 @@ class AssemblyConfig:
     #     0.25 s pad floor is >= the wrapper's ~25 ms floor, so the custom path
     #     never under-feeds. Independent of the relabel stage's own ECAPA2.
     anchor_embedding: str = "ecapa1"           # "ecapa1" (SpeechBrain) | "ecapa2"
-    min_solo_for_anchor_s: float = 3.0
+    # Solo-duration threshold (s) below which the DIAGNOSTIC `weak_anchor` flag is
+    # raised (a speaker with less solo than this has a shaky anchor). Purely
+    # informational: it does NOT gate the anchor fallback — that trigger is
+    # `anchor_min_duration_s` below. Renamed from `min_solo_for_anchor_s` to make
+    # the diagnostic-only role explicit. >= 0.
+    weak_anchor_warn_below_s: float = 3.0
     # Minimum solo duration (s) a speaker needs for an ECAPA *anchor*. Below this
     # `_compute_anchors` leaves the anchor None and ALL that speaker's overlaps
     # fall to fixed positional assignment — the real attribution fallback
-    # trigger (distinct from `min_solo_for_anchor_s`, which only sets the
+    # trigger (distinct from `weak_anchor_warn_below_s`, which only sets the
     # diagnostic `weak_anchor` flag). Also the zero-pad floor inside
     # `_ecapa_embed` for every anchor / overlap embedding. Default 0.25 =
     # current behaviour (byte-identical). >= 0.
@@ -829,12 +889,8 @@ class PipelineConfig:
         # Degeneracy-rescue balance thresholds are duration shares → finite, [0, 1]
         # (only consulted when solo_clustering_init="rescue").
         for _knob in ("rescue_trigger_bal", "rescue_candidate_bal"):
-            _val = getattr(self.relabel, _knob)
-            if not math.isfinite(_val) or not (0.0 <= _val <= 1.0):
-                raise ValueError(
-                    f"relabel.{_knob} must be a finite duration-share in [0, 1], "
-                    f"got {_val}"
-                )
+            _require_range(getattr(self.relabel, _knob), f"relabel.{_knob}",
+                           lo=0.0, hi=1.0, note="duration share")
         # Relabel cross-checks (fail loud at config time, SCOPE §4.1 — never a
         # silent raw fallback / quiet downgrade at runtime):
         if (self.relabel.enabled and self.relabel.audio_source == "enhanced"
@@ -850,30 +906,28 @@ class PipelineConfig:
                 "relabel.source='global' (B+) requires separation.enabled "
                 "(no overlap_separated streams to cluster)."
             )
-        if self.separation.training_chunk_length_s <= 0:
-            raise ValueError(
-                f"separation.training_chunk_length_s must be positive, got "
-                f"{self.separation.training_chunk_length_s} (a non-positive "
-                f"chunk length would make overlap-add hop 0 → infinite loop)."
-            )
-        if self.separation.overlap_add_threshold_s <= 0:
-            raise ValueError(
-                f"separation.overlap_add_threshold_s must be positive, got "
-                f"{self.separation.overlap_add_threshold_s}"
-            )
-        if self.separation.vad_soft_threshold < 0:
-            raise ValueError(
-                f"separation.vad_soft_threshold must be >= 0, got "
-                f"{self.separation.vad_soft_threshold} (a negative value "
-                f"makes every frame 'weak' and floods the Schmitt mask)."
-            )
-        sst = self.separation.seam_silence_threshold
-        if not math.isfinite(sst) or not (0.0 < sst < 1.0):
-            raise ValueError(
-                f"separation.seam_silence_threshold must be in (0, 1) "
-                f"(VAD silence cutoff for snap_to_silence; 0.5 = default), "
-                f"got {sst}"
-            )
+        # `finite=False` on the two positivity checks below preserves the legacy
+        # bare-comparison behaviour (a NaN slipped through unflagged).
+        _require_range(
+            self.separation.training_chunk_length_s,
+            "separation.training_chunk_length_s", lo=0.0, lo_open=True, finite=False,
+            note="a non-positive chunk length would make overlap-add hop 0 → infinite loop",
+        )
+        _require_range(
+            self.separation.overlap_add_threshold_s,
+            "separation.overlap_add_threshold_s", lo=0.0, lo_open=True, finite=False,
+        )
+        _require_range(
+            self.separation.vad_soft_threshold, "separation.vad_soft_threshold",
+            lo=0.0, finite=False,
+            note="a negative value makes every frame 'weak' and floods the Schmitt mask",
+        )
+        _require_range(
+            self.separation.seam_silence_threshold,
+            "separation.seam_silence_threshold", lo=0.0, hi=1.0,
+            lo_open=True, hi_open=True,
+            note="VAD silence cutoff for snap_to_silence; 0.5 = default",
+        )
 
         # --- Assembly numeric knobs ---
         # A negative value here crashes deep in Stage 6 (`np.zeros(negative)` /
@@ -881,55 +935,37 @@ class PipelineConfig:
         # naming the offending knob. All are seconds/ms durations: zero is a
         # valid disable (no gap / no fade / no cap), so the floor is >= 0.
         acfg = self.assembly
+        # `finite=False` reproduces the legacy bare `< 0` check (NaN slips
+        # through unflagged); solo_onset_pad_s keeps its own finite guard below.
         for knob in (
             "silence_separator_s",
             "crossfade_ms",
             "edge_fade_ms",
-            "min_solo_for_anchor_s",
+            "weak_anchor_warn_below_s",
             "anchor_min_duration_s",
             "overlap_min_duration_s",
         ):
-            value = getattr(acfg, knob)
-            if value < 0:
-                raise ValueError(
-                    f"assembly.{knob} must be >= 0, got {value}"
-                )
+            _require_range(getattr(acfg, knob), f"assembly.{knob}",
+                           lo=0.0, finite=False)
         # anchor_max_duration_s is Optional (None = no cap); a non-None value
         # must be positive (a zero/negative cap would empty the anchor audio).
-        if acfg.anchor_max_duration_s is not None and acfg.anchor_max_duration_s <= 0:
-            raise ValueError(
-                f"assembly.anchor_max_duration_s must be None (no cap) or "
-                f"positive, got {acfg.anchor_max_duration_s}"
-            )
-        # solo_onset_pad_s needs its own guard (not the >= 0 loop above): NaN
-        # passes a bare `< 0` check and would silently disable every clamp
+        _require_range(acfg.anchor_max_duration_s, "assembly.anchor_max_duration_s",
+                       lo=0.0, lo_open=True, allow_none=True, finite=False,
+                       note="None = no cap")
+        # solo_onset_pad_s needs the finite guard (unlike the >= 0 loop above): a
+        # NaN passes a bare `< 0` check and would silently disable every clamp
         # comparison downstream.
-        if not math.isfinite(acfg.solo_onset_pad_s) or acfg.solo_onset_pad_s < 0:
-            raise ValueError(
-                f"assembly.solo_onset_pad_s must be a finite value >= 0 "
-                f"(0 = off), got {acfg.solo_onset_pad_s}"
-            )
+        _require_range(acfg.solo_onset_pad_s, "assembly.solo_onset_pad_s",
+                       lo=0.0, note="0 = off")
 
         # --- Diarization front-end knobs (pyannote instantiate params) ---
         dcfg = self.diarization
-        if not math.isfinite(dcfg.segmentation_min_duration_off) or \
-                dcfg.segmentation_min_duration_off < 0:
-            raise ValueError(
-                f"diarization.segmentation_min_duration_off must be >= 0, "
-                f"got {dcfg.segmentation_min_duration_off}"
-            )
-        if not math.isfinite(dcfg.clustering_threshold) or not (
-            0.0 <= dcfg.clustering_threshold <= 2.0
-        ):
-            raise ValueError(
-                f"diarization.clustering_threshold must be in [0, 2] (cosine; "
-                f"INERT under num_speakers=2), got {dcfg.clustering_threshold}"
-            )
-        if dcfg.clustering_min_cluster_size < 1:
-            raise ValueError(
-                f"diarization.clustering_min_cluster_size must be >= 1, "
-                f"got {dcfg.clustering_min_cluster_size}"
-            )
+        _require_range(dcfg.segmentation_min_duration_off,
+                       "diarization.segmentation_min_duration_off", lo=0.0)
+        _require_range(dcfg.clustering_threshold, "diarization.clustering_threshold",
+                       lo=0.0, hi=2.0, note="cosine; INERT under num_speakers=2")
+        _require_range(dcfg.clustering_min_cluster_size,
+                       "diarization.clustering_min_cluster_size", lo=1, finite=False)
         # Sortformer (EEND) backend cross-checks. Its 4-speaker head is
         # post-filtered to the 2 most-active heads, so the pipeline's 2-speaker
         # assumption is a HARD requirement on this path — fail loud, never a
@@ -940,64 +976,34 @@ class PipelineConfig:
                 "(the pipeline post-selects the 2 most-active of Sortformer's 4 "
                 f"output heads); got num_speakers={dcfg.num_speakers}."
             )
-        if not math.isfinite(dcfg.sortformer_threshold) or not (
-            0.0 < dcfg.sortformer_threshold < 1.0
-        ):
-            raise ValueError(
-                f"diarization.sortformer_threshold must be a probability in "
-                f"(0, 1) (0.5 = probe default), got {dcfg.sortformer_threshold}"
-            )
+        _require_range(dcfg.sortformer_threshold, "diarization.sortformer_threshold",
+                       lo=0.0, hi=1.0, lo_open=True, hi_open=True,
+                       note="probability; 0.5 = probe default")
         # Sortformer levers. Validated unconditionally (like sortformer_threshold)
         # so a YAML typo fails loud on any backend; the defaults preserve the
         # stock top-2 behaviour.
         _one_of(dcfg.sortformer_head_policy, "diarization.sortformer_head_policy",
                 ("top2", "merge"))
-        if not math.isfinite(dcfg.sortformer_merge_margin) or \
-                dcfg.sortformer_merge_margin < 0:
-            raise ValueError(
-                f"diarization.sortformer_merge_margin must be a finite value >= 0 "
-                f"(cosine margin; only used when sortformer_head_policy='merge'), "
-                f"got {dcfg.sortformer_merge_margin}"
-            )
+        _require_range(dcfg.sortformer_merge_margin,
+                       "diarization.sortformer_merge_margin", lo=0.0,
+                       note="cosine margin; only used when sortformer_head_policy='merge'")
 
-        omr = self.enhancement.observation_mix_ratio
-        if not math.isfinite(omr) or not (0.0 <= omr <= 1.0):
-            raise ValueError(
-                f"enhancement.observation_mix_ratio must be a finite value in "
-                f"[0, 1] (convex dry-wet weight; 0 = pure enhanced), got {omr}"
-            )
+        _require_range(self.enhancement.observation_mix_ratio,
+                       "enhancement.observation_mix_ratio", lo=0.0, hi=1.0,
+                       note="convex dry-wet weight; 0 = pure enhanced")
 
         # --- Transcription decode knobs ---
         tcfg = self.transcription
-        if not math.isfinite(tcfg.silence_floor) or tcfg.silence_floor < 0:
-            raise ValueError(
-                f"transcription.silence_floor must be a finite value >= 0 "
-                f"(0 = gate off; 1e-4 = default), got {tcfg.silence_floor}"
-            )
-        if tcfg.beam_size < 1:
-            raise ValueError(
-                f"transcription.beam_size must be >= 1, got {tcfg.beam_size}"
-            )
-        if tcfg.patience <= 0 or not math.isfinite(tcfg.patience):
-            raise ValueError(
-                f"transcription.patience must be a positive finite number, got "
-                f"{tcfg.patience}"
-            )
-        if tcfg.length_penalty <= 0 or not math.isfinite(tcfg.length_penalty):
-            raise ValueError(
-                f"transcription.length_penalty must be a positive finite number "
-                f"(1.0 = no-op), got {tcfg.length_penalty}"
-            )
-        if not math.isfinite(tcfg.no_speech_threshold):
-            raise ValueError(
-                f"transcription.no_speech_threshold must be finite, got "
-                f"{tcfg.no_speech_threshold}"
-            )
-        if not math.isfinite(tcfg.compression_ratio_threshold):
-            raise ValueError(
-                f"transcription.compression_ratio_threshold must be finite, got "
-                f"{tcfg.compression_ratio_threshold}"
-            )
+        _require_range(tcfg.silence_floor, "transcription.silence_floor", lo=0.0,
+                       note="0 = gate off; 1e-4 = default")
+        _require_range(tcfg.beam_size, "transcription.beam_size", lo=1, finite=False)
+        _require_range(tcfg.patience, "transcription.patience", lo=0.0, lo_open=True,
+                       note="1.0 = default")
+        _require_range(tcfg.length_penalty, "transcription.length_penalty",
+                       lo=0.0, lo_open=True, note="1.0 = no-op")
+        _require_range(tcfg.no_speech_threshold, "transcription.no_speech_threshold")
+        _require_range(tcfg.compression_ratio_threshold,
+                       "transcription.compression_ratio_threshold")
         # temperature: scalar or schedule, each entry a finite value in [0, 1].
         temps = (
             tcfg.temperature
@@ -1016,65 +1022,34 @@ class PipelineConfig:
                     f"got {tcfg.temperature!r}"
                 )
         # Anti-hallucination knobs (faster-whisper / WhisperX backend).
-        if tcfg.no_repeat_ngram_size < 0:
-            raise ValueError(
-                f"transcription.no_repeat_ngram_size must be >= 0 (0 = disabled), "
-                f"got {tcfg.no_repeat_ngram_size}"
-            )
-        if tcfg.repetition_penalty <= 0 or not math.isfinite(tcfg.repetition_penalty):
-            raise ValueError(
-                f"transcription.repetition_penalty must be a positive finite "
-                f"number (1.0 = no penalty), got {tcfg.repetition_penalty}"
-            )
-        if tcfg.hallucination_silence_threshold is not None and (
-            tcfg.hallucination_silence_threshold <= 0
-            or not math.isfinite(tcfg.hallucination_silence_threshold)
-        ):
-            raise ValueError(
-                f"transcription.hallucination_silence_threshold must be None "
-                f"(off) or a positive finite number of seconds, got "
-                f"{tcfg.hallucination_silence_threshold}"
-            )
-        if tcfg.chunk_size < 1:
-            raise ValueError(
-                f"transcription.chunk_size must be an int >= 1 (seconds; "
-                f"30 = WhisperX default), got {tcfg.chunk_size}"
-            )
+        _require_range(tcfg.no_repeat_ngram_size,
+                       "transcription.no_repeat_ngram_size", lo=0, finite=False,
+                       note="0 = disabled")
+        _require_range(tcfg.repetition_penalty, "transcription.repetition_penalty",
+                       lo=0.0, lo_open=True, note="1.0 = no penalty")
+        _require_range(tcfg.hallucination_silence_threshold,
+                       "transcription.hallucination_silence_threshold",
+                       lo=0.0, lo_open=True, allow_none=True,
+                       note="None = off; seconds")
+        _require_range(tcfg.chunk_size, "transcription.chunk_size", lo=1,
+                       finite=False, note="seconds; 30 = WhisperX default")
         # Detect-and-retry knobs (WhisperX-only collapse recovery).
-        if tcfg.retry_collapsed_chunk_size < 0:
-            raise ValueError(
-                f"transcription.retry_collapsed_chunk_size must be an int >= 0 "
-                f"(0 = disabled; 8 = default), got "
-                f"{tcfg.retry_collapsed_chunk_size}"
-            )
-        if (tcfg.collapse_min_duration_s <= 0
-                or not math.isfinite(tcfg.collapse_min_duration_s)):
-            raise ValueError(
-                f"transcription.collapse_min_duration_s must be a positive "
-                f"finite number of seconds, got {tcfg.collapse_min_duration_s}"
-            )
-        if (tcfg.collapse_max_wps <= 0
-                or not math.isfinite(tcfg.collapse_max_wps)):
-            raise ValueError(
-                f"transcription.collapse_max_wps must be a positive finite "
-                f"words/second threshold, got {tcfg.collapse_max_wps}"
-            )
+        _require_range(tcfg.retry_collapsed_chunk_size,
+                       "transcription.retry_collapsed_chunk_size", lo=0,
+                       finite=False, note="0 = disabled; 8 = default")
+        _require_range(tcfg.collapse_min_duration_s,
+                       "transcription.collapse_min_duration_s", lo=0.0,
+                       lo_open=True, note="seconds")
+        _require_range(tcfg.collapse_max_wps, "transcription.collapse_max_wps",
+                       lo=0.0, lo_open=True, note="words/second threshold")
         # Conditional repetition-loop retry (WhisperX-only).
-        if tcfg.loop_retry_ngram < 1:
-            raise ValueError(
-                f"transcription.loop_retry_ngram must be an int >= 1 (the "
-                f"no_repeat_ngram_size applied on the loop-retry pass; 0 would "
-                f"leave the retry unable to break the loop), got "
-                f"{tcfg.loop_retry_ngram}"
-            )
-        if not math.isfinite(tcfg.loop_score_threshold) or not (
-            0.0 < tcfg.loop_score_threshold <= 1.0
-        ):
-            raise ValueError(
-                f"transcription.loop_score_threshold must be a dominant-token "
-                f"fraction in (0, 1] (0.4 = default), got "
-                f"{tcfg.loop_score_threshold}"
-            )
+        _require_range(tcfg.loop_retry_ngram, "transcription.loop_retry_ngram",
+                       lo=1, finite=False,
+                       note="no_repeat_ngram_size for the loop-retry pass; "
+                            "0 would leave the retry unable to break the loop")
+        _require_range(tcfg.loop_score_threshold,
+                       "transcription.loop_score_threshold", lo=0.0, hi=1.0,
+                       lo_open=True, note="dominant-token fraction; 0.4 = default")
         # NB the loop_retry-requires-whisperx cross-check is enforced at
         # TranscriptionStage.load() (backend level), not here — matching the
         # convention for the other WhisperX-only knobs (a config may override
@@ -1082,12 +1057,9 @@ class PipelineConfig:
         # without re-declaring the backend). Still fails loud, before any audio.
         # WhisperX internal-VAD onset/offset are probabilities → strictly in (0, 1).
         for knob in ("vad_onset", "vad_offset"):
-            value = getattr(tcfg, knob)
-            if not math.isfinite(value) or not (0.0 < value < 1.0):
-                raise ValueError(
-                    f"transcription.{knob} must be a probability in (0, 1), "
-                    f"got {value}"
-                )
+            _require_range(getattr(tcfg, knob), f"transcription.{knob}",
+                           lo=0.0, hi=1.0, lo_open=True, hi_open=True,
+                           note="probability")
 
         if self.spill_intermediate and self.artifact_dir is None:
             raise ValueError(

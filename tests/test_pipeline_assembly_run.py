@@ -365,7 +365,7 @@ def test_run_uses_raw_mixture_when_enhancement_disabled():
     audio = np.linspace(0.1, 0.9, 2 * SR).astype(np.float32)   # positive ramp
     stage = _make_stage(
         output_mode="full_length",
-        min_solo_for_anchor_s=1.0,
+        weak_anchor_warn_below_s=1.0,
         crossfade_ms=0.0,
         edge_fade_ms=0.0,
         overlap_rms_match_solo=False,
@@ -394,7 +394,7 @@ def test_assembly_run_end_to_end():
         idx=0, pad_start=2.0, emit_start=2.0, emit_end=3.0,
     )
     stage = _make_stage(
-        min_solo_for_anchor_s=1.0,      # 2 s solos are not "weak"
+        weak_anchor_warn_below_s=1.0,      # 2 s solos are not "weak"
         crossfade_ms=0.0,
         edge_fade_ms=0.0,
         overlap_rms_match_solo=False,
@@ -501,7 +501,7 @@ def test_run_passes_overlap_speaker_assignment_to_assign():
     enhanced[3 * SR: 5 * SR] = -0.5
     ovl = _ovl(np.full(SR, 0.5), np.full(SR, -0.5),
                idx=0, pad_start=2.0, emit_start=2.0, emit_end=3.0)
-    stage = _make_stage(min_solo_for_anchor_s=1.0, crossfade_ms=0.0,
+    stage = _make_stage(weak_anchor_warn_below_s=1.0, crossfade_ms=0.0,
                         edge_fade_ms=0.0, overlap_rms_match_solo=False)
     ctx = PipelineContext(sample_rate=SR)
     ctx.audio = enhanced.copy()
@@ -606,7 +606,7 @@ def test_run_solo_onset_pad_recovers_shaved_onset():
 
     def _run(pad):
         stage = _make_stage(
-            output_mode="full_length", min_solo_for_anchor_s=1.0,
+            output_mode="full_length", weak_anchor_warn_below_s=1.0,
             crossfade_ms=0.0, edge_fade_ms=0.0, overlap_rms_match_solo=False,
             solo_onset_pad_s=pad,
         )
@@ -636,7 +636,7 @@ def test_run_solo_onset_pad_clamped_by_overlap_region():
     at 0.9 — overlap audio never leaks into the solo piece."""
     audio = np.ones(3 * SR, dtype=np.float32)
     stage = _make_stage(
-        output_mode="full_length", min_solo_for_anchor_s=1.0,
+        output_mode="full_length", weak_anchor_warn_below_s=1.0,
         crossfade_ms=0.0, edge_fade_ms=0.0, overlap_rms_match_solo=False,
         solo_onset_pad_s=0.5,
     )

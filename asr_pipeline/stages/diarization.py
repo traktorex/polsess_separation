@@ -29,6 +29,8 @@ from asr_pipeline.stages.base import Stage
 from asr_pipeline.stages.custom_embeddings import (
     CUSTOM_EMBEDDING_NAMES,
     build_custom_embedding,
+    embed_intervals,
+    with_ecapa2,
 )
 
 
@@ -189,39 +191,6 @@ def _cosine(a, b) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
-def _embed_audio_span(intervals, audio, sr: int, embedder, cap_s=None):
-    """Concatenate the audio under `intervals` (in time order, optionally capped
-    to `cap_s` seconds) and embed it with the custom ECAPA2 wrapper.
-
-    Returns a `(dim,)` float32 embedding, or None when there is nothing to embed,
-    the usable audio is below the embedder's `min_num_samples`, or the embedder
-    returns a non-finite row (all three mean "no reliable embedding" — the caller
-    treats them the same). Mirrors relabel's `_embed_spans` slicing.
-    """
-    slices = []
-    total = 0.0
-    for s, e in intervals:
-        if cap_s is not None and total >= cap_s:
-            break
-        lo = max(0, int(s * sr))
-        hi = int(e * sr)
-        if cap_s is not None:
-            hi = min(hi, lo + int(max(0.0, cap_s - total) * sr))
-        if hi > lo:
-            slices.append(np.asarray(audio[lo:hi], dtype=np.float32))
-            total += (hi - lo) / sr
-    if not slices:
-        return None
-    concat = np.concatenate(slices)
-    if len(concat) < embedder.min_num_samples:
-        return None
-    wav = torch.from_numpy(concat).reshape(1, 1, -1)
-    emb = np.asarray(embedder(wav)[0], dtype=np.float32)
-    if not np.all(np.isfinite(emb)):
-        return None
-    return emb
-
-
 def _merge_surplus_heads(
     head_runs,
     top2,
@@ -285,11 +254,11 @@ def _merge_surplus_heads(
             [iv for j in range(S) if j != k for iv in head_runs[j]]
         )
         solo = _subtract(head_runs[k], others_union)
-        solo_refs[k] = _embed_audio_span(solo, audio, sr, embedder, cap_s=solo_cap_s)
+        solo_refs[k] = embed_intervals(solo, audio, sr, embedder, cap_s=solo_cap_s)
     have_refs = all(solo_refs[k] is not None for k in top2)
 
     for (k, a, b, dur) in eligible:
-        run_emb = _embed_audio_span([(a, b)], audio, sr, embedder) if have_refs else None
+        run_emb = embed_intervals([(a, b)], audio, sr, embedder) if have_refs else None
         if run_emb is None:
             # No usable reference for one speaker, or an unembeddable run → cannot
             # decide → leave discarded, count as unresolved leak.
@@ -697,25 +666,18 @@ class DiarizationStage(Stage):
         merge_stats = None
         if dcfg.sortformer_head_policy == "merge" and len(top2) >= 2:
             # Load ECAPA2 here — AFTER the worker subprocess has exited (GPU free)
-            # and unloaded before this stage returns (phase-major: never two big
-            # models co-resident). Same embedder infrastructure the relabel stage
-            # uses (custom_embeddings.build_custom_embedding).
-            embedder = None
-            try:
-                _log("run: L1 merge — loading ECAPA2 embedder for surplus-head "
-                     "reassignment...")
-                embedder = build_custom_embedding("ecapa2", self._device)
+            # and free it before this stage returns (phase-major: never two big
+            # models co-resident). `with_ecapa2` builds the same embedder the
+            # relabel stage uses and does the drop + GPU-memory release on exit,
+            # even if the merge raises.
+            _log("run: L1 merge — loading ECAPA2 embedder for surplus-head "
+                 "reassignment...")
+            with with_ecapa2(self._device) as embedder:
                 merged_turns, merge_stats = _merge_surplus_heads(
                     head_runs, top2, labels, ctx.audio, ctx.sample_rate, embedder,
                     merge_margin=dcfg.sortformer_merge_margin,
                     speech_tot=diag["speech_s"],
                 )
-            finally:
-                if embedder is not None:
-                    del embedder
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
             if merged_turns:
                 turns = turns + merged_turns
             _log(

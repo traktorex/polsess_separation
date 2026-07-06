@@ -27,34 +27,17 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
-from asr_pipeline.eval.metrics import (                                  # noqa: E402
-    cpwer_meeteval, cp_cer_meeteval,
-    mimo_wer_meeteval, mimo_cer_meeteval, orc_wer_multistream,
-    orc_cer_multistream)
+from asr_pipeline.eval.metrics import per_fragment_metrics                 # noqa: E402
 from asr_pipeline.eval.layer3 import read_per_speaker, read_mixture       # noqa: E402
 from asr_pipeline.eval.recordings import (                                # noqa: E402
     load_recording, load_reference_utterances)
+from scripts.eval_harness import eval_root, load_purity, load_split       # noqa: E402
 
-EVAL = Path("~/datasets/eval/clarin_fragments").expanduser()
+EVAL = eval_root()
 B_DRAWS, SEED = 10000, 0
 
 
 def _recid(fid): return fid.split("__")[0]
-
-
-def load_split(args) -> list[str]:
-    """The active fragment list — a named split or an explicit file. Both the
-    space-separated dev list and the newline-separated test list .split() cleanly."""
-    if args.fragments_file:
-        path = Path(args.fragments_file).expanduser()
-    else:
-        path = REPO / "asr_pipeline" / "eval" / f"clarin_{args.split}.txt"
-    if not path.exists():
-        sys.exit(f"fragment list not found: {path}")
-    frags = path.read_text().split()
-    if not frags:
-        sys.exit(f"no fragments in {path}")
-    return frags
 
 
 # --normalize: apply the census-vetted Polish scoring normalizer (see
@@ -105,22 +88,19 @@ def _strata(frags):
     return strat
 
 
-def load_purity():
-    """{(frag_id, config): (pure, total)} from score_attribution_purity.py's CSV,
-    or {} if absent (the purity table/Δ are then silently omitted; the WER/CER
-    gaps still print). Window counts micro-average like errors/length."""
-    path = EVAL / "_attribution_purity.csv"
-    if not path.exists():
-        return {}
-    out = {}
-    with open(path, newline="") as fh:
-        for r in csv.DictReader(fh):
-            out[(r["frag_id"], r["config"])] = (int(r["pure"]), int(r["total"]))
-    return out
-
-
 def per_fragment(cfg, gt, frags):
-    """{fid: {cpE,cpL,cerE,cerL, mixE,mixL,mixcE,mixcL}} for a config."""
+    """{fid: {cpE,cpL,cerE,cerL, mixE,mixL,mixcE,mixcL}} for a config.
+
+    The meeteval calls live in ``asr_pipeline.eval.per_fragment_metrics`` (shared
+    with dump_sweep_results / sweep_pipeline); here we pull out the exact counts
+    the rescorer has always used. The content floors: ORC-WER/ORC-CER on the
+    multi-stream hyp charge no attribution (meeteval optimally routes each
+    reference utterance to a stream), so ``cpWER - ORC`` is the ATTRIBUTION GAP;
+    MIMO-WER is the granularity-robust bracket on it. The mixture floor is scored
+    with MIMO (mixE/mixcE) — its GT-fault robustness matters for the raw-mix
+    baseline. (The shared helper also computes the mixture ORC-WER floor, which
+    the rescorer does not report; it is ignored here — no reported number changes.)
+    """
     out = {}
     for fid in frags:
         d = EVAL / fid / "sweep" / cfg
@@ -128,38 +108,17 @@ def per_fragment(cfg, gt, frags):
         if hyp is None or not gt[fid]:
             continue
         hyp = {k: _maybe_norm(v) for k, v in hyp.items()}
-        cp = cpwer_meeteval(gt[fid], hyp, session_id=fid)
-        cc = cp_cer_meeteval(gt[fid], hyp, session_id=fid)
-        # Speaker-agnostic content floor of the PIPELINE output: ORC-WER on the
-        # multi-stream hyp charges no attribution (meeteval optimally assigns each
-        # reference utterance to a stream). cpWER - ORC = the ATTRIBUTION GAP — the
-        # error caused purely by mis-filing content to the wrong speaker, which is
-        # exactly what the attribution-fix work targets (and the "ORC" the forensics
-        # quote). ORC-WER <= cpWER always, so the gap is non-negative. (A multi-stream
-        # ORC/MIMO *CER* helper doesn't exist yet, so the gap is WER-only for now;
-        # cpCER stays the headline in the absolute table.)
-        orc = orc_wer_multistream(gt[fid], hyp, session_id=fid)
-        # MIMO floor too: ORC assigns whole REFERENCE utterances to streams, so
-        # it is sensitive to the GT's utterance granularity — a coarse GT can hide
-        # an overlap mis-attribution as "content error" (gap understated). MIMO
-        # splits a speaker's stream at word level, so it is granularity-robust.
-        # The recoverable-attribution truth is bracketed by the two; for fixed-GT
-        # config COMPARISONS the Δ is valid either way (the GT bias cancels).
-        mw = mimo_wer_meeteval(gt[fid], hyp, session_id=fid)
-        # CER content floor for the CER attribution gap. ORC-CER only: char-level
-        # MIMO-CER is ~150x slower (meeteval's MIMO assignment explodes on char
-        # tokens, ~11 s/fragment) and ORC≈MIMO on this data, so it isn't worth it.
-        oc = orc_cer_multistream(gt[fid], hyp, session_id=fid)
+        mix = _maybe_norm(read_mixture(d))
+        m = per_fragment_metrics(gt[fid], hyp, session_id=fid, mix=mix)
+        cp, cc, orc, mw, oc = m["cp"], m["cpcer"], m["orc"], m["mimo"], m["orccer"]
         row = dict(cpE=cp["cp_errors"], cpL=cp["cp_length"],
                    cerE=cc["errors"], cerL=cc["length"],
                    ctE=orc["errors"], ctL=orc["length"],
                    mwE=mw["errors"], mwL=mw["length"],
                    ocE=oc["errors"], ocL=oc["length"])
-        mix = _maybe_norm(read_mixture(d))
         if mix is not None:
-            mw = mimo_wer_meeteval(gt[fid], mix, session_id=fid)
-            mc = mimo_cer_meeteval(gt[fid], mix, session_id=fid)
-            row.update(mixE=mw["errors"], mixL=mw["length"],
+            mm, mc = m["mix_mimo"], m["mix_cer"]
+            row.update(mixE=mm["errors"], mixL=mm["length"],
                        mixcE=mc["errors"], mixcL=mc["length"])
         out[fid] = row
     return out
@@ -206,56 +165,69 @@ def micro(rows, eK, lK):
     return 100 * e / l if l else float("nan")
 
 
-def cluster_boot_paired(recs_a, recs_b, eK, lK, rng):
-    """Paired (anchor - cfg) micro-avg delta, cluster-bootstrap by recording.
-    Positive => cfg better (lower error). Recordings with zero reference length
-    on either side are excluded up front so a resample can never sum to a 0/0 nan
-    draw (one nan draw poisons np.percentile and would flip the significance star
-    ON for a meaningless delta)."""
-    ids = [r for r in recs_a if r in recs_b
-           and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
+def _boot_resample(ids, stat, rng):
+    """The shared cluster-bootstrap kernel: point estimate + the finite draws.
+
+    ``stat(sample) -> float`` is the paired statistic over a list of recording ids
+    (a resampled ``sample`` may repeat ids). Resamples the RECORDINGS with
+    replacement ``B_DRAWS`` times and drops any non-finite draw (a resample can sum
+    to a 0/0 nan; one nan poisons ``np.percentile`` and would flip a significance
+    star ON for a meaningless delta). Returns ``(point, finite_draws_ndarray)`` —
+    ``point`` is ``stat(ids)`` (nan and empty draws when ``ids`` is empty). The
+    four bootstrap wrappers below differ ONLY in how they build ``ids`` and
+    ``stat``; the resample/nan-guard/percentile logic lives here once."""
     if not ids:
-        return float("nan"), float("nan"), float("nan")
-
-    def delta(sample):
-        ae = sum(recs_a[r][eK] for r in sample); al = sum(recs_a[r][lK] for r in sample)
-        be = sum(recs_b[r][eK] for r in sample); bl = sum(recs_b[r][lK] for r in sample)
-        return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
-
-    point = delta(ids)
+        return float("nan"), np.array([])
+    point = stat(ids)
     idx = np.arange(len(ids))
-    draws = [delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
-             for _ in range(B_DRAWS)]
-    draws = [d for d in draws if np.isfinite(d)]   # belt-and-suspenders: drop any nan
-    if not draws:
+    draws = np.array([stat([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
+                      for _ in range(B_DRAWS)])
+    return point, draws[np.isfinite(draws)]
+
+
+def _boot_ci(ids, stat, rng):
+    """``(point, lo, hi)`` — the 95% percentile CI form of :func:`_boot_resample`.
+    nan CI bounds when ``ids`` is empty or no draw is finite."""
+    point, draws = _boot_resample(ids, stat, rng)
+    if draws.size == 0:
         return point, float("nan"), float("nan")
     lo, hi = np.percentile(draws, [2.5, 97.5])
     return point, lo, hi
 
 
-def cluster_boot_paired_draws(recs_a, recs_b, eK, lK, rng):
-    """Like ``cluster_boot_paired`` but ALSO returns the finite bootstrap draws.
+def _paired_ids(recs_a, recs_b, lK):
+    """Recordings present on both sides with non-zero reference length on each —
+    so a resample can never sum to a 0/0 nan draw."""
+    return [r for r in recs_a if r in recs_b
+            and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
 
-    Same point estimate and same resampling — factored out so the Holm/FDR pass
-    can derive a bootstrap p-value from the draws (fraction on the wrong side of
-    0, two-sided) WITHOUT re-running the bootstrap or changing the existing
-    per-stratum CI output (which keeps calling ``cluster_boot_paired``). Returns
-    ``(point, draws_array)``; ``draws_array`` is empty when no finite draw exists."""
-    ids = [r for r in recs_a if r in recs_b
-           and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
-    if not ids:
-        return float("nan"), np.array([])
 
+def _paired_delta(recs_a, recs_b, eK, lK):
+    """micro(recs_a) − micro(recs_b) over a sample; nan if either side is empty."""
     def delta(sample):
         ae = sum(recs_a[r][eK] for r in sample); al = sum(recs_a[r][lK] for r in sample)
         be = sum(recs_b[r][eK] for r in sample); bl = sum(recs_b[r][lK] for r in sample)
         return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
+    return delta
 
-    point = delta(ids)
-    idx = np.arange(len(ids))
-    draws = np.array([delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
-                      for _ in range(B_DRAWS)])
-    return point, draws[np.isfinite(draws)]
+
+def cluster_boot_paired(recs_a, recs_b, eK, lK, rng):
+    """Paired (anchor - cfg) micro-avg delta, cluster-bootstrap by recording.
+    Positive => cfg better (lower error). Recordings with zero reference length
+    on either side are excluded up front (see :func:`_paired_ids`)."""
+    ids = _paired_ids(recs_a, recs_b, lK)
+    return _boot_ci(ids, _paired_delta(recs_a, recs_b, eK, lK), rng)
+
+
+def cluster_boot_paired_draws(recs_a, recs_b, eK, lK, rng):
+    """Like ``cluster_boot_paired`` but ALSO returns the finite bootstrap draws.
+
+    Same point estimate and same resampling — so the Holm/FDR pass can derive a
+    bootstrap p-value from the draws (fraction on the wrong side of 0, two-sided)
+    WITHOUT re-running the bootstrap. Returns ``(point, draws_array)``;
+    ``draws_array`` is empty when no finite draw exists."""
+    ids = _paired_ids(recs_a, recs_b, lK)
+    return _boot_resample(ids, _paired_delta(recs_a, recs_b, eK, lK), rng)
 
 
 def cluster_boot_2key(recs, eKa, lKa, eKb, lKb, rng):
@@ -265,23 +237,13 @@ def cluster_boot_2key(recs, eKa, lKa, eKb, lKb, rng):
     so + = pipeline lower error = separation recovered content. Same recording
     resample + nan-guard as cluster_boot_paired."""
     ids = [r for r in recs if recs[r].get(lKa, 0) > 0 and recs[r].get(lKb, 0) > 0]
-    if not ids:
-        return float("nan"), float("nan"), float("nan")
 
     def delta(sample):
         ae = sum(recs[r][eKa] for r in sample); al = sum(recs[r][lKa] for r in sample)
         be = sum(recs[r][eKb] for r in sample); bl = sum(recs[r][lKb] for r in sample)
         return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
 
-    point = delta(ids)
-    idx = np.arange(len(ids))
-    draws = [delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
-             for _ in range(B_DRAWS)]
-    draws = [d for d in draws if np.isfinite(d)]
-    if not draws:
-        return point, float("nan"), float("nan")
-    lo, hi = np.percentile(draws, [2.5, 97.5])
-    return point, lo, hi
+    return _boot_ci(ids, delta, rng)
 
 
 def boot_pvalue(draws) -> float:
@@ -347,10 +309,7 @@ def cluster_boot_gap(recs_a, recs_b, eK, lK, gK, gL, rng):
     so positive => cfg has the SMALLER gap (better attribution). (eK,lK) = cpWER
     error/length; (gK,gL) = content-floor error/length. Excludes recordings with
     zero reference length on either side (same nan-guard as cluster_boot_paired)."""
-    ids = [r for r in recs_a if r in recs_b
-           and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
-    if not ids:
-        return float("nan"), float("nan"), float("nan")
+    ids = _paired_ids(recs_a, recs_b, lK)
 
     def gap(recs, sample):
         ce = sum(recs[r][eK] for r in sample); cl = sum(recs[r][lK] for r in sample)
@@ -360,15 +319,7 @@ def cluster_boot_gap(recs_a, recs_b, eK, lK, gK, gL, rng):
     def delta(sample):
         return gap(recs_a, sample) - gap(recs_b, sample)
 
-    point = delta(ids)
-    idx = np.arange(len(ids))
-    draws = [delta([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
-             for _ in range(B_DRAWS)]
-    draws = [d for d in draws if np.isfinite(d)]
-    if not draws:
-        return point, float("nan"), float("nan")
-    lo, hi = np.percentile(draws, [2.5, 97.5])
-    return point, lo, hi
+    return _boot_ci(ids, delta, rng)
 
 
 def _sig(lo, hi):
@@ -436,7 +387,7 @@ def main():
         print("### NORMALIZED SCORING: polish_scoring_normalizer rules applied "
               "symmetrically to reference and hypothesis (secondary metric) ###")
 
-    frags = load_split(args)
+    frags = load_split(args.split, args.fragments_file)
     gt = _load_gt(frags)
     strat = _strata(frags)                       # {recid: stratum}
     allcfgs = [args.anchor] + [c for c in args.configs if c != args.anchor]
@@ -447,7 +398,7 @@ def main():
         _check_frag_parity("mixture-floor per-fragment coverage",
                             {c: {fid for fid, r in perfrag[c].items() if "mixE" in r}
                              for c in allcfgs})
-    purity = load_purity()
+    purity = load_purity(EVAL)
     if purity:
         for (fid, c), (pure, total) in purity.items():
             if c in perfrag and fid in perfrag[c] and total > 0:

@@ -17,7 +17,7 @@ For each speaker:
    regions or adjacent pieces; see `_pad_solo_onsets`.)
 2. Build an ECAPA-TDNN *anchor* embedding from a concatenation of
    `enhanced_full` sliced at those solo intervals. If any speaker has
-   less than `min_solo_for_anchor_s` of solo audio, set the diagnostic
+   less than `weak_anchor_warn_below_s` of solo audio, set the diagnostic
    flag `ctx.weak_anchor = True`. This flag is informational — it lets
    the caller know the anchor quality is shaky but ECAPA assignment is
    still attempted. The fixed straight-through fallback only kicks in
@@ -46,7 +46,6 @@ taking precedence for the overlaps it covers. All dispatch inside
 
 from __future__ import annotations
 
-import gc
 import json
 import time
 from pathlib import Path
@@ -872,11 +871,13 @@ class AssemblyStage(Stage):
         return (self.config.anchor_embedding,)
 
     def unload(self) -> None:
+        # Local import mirrors `load` — keeps custom_embeddings' pyannote import
+        # off assembly's module-load path.
+        from asr_pipeline.stages.custom_embeddings import release_gpu_memory
+
         self._ecapa = None
         self._device = None
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        release_gpu_memory()
 
     # ------------------------------------------------------------------
     # Run
@@ -936,13 +937,13 @@ class AssemblyStage(Stage):
             anchor_min_duration_s=cfg.anchor_min_duration_s,
         )
         weak_anchor = any(
-            d < cfg.min_solo_for_anchor_s for d in solo_durations.values()
+            d < cfg.weak_anchor_warn_below_s for d in solo_durations.values()
         )
         if weak_anchor:
             _log(
                 f"weak_anchor=True (min solo duration "
                 f"{min(solo_durations.values()):.2f}s "
-                f"< min_solo_for_anchor_s={cfg.min_solo_for_anchor_s})"
+                f"< weak_anchor_warn_below_s={cfg.weak_anchor_warn_below_s})"
             )
 
         # Phase 3: per-overlap speaker assignment.

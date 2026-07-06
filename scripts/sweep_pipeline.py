@@ -47,23 +47,17 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from asr_pipeline import Pipeline                                   # noqa: E402
 from asr_pipeline.io import write_pipeline_outputs                 # noqa: E402
-from asr_pipeline.eval.metrics import (                             # noqa: E402
-    cp_cer_meeteval,
-    cpwer_meeteval,
-    mimo_cer_meeteval,
-    mimo_wer_meeteval,
-    orc_wer_meeteval,
-    orc_wer_multistream,
-)
+from asr_pipeline.eval.metrics import per_fragment_metrics          # noqa: E402
 from asr_pipeline.eval.config_presets import fresh_eval_cfg         # noqa: E402
 from asr_pipeline.eval.layer3 import read_mixture, read_per_speaker  # noqa: E402
 from asr_pipeline.eval.recordings import (                          # noqa: E402
     load_recording,
     load_reference_utterances,
 )
+from scripts.eval_harness import eval_root, load_split             # noqa: E402
 
 
-EVAL_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
+EVAL_ROOT = eval_root()
 CFG_PATH = REPO_ROOT / "asr_pipeline" / "configs" / "default.yaml"
 
 # The 5 pilot recordings (hand-corrected GT present).
@@ -1640,28 +1634,33 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
             ref = {k: v for k, v in gt[fid].items() if v}
             if not ref:
                 continue
-            r = cpwer_meeteval(ref, hyp, session_id=fid)
+            mix_utts = read_mixture(d)
+            # Shared per-fragment scoring core — the SAME meeteval calls
+            # rescore_stratified / dump_sweep_results make. It also computes an
+            # ORC-CER content floor this harness does not report; that sub-result
+            # is simply not read here, so no reported number changes.
+            scored = per_fragment_metrics(ref, hyp, session_id=fid, mix=mix_utts)
+            r = scored["cp"]
             acc["cp"][0] += r["cp_errors"];  acc["cp"][1] += r["cp_length"]
             acc["tcp"][0] += r["tcp_errors"]; acc["tcp"][1] += r["tcp_length"]
             # MIMO-WER on the SAME per-speaker pipeline hyp (speaker-agnostic).
-            mw = mimo_wer_meeteval(ref, hyp, session_id=fid)
+            mw = scored["mimo"]
             acc["mimo"][0] += mw["errors"]; acc["mimo"][1] += mw["length"]
             # Per-fragment cpWER counts for the bootstrap (errors, ref_words).
             frag_counts[fid] = (float(r["cp_errors"]), float(r["cp_length"]))
             run_secs, run_mtime = _read_run_seconds(d)
             secs_list.append(run_secs)
             mtime_list.append(run_mtime)
-            o = orc_wer_multistream(ref, hyp, session_id=fid)
+            o = scored["orc"]
             acc["orc"][0] += o["errors"]; acc["orc"][1] += o["length"]
-            cc = cp_cer_meeteval(ref, hyp, session_id=fid)
+            cc = scored["cpcer"]
             acc["cer"][0] += cc["errors"]; acc["cer"][1] += cc["length"]
-            mix_utts = read_mixture(d)
             if mix_utts is not None:
-                m = orc_wer_meeteval(ref, mix_utts, session_id=fid)
+                m = scored["mix_orc"]
                 acc["mixORC"][0] += m["errors"]; acc["mixORC"][1] += m["length"]
-                mm = mimo_wer_meeteval(ref, mix_utts, session_id=fid)
+                mm = scored["mix_mimo"]
                 acc["mixMIMO"][0] += mm["errors"]; acc["mixMIMO"][1] += mm["length"]
-                mxc = mimo_cer_meeteval(ref, mix_utts, session_id=fid)
+                mxc = scored["mix_cer"]
                 acc["mixCER"][0] += mxc["errors"]; acc["mixCER"][1] += mxc["length"]
             per_rec[fid] = r["cpwer"]
             n_done += 1
@@ -1881,28 +1880,16 @@ def _die(msg: str) -> int:
     return 2
 
 
-def _load_split(split: str) -> list[str]:
-    """Frozen fragment list from asr_pipeline/eval/clarin_<split>.txt.
-
-    The SAME file the rescorer reads, so the run set and the scoring set cannot
-    drift on which fragments are the dev/test split (SWEEP_DESIGN §3.3 frozen-set
-    control). Both the space-separated dev list and the newline-separated test
-    list ``.split()`` cleanly."""
-    path = REPO_ROOT / "asr_pipeline" / "eval" / f"clarin_{split}.txt"
-    if not path.exists():
-        raise SystemExit(f"split list not found: {path}")
-    frags = path.read_text().split()
-    if not frags:
-        raise SystemExit(f"no fragments in {path}")
-    return frags
-
-
 def _resolve_recordings(args) -> list[str]:
-    """Precedence: explicit --recordings > --split > PILOT (ad-hoc smoke set)."""
+    """Precedence: explicit --recordings > --split > PILOT (ad-hoc smoke set).
+
+    The frozen split is read via the shared ``load_split`` (the SAME file the
+    rescorer reads, so the run set and the scoring set cannot drift on which
+    fragments are the dev/test split — SWEEP_DESIGN §3.3 frozen-set control)."""
     if args.recordings:
         return list(args.recordings)
     if args.split:
-        return _load_split(args.split)
+        return load_split(args.split)
     return list(PILOT)
 
 

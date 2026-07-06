@@ -38,22 +38,13 @@ import torch
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-EVAL = Path("~/datasets/eval/clarin_fragments").expanduser()
+from scripts.eval_harness import eval_root, load_split                    # noqa: E402
+
+EVAL = eval_root()
 SR = 16_000
 WINDOW_S = 1.5            # ECAPA window; >= its 0.25 s floor with margin
 RMS_GATE = 1e-3          # skip near-silent windows (assembled streams are sparse)
 OUT_CSV = EVAL / "_attribution_purity.csv"
-
-
-def load_split(split: str, frag_file: str | None) -> list[str]:
-    path = (Path(frag_file).expanduser() if frag_file
-            else REPO / "asr_pipeline" / "eval" / f"clarin_{split}.txt")
-    if not path.exists():
-        sys.exit(f"fragment list not found: {path}")
-    frags = path.read_text().split()
-    if not frags:
-        sys.exit(f"no fragments in {path}")
-    return frags
 
 
 def _load_ecapa(device):

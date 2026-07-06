@@ -537,8 +537,10 @@ def test_sortformer_stage_l1_merge_reassigns_surplus(tmp_path, monkeypatch):
     body = _sf_probs_body({0: [(0, 125)], 1: [(125, 250)], 2: [(250, 275)]}, T=275)
     stub = _stub_venv_py(tmp_path, body)
     monkeypatch.setenv("SORTFORMER_VENV_PY", str(stub))
+    # The L1 merge builds its ECAPA2 embedder via `with_ecapa2`, which calls
+    # `build_custom_embedding` in the custom_embeddings module — patch it there.
     monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.build_custom_embedding",
+        "asr_pipeline.stages.custom_embeddings.build_custom_embedding",
         lambda name, device: _StubEmbedder(),
     )
     sr = 16_000

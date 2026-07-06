@@ -216,6 +216,20 @@ def _dlog_silent_estimate(label: Optional[str]) -> None:
     )
 
 
+def _dlog_nonfinite_estimate(label: Optional[str]) -> None:
+    """Visibly flag a non-finite estimate (NaN/Inf from an upstream separator/BWE
+    output) before it is NaN-skipped (E5 / SCOPE §4.3). Routed through `dlog`
+    (stdout + the debug log) so the drop is no longer silent."""
+    from asr_pipeline.debug_log import dlog
+
+    where = f" [{label}]" if label else ""
+    dlog(
+        "eval-layer2",
+        f"non-finite estimate (NaN/Inf) vs target{where}: intrusive metrics "
+        "NaN-skipped for this stream (corrupt input, not silently dropped)",
+    )
+
+
 _SILENCE_FLOOR_DB = 0.0  # si_sdr score charged to a silent estimate (E4)
 
 
@@ -253,12 +267,21 @@ def compute_intrusive(
     t_base = t[:n_base]
     m = torch.from_numpy(mix[:n_base].astype(np.float32))
 
-    # TODO(E5): NaN/Inf-estimate propagation — a non-finite sample in `e`
-    # (upstream NaN in a separator/BWE output) currently flows straight into
-    # scale_invariant_signal_distortion_ratio and the PESQ/STOI arms, which can
-    # emit NaN/garbage that nan-aware aggregation then silently drops. Decide
-    # whether to detect + loud-fail (per SCOPE §4) or floor it like a silent
-    # estimate; until then it is undetected.
+    # E5 (resolved): a non-finite sample in `e` (upstream NaN/Inf from a
+    # separator/BWE output) would flow into SI-SDR + the PESQ/STOI arms and emit
+    # NaN/garbage that nan-aware aggregation then dropped SILENTLY (SCOPE §4). We
+    # now DETECT it, flag it visibly, and NaN-skip the whole intrusive row (a
+    # corrupt estimate carries no usable metric) — the drop is logged, not silent.
+    # Finite inputs are untouched. We do not hard-crash eval on one bad sample.
+    if not torch.isfinite(e).all():
+        _dlog_nonfinite_estimate(label)
+        nan = float("nan")
+        return {
+            "si_sdr": nan, "si_sdr_baseline": nan, "si_sdri": nan,
+            "pesq": nan, "pesq_baseline": nan, "pesqi": nan,
+            "stoi": nan, "stoi_baseline": nan, "stoii": nan,
+            "pesq_n_scored": 0,
+        }
     if _target_essentially_silent(t):
         # A near-silent target sends both SI-SDR arms to the EPS floor; their
         # difference is a fabricated, stable, positive si_sdri (~+15 dB) that

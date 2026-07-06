@@ -13,6 +13,13 @@ ASR it was seeded from. So read the numbers TWO ways: (1) each ASR against the G
 table (each ASR on the OTHER seed's reference removes home-field advantage). The
 reference-free eyeball pass over the dumped bundles is the seed-independent tiebreak.
 
+NOTE ON THE DEFAULT CONFIG: ``--config-name`` defaults to ``dr_refineplus`` because
+it is the FIXED-AUDIO BASE for the ASR-only swap — the per-speaker streams held
+constant while only the transcriber varies — NOT the current best pipeline config
+(that is ``sweep_best_e31_refineplus`` / the ``dr_oa050`` finalist). The comparison
+isolates the ASR, so any config whose streams you hold constant would do; this one
+is the historical anchor its GT was seeded against.
+
 PREREQUISITE — produce the streams + WhisperX hyps first (the heavy pipeline pass):
     python scripts/sweep_pipeline.py --configs dr_refineplus --recordings <ids...>
 which writes <eval>/<id>/sweep/dr_refineplus/{stream_A,stream_B}.wav and
@@ -50,6 +57,7 @@ from asr_pipeline.eval.metrics import cpwer_meeteval, cp_cer_meeteval     # noqa
 from asr_pipeline.eval.transcript_parser import (                        # noqa: E402
     Utterance, parse_eaf, parse_gt_txt, parse_transcript_file,
 )
+from scripts.eval_harness import eval_root, load_split                    # noqa: E402
 
 ARROW = "→"
 DEF_ASR = "CohereLabs/cohere-transcribe-03-2026"
@@ -109,8 +117,7 @@ def _refchars(gt: dict) -> int:
 def resolve_recordings(args) -> list[str]:
     if args.recordings:
         return args.recordings
-    split = REPO / "asr_pipeline" / "eval" / f"clarin_{args.split}.txt"
-    return split.read_text().split()
+    return load_split(args.split)
 
 
 def cohere_transcribe(recs, args) -> None:
@@ -225,8 +232,10 @@ def main() -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--recordings", nargs="+")
     g.add_argument("--split", choices=["dev", "test"])
-    ap.add_argument("--eval-root", default=str(Path.home() / "datasets/eval/clarin_fragments"))
-    ap.add_argument("--config-name", default="dr_refineplus")
+    ap.add_argument("--eval-root", default=str(eval_root()))
+    ap.add_argument("--config-name", default="dr_refineplus",
+                    help="fixed-audio base whose per-speaker streams are held "
+                         "constant for the ASR swap (NOT the current best config)")
     ap.add_argument("--gt-root", default=None, help="GT root (default: --eval-root)")
     ap.add_argument("--gt-label", default="GT")
     ap.add_argument("--gt2-root", default=None, help="optional 2nd, differently-seeded GT for the cross-seed read")
