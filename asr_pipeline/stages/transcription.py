@@ -27,13 +27,22 @@ from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.stages.base import Stage
-from asr_pipeline.text_metrics import repetition_loop_score
+from asr_pipeline.text_metrics import (
+    _WORD_RE,
+    find_phrase_runs,
+    repetition_loop_score,
+)
 from asr_pipeline.transcript_format import format_transcript, to_jsonable
 
 
 # Minimum stream length worth sending to Whisper. SR-relative so it tracks
 # ctx.sample_rate rather than baking in 16 kHz (POC's lower bound).
 _MIN_TRANSCRIBE_DURATION_S = 0.5
+# Phrase-loop join gap (seconds): two consecutive segments are joined into one
+# token stream only if their inter-segment gap is at or below this. Hallucination
+# loops are temporally contiguous; a genuine phrase legitimately re-said across a
+# longer pause must not join into one run (a unique sentinel breaks the join).
+_PHRASE_JOIN_MAX_GAP_S = 2.0
 # The peak-amplitude floor below which a stream is treated as silent and skipped
 # is `TranscriptionConfig.silence_floor` (default 1e-4). The assembler emits
 # all-zeros sentinels for no-event speakers (assembly.py:
@@ -455,6 +464,11 @@ class _WhisperXBackend:
         if self.cfg.loop_retry and result.get("segments"):
             result = {**result,
                       "segments": self._retry_loops(audio, result["segments"])}
+        # Multi-token PHRASE-loop retry — the mirror of loop_retry that the
+        # dominant-token detector cannot see. Same RAW, pre-alignment placement.
+        if self.cfg.loop_retry_phrase and result.get("segments"):
+            result = {**result,
+                      "segments": self._retry_phrase_loops(audio, result["segments"])}
         # `result` has segments with .text / .start / .end but no word-level
         # timing. Alignment adds word timestamps from wav2vec2.
         if self.cfg.word_timestamps and result.get("segments"):
@@ -530,10 +544,13 @@ class _WhisperXBackend:
 
         Accept guard (the INVERTED mirror of the collapse guard: for a loop the
         goal is FEWER repeats, not more words): splice the retry in ONLY if it is
-        non-empty AND every retry segment scores below the threshold; otherwise
-        keep the original window and log the rejection. A retry is never allowed
-        to empty a window that had content. Returns a new list (never mutates the
-        input segments); the spliced list is re-sorted by start time.
+        non-empty AND every retry segment scores below the threshold AND it does
+        not emit more tokens than the loop it replaces; otherwise keep the
+        original window and log the rejection. A retry is never allowed to empty
+        a window that had content — nor to GROW it: under the ngram constraint
+        the decoder can evade both loop detectors by counting ("D1. D2. ...
+        D78."), which only the length bound catches. Returns a new list (never
+        mutates the input segments); the spliced list is re-sorted by start time.
         """
         thr = self.cfg.loop_score_threshold
         ngram = self.cfg.loop_retry_ngram
@@ -562,13 +579,24 @@ class _WhisperXBackend:
                 default=0.0,
             )
             # Guard: keep the original unless the retry broke the loop AND left
-            # content behind. `retry_score >= thr` = a segment still loops;
-            # `not retry_text` = the retry emptied the window.
-            if not retry_text or retry_score >= thr:
+            # content behind AND did not GROW the window. `retry_score >= thr` =
+            # a segment still loops; `not retry_text` = the retry emptied the
+            # window; the length bound is the inverted collapse guard — a loop
+            # is OVER-production, so its repair must never produce more tokens
+            # than the loop it replaces. Real trigger: under the ngram
+            # constraint the decoder can evade both loop detectors by counting
+            # ("D1. D2. ... D78.", 152ed870 — every repeat textually distinct),
+            # which only the length bound catches.
+            orig_tokens = len(_WORD_RE.findall(seg["text"].lower()))
+            retry_tokens = len(_WORD_RE.findall(retry_text.lower()))
+            if not retry_text or retry_score >= thr or retry_tokens > orig_tokens:
+                reason = ("grew the window "
+                          f"({orig_tokens} -> {retry_tokens} tokens)"
+                          if retry_text and retry_score < thr else
+                          f"score {score:.2f} -> {retry_score:.2f}")
                 _log(
                     f"loop-retry REJECTED window [{s0:.1f}-{e0:.1f}] "
-                    f"score {score:.2f} -> {retry_score:.2f} "
-                    f"(no_repeat_ngram_size={ngram}); keeping original"
+                    f"{reason} (no_repeat_ngram_size={ngram}); keeping original"
                 )
                 out.append(seg)
                 continue
@@ -579,6 +607,136 @@ class _WhisperXBackend:
             )
             for rs in rsegs:
                 out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
+        out.sort(key=lambda s: s["start"])
+        return out
+
+    def _join_segment_tokens(self, segments: list) -> tuple[list, list]:
+        """Flatten segments into one token stream + a parallel owner list.
+
+        ``tokens[i]`` is a lowercased word token (``text_metrics._WORD_RE``);
+        ``owner[i]`` is the index of the segment it came from. Between two
+        consecutive segments whose inter-segment gap exceeds
+        ``_PHRASE_JOIN_MAX_GAP_S`` a UNIQUE sentinel token (owner ``-1``) is
+        inserted so no phrase run can span the pause (uniqueness alone breaks the
+        match). Sentinels can never fall INSIDE a detected run — a run's blocks
+        are exact repeats and a unique token repeats nowhere.
+        """
+        tokens: list = []
+        owner: list = []
+        for k, seg in enumerate(segments):
+            for tok in _WORD_RE.findall((seg.get("text") or "").lower()):
+                tokens.append(tok)
+                owner.append(k)
+            if k + 1 < len(segments):
+                gap = segments[k + 1]["start"] - segments[k]["end"]
+                if gap > _PHRASE_JOIN_MAX_GAP_S:
+                    tokens.append(f"\x00{k}")
+                    owner.append(-1)
+        return tokens, owner
+
+    def _retry_phrase_loops(self, audio: np.ndarray, segments: list) -> list:
+        """Re-transcribe multi-token phrase-loop windows, splice, re-sort.
+
+        The mirror of ``_retry_loops`` for loops the dominant-token detector is
+        blind to: a repeated 3-token phrase caps every token's dominant fraction
+        at ~1/3, but a joined token stream over the segments exposes the repeated
+        n-gram directly (``text_metrics.find_phrase_runs``). Detecting over the
+        JOINED stream catches BOTH observed shapes with one mechanism — a run
+        living inside one raw segment (``152ed870``), and a run of identical
+        consecutive segments (``5bab2c34``). A run is not allowed to cross a long
+        pause: consecutive segments >`_PHRASE_JOIN_MAX_GAP_S` apart are separated
+        by a unique sentinel that no n-gram can match across.
+
+        Each run span maps to its first/last owning segment; that window is
+        re-transcribed with ``no_repeat_ngram_size = loop_retry_ngram`` (the
+        global knob untouched, restored in a ``finally`` — the same route as
+        ``_retry_loops``). Accept guard (mirrored): splice ONLY if the retry is
+        non-empty AND itself carries no phrase run AND every retry segment scores
+        below ``loop_score_threshold`` (a retry must not trade a phrase loop for a
+        token loop) AND it does not emit more tokens than the window it replaces
+        (the counting-evasion bound — see ``_retry_loops``). Token runs are first
+        merged into disjoint segment-index
+        intervals (two token-disjoint runs can share a segment) and the intervals
+        are spliced in REVERSE order so indices stay valid. Returns a new list
+        (never mutates the input segments).
+        """
+        tokens, owner = self._join_segment_tokens(segments)
+        runs = find_phrase_runs(tokens)
+        if not runs:
+            return list(segments)
+        thr = self.cfg.loop_score_threshold
+        ngram = self.cfg.loop_retry_ngram
+        out = list(segments)
+        # Map token runs -> segment-index intervals, then merge overlapping /
+        # touching intervals: two token-disjoint runs can share a segment, and
+        # splicing the same segment twice would corrupt indices and duplicate
+        # retry content. Each merged interval keeps its strongest run for the log.
+        intervals: list[list] = []          # [first_seg, last_seg, strongest_run]
+        for run in sorted(runs, key=lambda r: r.start):
+            first, last = owner[run.start], owner[run.end - 1]
+            if intervals and first <= intervals[-1][1]:
+                intervals[-1][1] = max(intervals[-1][1], last)
+                if run.run > intervals[-1][2].run:
+                    intervals[-1][2] = run
+            else:
+                intervals.append([first, last, run])
+        for first, last, run in reversed(intervals):
+            s0, e0 = segments[first]["start"], segments[last]["end"]
+            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
+            saved_options = self._asr.options
+            self._asr.options = replace(saved_options, no_repeat_ngram_size=ngram)
+            try:
+                retry = self._asr.transcribe(
+                    sub, language=self.cfg.language, chunk_size=self.cfg.chunk_size
+                )
+            finally:
+                # Restore the original options no matter what — the ngram override
+                # must never leak into the next window / stream.
+                self._asr.options = saved_options
+            rsegs = retry.get("segments") or []
+            retry_text = " ".join((rs.get("text") or "") for rs in rsegs).strip()
+            retry_tokens, _ = self._join_segment_tokens(rsegs)
+            retry_still_loops = bool(find_phrase_runs(retry_tokens))
+            retry_tok_score = max(
+                (repetition_loop_score(rs.get("text")).score for rs in rsegs),
+                default=0.0,
+            )
+            # Guard: keep the original unless the retry broke the phrase loop,
+            # left content behind, did not fall into a token loop instead, AND
+            # did not GROW the window (inverted collapse guard: a loop is
+            # OVER-production, its repair must never emit more tokens than the
+            # loop it replaces). Real trigger: under the ngram constraint the
+            # decoder can evade both loop detectors by counting ("D1. D2. ...
+            # D78.", 152ed870 — every repeat textually distinct); only the
+            # length bound catches it.
+            orig_tokens = sum(
+                len(_WORD_RE.findall((segments[k].get("text") or "").lower()))
+                for k in range(first, last + 1)
+            )
+            n_retry_tokens = sum(
+                len(_WORD_RE.findall((rs.get("text") or "").lower()))
+                for rs in rsegs
+            )
+            grew = n_retry_tokens > orig_tokens
+            if not retry_text or retry_still_loops or retry_tok_score >= thr or grew:
+                reason = (f"grew the window ({orig_tokens} -> "
+                          f"{n_retry_tokens} tokens)"
+                          if grew and retry_text and not retry_still_loops
+                          and retry_tok_score < thr else
+                          f"run={run.run} phrase=«{run.phrase}»")
+                _log(
+                    f"phrase-loop-retry REJECTED window [{s0:.1f}-{e0:.1f}] "
+                    f"{reason}; keeping original"
+                )
+                continue
+            _log(
+                f"phrase-loop-retry window [{s0:.1f}-{e0:.1f}] run={run.run} "
+                f"phrase=«{run.phrase}»; accepted, {len(rsegs)} segment(s)"
+            )
+            out[first:last + 1] = [
+                {**rs, "start": rs["start"] + s0, "end": rs["end"] + s0}
+                for rs in rsegs
+            ]
         out.sort(key=lambda s: s["start"])
         return out
 
@@ -697,19 +855,25 @@ class TranscriptionStage(Stage):
     # Lifecycle
     # ------------------------------------------------------------------
     def load(self, device: torch.device) -> None:
-        # loop_retry re-decodes repetition-loop windows by overriding faster-
-        # whisper's TranscriptionOptions.no_repeat_ngram_size — machinery only the
-        # whisperx backend carries. Fail loud here (at pipeline init, before any
-        # audio) rather than silently no-op on whisper/coherex (SCOPE §4.1). Same
-        # backend-level deferral as the other WhisperX-only knobs.
-        if self.config.loop_retry and self.config.backend != "whisperx":
+        # loop_retry / loop_retry_phrase re-decode looped windows by overriding
+        # faster-whisper's TranscriptionOptions.no_repeat_ngram_size — machinery
+        # only the whisperx backend carries. Fail loud here (at pipeline init,
+        # before any audio) rather than silently no-op on whisper/coherex (SCOPE
+        # §4.1). Same backend-level deferral as the other WhisperX-only knobs.
+        if self.config.backend != "whisperx" and (
+            self.config.loop_retry or self.config.loop_retry_phrase
+        ):
+            set_flags = [
+                name for name in ("loop_retry", "loop_retry_phrase")
+                if getattr(self.config, name)
+            ]
             raise ValueError(
-                "transcription.loop_retry=True is only supported by the "
-                "'whisperx' backend (it re-decodes repetition-loop windows with "
+                f"transcription.{'/'.join(set_flags)}=True is only supported by "
+                "the 'whisperx' backend (it re-decodes looped windows with "
                 "no_repeat_ngram_size via faster-whisper's TranscriptionOptions); "
                 f"backend={self.config.backend!r} has no equivalent. Use "
-                "backend='whisperx' or set loop_retry=False. (No silent no-op — "
-                "SCOPE §4.1.)"
+                f"backend='whisperx' or set {'/'.join(set_flags)}=False. (No "
+                "silent no-op — SCOPE §4.1.)"
             )
         if self.config.backend == "whisper":
             self._backend = _WhisperBackend(self.config)

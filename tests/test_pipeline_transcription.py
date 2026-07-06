@@ -29,6 +29,11 @@ from asr_pipeline.stages.transcription import (
 )
 from asr_pipeline.text_metrics import (
     LOOP_SCORE_THRESHOLD,
+    PHRASE_RUN_MIN,
+    PhraseRun,
+    find_phrase_runs,
+    max_phrase_run,
+    phrase_run_score,
     repetition_loop_score,
 )
 
@@ -1079,6 +1084,260 @@ def test_loop_retry_accepted_on_whisperx_backend(monkeypatch):
     )
     stage.load(torch_cpu())        # must not raise
     assert isinstance(stage._backend, _WhisperXBackend)
+
+
+# ---------------------------------------------------------------------------
+# Multi-token phrase-loop metric (text_metrics.find_phrase_runs / phrase_run_score)
+# ---------------------------------------------------------------------------
+
+
+def test_phrase_run_fires_on_three_token_phrase_x6():
+    """"Tak, to jest..." ×6 — a repeated 3-token phrase the dominant-token metric
+    is blind to (each token caps at ~1/3) — is detected: run 6, correct span."""
+    pr = phrase_run_score("Tak, to jest... " * 6)
+    assert pr.run == 6
+    assert pr.phrase == "tak to jest"
+    assert (pr.start, pr.end) == (0, 18)          # 6 repeats × 3 tokens
+    # And the single-token detector really is blind to it (< threshold).
+    assert repetition_loop_score("Tak, to jest... " * 6).score < LOOP_SCORE_THRESHOLD
+
+
+def test_phrase_run_fires_on_five_token_phrase_x14():
+    """A 5-token phrase repeated 14× (the 5bab2c34 shape) → one run of 14."""
+    tokens = ["jak", "pojedziemy", "do", "dekathlonu", "o"] * 14
+    runs = find_phrase_runs(tokens)
+    assert len(runs) == 1
+    assert runs[0].run == 14
+    assert (runs[0].start, runs[0].end) == (0, 70)
+
+
+def test_phrase_run_two_repeats_below_min_run():
+    """A phrase repeated only twice does not reach the default min_run gate (4)."""
+    assert find_phrase_runs(["a", "b", "c", "a", "b", "c"]) == []
+    assert phrase_run_score("a b c a b c").run < PHRASE_RUN_MIN
+
+
+def test_phrase_run_ignores_uniform_token_run():
+    """"no no no ..." is a SINGLE-token loop (repetition_loop_score's job) — the
+    >=2-distinct-token guard keeps the phrase detector off it."""
+    assert find_phrase_runs(["no"] * 12) == []
+    assert phrase_run_score("no " * 12) == PhraseRun(1, "", 0, 0)
+
+
+def test_phrase_run_unique_sentinels_break_runs():
+    """A unique sentinel token between repeats forbids a run from crossing it —
+    uniqueness alone (no special-casing) stops the n-gram match."""
+    tokens = []
+    for k in range(6):
+        tokens += ["a", "b", "c", f"\x00{k}"]
+    assert find_phrase_runs(tokens) == []
+
+
+def test_phrase_run_merges_period_and_multiple_detections():
+    """One loop is detected at its period (n=3) AND at a multiple (n=6); the
+    overlapping token spans merge into ONE span carrying the max run."""
+    runs = find_phrase_runs(["a", "b", "c"] * 8)      # 24 tokens
+    assert len(runs) == 1
+    assert runs[0].run == 8                           # the period-3 detection wins
+    assert (runs[0].start, runs[0].end) == (0, 24)
+
+
+def test_max_phrase_run_sentinel_values():
+    """The no-repeat / empty sentinels: empty stream → run 0; a stream with no
+    qualifying repeat → run 1; both with empty phrase and zero span."""
+    assert max_phrase_run([]) == PhraseRun(0, "", 0, 0)
+    assert max_phrase_run(["a"]) == PhraseRun(1, "", 0, 0)
+    assert phrase_run_score("") == PhraseRun(0, "", 0, 0)
+    assert phrase_run_score("zupełnie normalne zdanie bez powtórzeń") == PhraseRun(1, "", 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Conditional phrase-loop retry (WhisperX)
+# ---------------------------------------------------------------------------
+
+
+def _phrase_backend(monkeypatch, first_segments, retry_segments, **cfg_kwargs):
+    """A _WhisperXBackend wired to a _LoopFakeASR, loop_retry_phrase ON.
+
+    Reuses _LoopFakeASR (returns first_segments on call 1, retry_segments after,
+    records the live no_repeat_ngram_size). retry_collapsed_chunk_size=0 and
+    loop_retry=False isolate the phrase-loop path so call #2 is deterministically
+    the phrase-loop retry pass.
+    """
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(
+        backend="whisperx", word_timestamps=False, loop_retry_phrase=True,
+        loop_retry=False, retry_collapsed_chunk_size=0, **cfg_kwargs,
+    )
+    backend = _WhisperXBackend(cfg)
+    backend._asr = _LoopFakeASR(first_segments, retry_segments)
+    return backend
+
+
+# A clean, varied retry output — no phrase run, no dominant token.
+_CLEAN_RETRY = [{"start": 0.0, "end": 3.0,
+                 "text": "to jest zupełnie normalne zdanie po polsku bez powtórzeń naprawdę"}]
+
+
+def test_phrase_loop_cross_segment_run_detected_and_spliced(monkeypatch):
+    """The 5bab2c34 shape: 14 identical consecutive segments (each one 5-token
+    phrase, tiny gaps) form a cross-segment phrase run → the whole span is
+    retried and a clean retry spliced in, offset by the window start."""
+    seg_text = "jak pojedziemy do dekathlonu o"
+    looped = [{"start": float(k), "end": float(k + 1), "text": seg_text}
+              for k in range(14)]
+    backend = _phrase_backend(monkeypatch, looped, _CLEAN_RETRY, loop_retry_ngram=3)
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                      # retry ran
+    assert backend._asr.retry_ngram_seen == [3]              # override reached decode
+    assert backend._asr.options.no_repeat_ngram_size == 0    # ...and was restored
+    # Window = [seg0.start=0, seg13.end=14]; retry fed exactly that span.
+    assert backend._asr.calls[1]["n_samples"] == int(14.0 * 16_000)
+    assert len(out["segments"]) == 1
+    assert out["segments"][0]["text"].startswith("to jest")
+    assert out["segments"][0]["start"] == 0.0                # offset by window start (0)
+
+
+def test_phrase_loop_within_one_segment_detected_and_spliced(monkeypatch):
+    """The 152ed870 shape: a phrase repeated ×6 INSIDE one segment is detected and
+    the single segment retried; the clean retry is spliced offset by its start."""
+    looped = [{"start": 41.4, "end": 57.2, "text": "tak to jest " * 6}]
+    backend = _phrase_backend(monkeypatch, looped, _CLEAN_RETRY)
+    out = backend.transcribe(np.zeros(60 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2
+    assert backend._asr.calls[1]["n_samples"] == int(57.2 * 16_000) - int(41.4 * 16_000)
+    assert len(out["segments"]) == 1
+    assert out["segments"][0]["text"].startswith("to jest")
+    assert out["segments"][0]["start"] == 41.4               # offset by window start
+
+
+def test_phrase_loop_growth_guard_rejects_counting_evasion(monkeypatch):
+    """The 152ed870 failure mode: under the ngram constraint the decoder evades
+    BOTH loop detectors by counting ("D1. D2. ... D78.") — every repeat
+    textually distinct (no phrase run), every token distinct (no dominant
+    token). Only the length bound catches it: a loop repair may never emit
+    more tokens than the loop it replaces."""
+    logged = []
+    monkeypatch.setattr(
+        "asr_pipeline.stages.transcription._log", lambda msg: logged.append(msg)
+    )
+    looped = [{"start": 41.4, "end": 57.2, "text": "tak to jest " * 6}]   # 18 tokens
+    counter = [{"start": 0.0, "end": 15.0,
+                "text": " ".join(f"D{i}." for i in range(1, 41))}]        # 40 tokens
+    backend = _phrase_backend(monkeypatch, looped, counter)
+    out = backend.transcribe(np.zeros(60 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                      # retry ran...
+    assert out["segments"] == looped                         # ...but was rejected
+    assert any("grew the window (18 -> 40 tokens)" in m for m in logged)
+
+
+def test_loop_retry_growth_guard_rejects_counting_evasion(monkeypatch):
+    """The same counting-evasion length bound on the single-token loop path
+    (the hazard is latent there too — same ngram-constrained retry decode)."""
+    logged = []
+    monkeypatch.setattr(
+        "asr_pipeline.stages.transcription._log", lambda msg: logged.append(msg)
+    )
+    looped = [{"start": 0.0, "end": 20.0,
+               "text": "no " + "tak " * 14}]                 # 15 tokens, score 14/15
+    counter = [{"start": 0.0, "end": 15.0,
+                "text": " ".join(f"D{i}." for i in range(1, 41))}]        # 40 tokens
+    backend = _loop_backend(monkeypatch, looped, counter)
+    out = backend.transcribe(np.zeros(25 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2
+    assert out["segments"] == looped
+    assert any("grew the window (15 -> 40 tokens)" in m for m in logged)
+
+
+def test_phrase_loop_two_runs_in_one_segment_merge_to_one_retry(monkeypatch):
+    """Two token-disjoint phrase runs living in the SAME segment merge into one
+    retry interval — the window is retried once, never spliced twice (a double
+    splice would corrupt segment indices and duplicate retry content)."""
+    text = ("tak to jest " * 6
+            + "zupełnie inne słowa w środku "
+            + "raz dwa trzy " * 6)
+    looped = [{"start": 0.0, "end": 30.0, "text": text}]
+    backend = _phrase_backend(monkeypatch, looped, _CLEAN_RETRY)
+    out = backend.transcribe(np.zeros(35 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                      # exactly ONE retry pass
+    assert len(out["segments"]) == 1
+    assert out["segments"][0]["text"].startswith("to jest")
+
+
+def test_phrase_loop_accept_guard_rejects_when_retry_still_phrase_loops(monkeypatch):
+    """If the retry still carries a phrase loop it is rejected, the original span
+    is kept, and a REJECTED line is logged."""
+    logged = []
+    monkeypatch.setattr(
+        "asr_pipeline.stages.transcription._log", lambda msg: logged.append(msg)
+    )
+    looped = [{"start": 0.0, "end": 18.0, "text": "tak to jest " * 6}]
+    still = [{"start": 0.0, "end": 10.0, "text": "raz dwa trzy " * 6}]   # still a phrase loop
+    backend = _phrase_backend(monkeypatch, looped, still)
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+
+    assert len(backend._asr.calls) == 2                      # retry ran...
+    assert out["segments"] == [{"start": 0.0, "end": 18.0, "text": "tak to jest " * 6}]
+    assert any("phrase-loop-retry REJECTED" in m for m in logged)
+
+
+def test_phrase_loop_keeps_original_when_retry_empty(monkeypatch):
+    """A retry that would empty a window that had content is rejected."""
+    looped = [{"start": 0.0, "end": 18.0, "text": "tak to jest " * 6}]
+    backend = _phrase_backend(monkeypatch, looped, retry_segments=[])
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 2
+    assert out["segments"] == [{"start": 0.0, "end": 18.0, "text": "tak to jest " * 6}]
+
+
+def test_phrase_loop_long_gap_prevents_cross_segment_join(monkeypatch):
+    """Identical segments separated by a >_PHRASE_JOIN_MAX_GAP_S pause do NOT join
+    into one run (a genuine phrase re-said after a long pause) — no retry fires."""
+    seg_text = "jak pojedziemy do dekathlonu o"
+    # 1 s segments spaced 5 s apart → 4 s gaps > 2.0 s → sentinel-separated.
+    looped = [{"start": float(k * 5), "end": float(k * 5 + 1), "text": seg_text}
+              for k in range(6)]
+    backend = _phrase_backend(monkeypatch, looped, _CLEAN_RETRY)
+    out = backend.transcribe(np.zeros(30 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 1                      # no retry pass
+    assert [s["text"] for s in out["segments"]] == [seg_text] * 6
+
+
+@pytest.mark.parametrize("backend_name", ["whisper", "coherex"])
+def test_phrase_loop_rejected_on_non_whisperx_backend(backend_name):
+    """loop_retry_phrase=True on a non-whisperx backend fails loud at stage load —
+    before any model loads — never a silent no-op (SCOPE §4.1)."""
+    stage = TranscriptionStage(
+        TranscriptionConfig(backend=backend_name, loop_retry_phrase=True)
+    )
+    with pytest.raises(ValueError, match="loop_retry_phrase"):
+        stage.load(torch_cpu())
+
+
+def test_phrase_loop_default_off_does_not_run(monkeypatch):
+    """loop_retry_phrase defaults False → the phrase-loop pass never runs even on a
+    clearly phrase-looping window; segments pass through untouched."""
+    import sys
+    import types
+
+    monkeypatch.setitem(sys.modules, "whisperx", types.ModuleType("whisperx"))
+    cfg = TranscriptionConfig(backend="whisperx", word_timestamps=False,
+                              retry_collapsed_chunk_size=0)
+    assert cfg.loop_retry_phrase is False
+    backend = _WhisperXBackend(cfg)
+    looped = [{"start": 0.0, "end": 18.0, "text": "tak to jest " * 6}]
+    backend._asr = _LoopFakeASR(looped, retry_segments=[])
+    out = backend.transcribe(np.zeros(20 * 16_000, dtype=np.float32))
+    assert len(backend._asr.calls) == 1                      # no retry pass
+    assert out["segments"][0]["text"] == "tak to jest " * 6
 
 
 # ---------------------------------------------------------------------------

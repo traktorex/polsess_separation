@@ -19,8 +19,12 @@ any dataset, so DER is not computed anywhere.
       MIMO additionally forgives the reference-interleaving order.
     - `orc_wer_multistream` — attribution-blind WER of the multi-stream
       (per-speaker) hypothesis; `cpWER - ORC` is the attribution penalty.
-    - `cp_cer_meeteval` / `mimo_cer_meeteval` — character-error-rate analogs
-      of cpWER and the MIMO mixture WER (same assignment, chars not words).
+    - `cp_cer_meeteval` / `orc_cer_meeteval` / `mimo_cer_meeteval` —
+      character-error-rate analogs of cpWER / ORC-WER / MIMO-WER. Each reuses
+      its WER metric's word-level assignment and scores chars under it (never
+      re-optimising the routing at the character level — that would read more
+      permissively); `orc_/mimo_cer_meeteval` take either the single-stream
+      mixture or a multi-stream per-speaker hypothesis, like `mimo_wer_meeteval`.
 
 We strip punctuation and lowercase before scoring (preserving Polish
 diacritics), since both Whisper and the pipeline emit casing /
@@ -392,18 +396,36 @@ def orc_wer_meeteval(
     session_id: str,
     lang: str = "pl",
 ) -> Dict[str, object]:
-    """ORC-WER: best assignment of reference utterances to a single hypothesis.
+    """ORC-WER for the single-stream mixture baseline (one Whisper pass).
 
-    Use this for the *single-stream* baseline — running Whisper on the raw
-    mixture as one transcript ("mixture mode"). ORC-WER selects the optimal
-    permutation of reference utterances against that one hypothesis stream
-    so the score isn't penalised by speaker-label arbitrariness.
+    This is the **one-hypothesis-stream** special case of MeetEval's ORC-WER.
+    MeetEval's ORC-WER is *not* inherently single-stream — it routes each
+    reference utterance to one of an arbitrary number of hypothesis streams
+    (``hypothesis.groupby('speaker')`` internally); the multi-stream sibling
+    that scores the per-speaker pipeline output is :func:`orc_wer_multistream`.
+    Here the mixture transcript is passed as one pseudo-speaker, so there is
+    exactly one stream and the routing is **forced** (every reference utterance
+    lands on it). With no routing freedom left, ORC reduces to comparing the
+    hypothesis against *all reference utterances concatenated in segment/time
+    order* (``reference_sort='segment_if_available'``).
+
+    Consequence: for this K=1 case ORC still **charges the reference
+    interleaving order**. If the GT time-order is ``A1 B1 A2 B2`` but Whisper
+    emits ``A1 A2 B1 B2``, ORC pays for the reordering. It is
+    :func:`mimo_wer_meeteval` — not this function — that forgives that order
+    (it keeps the per-speaker reference streams separate and optimises their
+    interleaving). Report MIMO alongside ORC for the mixture baseline; the
+    ``ORC - MIMO`` gap is exactly the cost of the fixed time-order merge.
 
     Inputs:
       - ``ref_utts_by_spk``: same shape as for ``cpwer_meeteval`` — the
         per-speaker GT.
       - ``hyp_utterances``: flat list of ``Utterance`` from the mixture
         transcript (parsed via ``parse_gt_txt``).
+
+    Note: ORC/MIMO scores depend on GT *segmentation* granularity (the
+    utterance is the atomic assignment unit), unlike plain cpWER/cpCER which
+    concatenate each speaker before scoring. See :func:`mimo_wer_meeteval`.
 
     Returns ``{"orc_wer", "errors", "length"}``.
     """
@@ -594,60 +616,151 @@ def cp_cer_meeteval(
     }
 
 
-def mimo_cer_meeteval(
+def _cer_under_routing(
+    per_hyp: Dict[str, List[Utterance]],
+    hyp_by_spk: Dict[str, List[Utterance]],
+    lang: str,
+    leftover: "List[Utterance] | tuple" = (),
+) -> Dict[str, object]:
+    """Character errors for a *fixed* reference→hypothesis routing.
+
+    Shared back end for :func:`orc_cer_meeteval` and the multi-stream branch of
+    :func:`mimo_cer_meeteval`. ``per_hyp`` maps each hypothesis stream to the
+    reference utterances routed to it (already in the order the WER metric
+    merged them); ``hyp_by_spk`` is the hypothesis text per stream. We
+    concatenate + normalize each side *per stream* and sum char-level edit
+    distances — mirroring :func:`cp_cer_meeteval` (reuse the WER assignment,
+    then score characters). A hypothesis stream with no reference routed to it
+    contributes its whole length as insertions; ``leftover`` reference
+    utterances (defensive; normally empty) count as deletions.
+    """
+    from rapidfuzz.distance import Levenshtein
+
+    hyp_txt = {
+        spk: _normalize_text(" ".join(u.text for u in utts), lang)
+        for spk, utts in hyp_by_spk.items()
+    }
+    errors = 0
+    length = 0
+    scored = set()
+    for hyp_spk, utts in per_hyp.items():
+        ref_txt = _normalize_text(" ".join(u.text for u in utts), lang)
+        errors += Levenshtein.distance(ref_txt, hyp_txt.get(hyp_spk, ""))
+        length += len(ref_txt)
+        scored.add(hyp_spk)
+    for spk, txt in hyp_txt.items():
+        if spk not in scored:
+            errors += len(txt)          # unmatched hypothesis stream = insertions
+    for u in leftover:
+        ref_txt = _normalize_text(u.text, lang)
+        errors += len(ref_txt)
+        length += len(ref_txt)          # unrouted reference = deletions
+    return {"cer": float(errors / max(length, 1)),
+            "errors": int(errors), "length": int(length)}
+
+
+def orc_cer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
-    hyp_utterances: List[Utterance],
+    hyp: "List[Utterance] | Dict[str, List[Utterance]]",
     session_id: str,
     lang: str = "pl",
 ) -> Dict[str, object]:
-    """Character error rate for the single-stream mixture under MIMO's merge.
+    """ORC-CER — character errors under **ORC-WER's** utterance routing.
 
-    The mixture-baseline analog of :func:`cp_cer_meeteval`. We run MIMO-WER
-    to get the optimal interleaving of the reference speaker streams into the
-    single hypothesis (the merge that minimises *word* errors, preserving
-    each speaker's internal order), reorder the reference into that merge,
-    then take char-level edit distance against the mixture hypothesis.
+    ``hyp`` may be a flat ``List[Utterance]`` (the single-stream mixture) or a
+    ``Dict[str, List[Utterance]]`` of per-speaker streams (the pipeline output),
+    like :func:`mimo_wer_meeteval`. We run *word-level* ORC-WER to get its
+    routing (each reference utterance → the hypothesis stream that recognised it
+    best), then score characters under **that fixed routing** — reusing the WER
+    assignment exactly as :func:`cp_cer_meeteval` reuses cpWER's, *not*
+    re-optimising ORC at the character level (that is :func:`orc_cer_multistream`,
+    which grants extra routing freedom and so reads more permissively). Each
+    stream's reference is concatenated in segment/time order, matching ORC's own
+    merge; the single-stream case therefore reduces to the time-ordered mixture
+    CER.
 
-    Contrast with the older time-ordered mixture CER (reference merged by
-    timestamp ≈ ORC order): that one is penalised when the two speakers
-    interleave in an order Whisper doesn't follow inside overlaps; this one
-    isn't — it matches the MIMO-WER floor's forgiveness. Report both.
-
-    Same caveat as :func:`cp_cer_meeteval`: the merge order is *word*-optimal,
-    not char-optimal (we reuse the WER metric's assignment rather than
-    re-optimising at the character level). Returns ``{"cer", "errors",
+    ORC-CER is attribution-blind: ``cp-CER − ORC-CER`` is the attribution
+    penalty in characters (non-negative up to the word-vs-char merge-order
+    caveat shared with :func:`cp_cer_meeteval`). Returns ``{"cer", "errors",
     "length"}``.
     """
-    from collections import deque
+    from collections import defaultdict
 
-    from rapidfuzz.distance import Levenshtein
+    from meeteval.wer import orcwer
+
+    hyp_by_spk = hyp if isinstance(hyp, dict) else {"mixture": hyp}
+    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
+    hyp_seg = _ensure_nonempty_hyp(
+        _seglst_from_dict(hyp_by_spk, session_id, lang), session_id, "orc_cer_meeteval",
+    )
+    orc = orcwer(ref, hyp_seg)[session_id]
+
+    # `orc.assignment` is one hypothesis-stream label per reference utterance,
+    # aligned to the reference SegLST row order — the same speaker-major,
+    # non-empty order `_seglst_from_dict` and this comprehension both produce.
+    flat = [u for _spk, utts in ref_utts_by_spk.items()
+            for u in utts if u.text.strip()]
+    per_hyp: Dict[str, List[Utterance]] = defaultdict(list)
+    for u, hyp_spk in zip(flat, orc.assignment):
+        per_hyp[hyp_spk].append(u)
+    for utts in per_hyp.values():   # ORC concatenates each stream in time order
+        utts.sort(key=lambda u: (u.start if u.start is not None else 0.0))
+    return _cer_under_routing(per_hyp, hyp_by_spk, lang)
+
+
+def mimo_cer_meeteval(
+    ref_utts_by_spk: Dict[str, List[Utterance]],
+    hyp: "List[Utterance] | Dict[str, List[Utterance]]",
+    session_id: str,
+    lang: str = "pl",
+) -> Dict[str, object]:
+    """MIMO-CER — character errors under **MIMO-WER's** interleaving.
+
+    ``hyp`` may be a flat ``List[Utterance]`` (the single-stream mixture — the
+    original use) or a ``Dict[str, List[Utterance]]`` of per-speaker streams
+    (the pipeline output), mirroring :func:`mimo_wer_meeteval`. We run
+    *word-level* MIMO-WER to get its optimal interleaving/routing (the merge
+    that minimises *word* errors, preserving each speaker's internal order),
+    then score characters under **that fixed merge**.
+
+    We deliberately reuse the word-level assignment rather than re-running MIMO
+    at the character level (:func:`mimo_cer_multistream`): char-level MIMO
+    re-optimises the interleaving to minimise *character* errors, which grants
+    extra reordering freedom (more permissive) and is ~150x slower. This is the
+    same discipline as :func:`cp_cer_meeteval`. Consequence of that choice: the
+    merge is word-optimal, not char-optimal, so MIMO-CER is **not** guaranteed
+    ≤ ORC-CER at the character level — a small, honest artifact of reusing the
+    word assignment, not a bug.
+
+    Contrast the time-ordered mixture CER (:func:`orc_cer_meeteval` single
+    stream): that merges the reference by timestamp and is penalised when the
+    speakers interleave in an order the hypothesis doesn't follow; MIMO forgives
+    it. Returns ``{"cer", "errors", "length"}``.
+    """
+    from collections import defaultdict, deque
+
     from meeteval.wer import mimower
 
+    hyp_by_spk = hyp if isinstance(hyp, dict) else {"mixture": hyp}
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang)
-    hyp = _seglst_from_list(hyp_utterances, session_id, lang=lang)
-    m = mimower(ref, hyp)[session_id]
+    hyp_seg = _ensure_nonempty_hyp(
+        _seglst_from_dict(hyp_by_spk, session_id, lang), session_id, "mimo_cer_meeteval",
+    )
+    m = mimower(ref, hyp_seg)[session_id]
 
-    # Rebuild the reference in MIMO's merge order. `m.assignment` lists one
-    # (ref_spk, hyp_spk) per reference utterance, in merge order; MIMO keeps
-    # each speaker's internal order, so we pop each speaker's utterances (same
-    # raw-non-empty filter as the SegLST above) as the assignment calls them.
+    # Route each reference utterance to its hypothesis stream in MIMO's merge
+    # order. `m.assignment` lists one (ref_spk, hyp_spk) per reference
+    # utterance, in merge order; MIMO keeps each speaker's internal order, so we
+    # pop that speaker's utterances (same raw-non-empty filter as the SegLST) as
+    # the assignment calls them.
     queues = {
         spk: deque(u for u in utts if u.text.strip())
         for spk, utts in ref_utts_by_spk.items()
     }
-    ordered: List[Utterance] = []
-    for ref_spk, _hyp_spk in m.assignment:
+    per_hyp: Dict[str, List[Utterance]] = defaultdict(list)
+    for ref_spk, hyp_spk in m.assignment:
         q = queues.get(ref_spk)
         if q:
-            ordered.append(q.popleft())
-    # Defensive: append anything the assignment didn't cover (shouldn't happen).
-    for q in queues.values():
-        ordered.extend(q)
-
-    # Normalize the *joined* text once on each side (identical to the
-    # time-ordered mixture CER), so the only difference is the merge order.
-    ref_all = _normalize_text(" ".join(u.text for u in ordered), lang)
-    hyp_all = _normalize_text(" ".join(u.text for u in hyp_utterances), lang)
-    err = Levenshtein.distance(ref_all, hyp_all)
-    length = max(len(ref_all), 1)
-    return {"cer": float(err / length), "errors": int(err), "length": int(length)}
+            per_hyp[hyp_spk].append(q.popleft())
+    leftover = [u for q in queues.values() for u in q]  # defensive; normally empty
+    return _cer_under_routing(per_hyp, hyp_by_spk, lang, leftover)

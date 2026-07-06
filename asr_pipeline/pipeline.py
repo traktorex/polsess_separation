@@ -31,7 +31,6 @@ from asr_pipeline.stages import (
     AssemblyStage,
     DiarizationStage,
     EnhancementStage,
-    FusionDiarizationStage,
     RelabelStage,
     RoutingStage,
     SeparationStage,
@@ -69,15 +68,6 @@ class Pipeline:
             DiarizationStage(config.diarization),
             RoutingStage(config.routing),
             EnhancementStage(config.enhancement),
-            # Disagreement-aware fusion (option 3). Default OFF → the loop skips
-            # it (byte-identical no-op). Must sit AFTER enhancement (pass 2
-            # re-diarizes ctx.enhanced_full for identity, which does not exist at
-            # stage 1) and BEFORE assembly. It overrides only segments_df's
-            # `speaker` column; routing/separation read presence only, so its
-            # placement here (vs after 3c) does not affect them — it is kept
-            # adjacent to its enhanced-audio dependency. Reloads pyannote for the
-            # second pass (one model on the GPU at a time; pass-1 long unloaded).
-            FusionDiarizationStage(config.diarization),
             SeparationStage(config.separation),
             PostSeparationProcessingStage(config.post_separation_processing),
             # 2nd-pass identity re-clustering (B / B+). Default OFF → the loop

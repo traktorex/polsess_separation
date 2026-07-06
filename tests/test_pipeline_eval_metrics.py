@@ -16,6 +16,7 @@ from asr_pipeline.eval.metrics import (
     cpwer_meeteval,
     mimo_cer_meeteval,
     mimo_wer_meeteval,
+    orc_cer_meeteval,
     orc_wer_meeteval,
     orc_wer_multistream,
 )
@@ -378,6 +379,63 @@ def test_mimo_cer_multi_speaker_counts_char_edit():
     pytest.importorskip("rapidfuzz")
     ref = {"A": [U(0.0, 1.0, "jeden"), U(2.0, 3.0, "dwa")], "B": [U(3.0, 4.0, "trzy")]}
     hyp = [U(0.0, 4.0, "jeden dwa trxy")]       # one char wrong in "trzy"
+    out = mimo_cer_meeteval(ref, hyp, session_id="t")
+    assert out["errors"] == 1
+    assert out["cer"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# orc_cer_meeteval + multi-stream mimo_cer_meeteval — the reuse-assignment CERs
+# ---------------------------------------------------------------------------
+
+
+def test_orc_cer_multistream_perfect_is_zero():
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies")]}
+    hyp = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies")]}
+    assert orc_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+
+
+def test_orc_cer_multistream_is_attribution_blind_but_cp_cer_charges_it():
+    """A word recognised in the *wrong* stream: ORC-CER routes each reference
+    utterance to whichever stream recognised it, so it forgives the misrouting
+    and scores 0; cp-CER (fixed speaker matching) charges it as a deletion in
+    one stream + insertion in the other. This pins that orc_cer_meeteval reuses
+    ORC-WER's routing, not cpWER's speaker assignment."""
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    #  "dom" belongs to A but is emitted in stream B
+    ref = {"A": [U(0.0, 1.0, "kot"), U(2.0, 3.0, "dom")], "B": [U(1.0, 2.0, "pies")]}
+    hyp = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies"), U(2.0, 3.0, "dom")]}
+    assert orc_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+    assert cp_cer_meeteval(ref, hyp, session_id="t")["cer"] > 0.0
+
+
+def test_orc_cer_single_stream_matches_time_ordered_merge():
+    """Single-stream (list) ORC-CER = the reference merged in time order vs the
+    mixture hypothesis — the mixture floor's ORC-order CER. Two speakers whose
+    time-ordered words reconstruct the mixture exactly score 0."""
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "jeden"), U(2.0, 3.0, "trzy")], "B": [U(1.0, 2.0, "dwa")]}
+    hyp = [U(0.0, 3.0, "jeden dwa trzy")]        # time order: jeden dwa trzy
+    assert orc_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+
+
+def test_mimo_cer_multistream_dict_perfect_is_zero():
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(2.0, 3.0, "kot")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(2.0, 3.0, "kot")]}
+    assert mimo_cer_meeteval(ref, hyp, session_id="t")["cer"] == 0.0
+
+
+def test_mimo_cer_multistream_dict_counts_char_edit():
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(2.0, 3.0, "kot")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(2.0, 3.0, "kox")]}   # 1 sub
     out = mimo_cer_meeteval(ref, hyp, session_id="t")
     assert out["errors"] == 1
     assert out["cer"] > 0.0

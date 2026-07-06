@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from asr_pipeline.config import (
+    DiarizationConfig,
     PipelineConfig,
     load_pipeline_config_from_dict,
     load_pipeline_config_from_yaml,
@@ -125,6 +126,7 @@ def test_invalid_enum_raises():
     # Holes-bundle D2 / D6 promoted enum knobs.
     ("enhancement", "resample_quality", "enhancement.resample_quality"),
     ("diarization", "clustering_method", "diarization.clustering_method"),
+    ("diarization", "backend", "diarization.backend"),
 ])
 def test_each_enum_guard_rejects_bad_value(section, field, name):
     """Every enum-string guard in __post_init__ (not just context_window_mode)
@@ -390,10 +392,11 @@ def test_solo_onset_pad_yaml_round_trip(tmp_path):
 
 
 def test_loop_retry_defaults_are_noop():
-    """loop_retry defaults OFF so default.yaml stays byte-identical; the ngram
-    and threshold defaults are the shipped values."""
+    """loop_retry / loop_retry_phrase default OFF so default.yaml stays
+    byte-identical; the ngram and threshold defaults are the shipped values."""
     cfg = PipelineConfig()
     assert cfg.transcription.loop_retry is False
+    assert cfg.transcription.loop_retry_phrase is False
     assert cfg.transcription.loop_retry_ngram == 3
     assert cfg.transcription.loop_score_threshold == 0.4
 
@@ -418,12 +421,14 @@ def test_loop_retry_fields_yaml_round_trip(tmp_path):
     cfg = PipelineConfig()
     cfg.transcription.backend = "whisperx"      # loop_retry is whisperx-only
     cfg.transcription.loop_retry = True
+    cfg.transcription.loop_retry_phrase = True
     cfg.transcription.loop_retry_ngram = 4
     cfg.transcription.loop_score_threshold = 0.55
     out_yaml = tmp_path / "loop.yaml"
     save_pipeline_config_to_yaml(cfg, str(out_yaml))
     back = load_pipeline_config_from_yaml(str(out_yaml)).transcription
     assert back.loop_retry is True
+    assert back.loop_retry_phrase is True
     assert back.loop_retry_ngram == 4
     assert back.loop_score_threshold == 0.55
 
@@ -443,70 +448,16 @@ def test_relabel_redacted_token_drops_on_reload(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Disagreement-aware fusion (option 3) — diarization.fusion
+# Removed diarization fusion stage — back-compat on load
 # ---------------------------------------------------------------------------
 
 
-def test_fusion_defaults_off():
-    """Fusion defaults to a no-op so default.yaml stays a stock pipeline."""
-    cfg = PipelineConfig()
-    assert cfg.diarization.fusion.enabled is False
-    assert cfg.diarization.fusion.embedding == "ecapa2"
-    assert cfg.diarization.fusion.confidence_min == 0.75
-    assert cfg.diarization.fusion.min_region_s == 0.5
-
-
-def test_fusion_without_enhancement_raises():
-    """Pass 2 re-diarizes the enhanced audio → fusion needs enhancement on
-    (SCOPE §4.1: no silent fall-back to a single pass)."""
-    cfg = PipelineConfig()
-    cfg.diarization.fusion.enabled = True
-    cfg.enhancement.enabled = False
-    with pytest.raises(ValueError, match="fusion.enabled requires enhancement"):
-        cfg.__post_init__()
-
-
-def test_fusion_disabled_skips_cross_check():
-    """A disabled fusion with enhancement off must NOT raise."""
-    cfg = PipelineConfig()
-    cfg.diarization.fusion.enabled = False
-    cfg.enhancement.enabled = False
-    cfg.__post_init__()   # must not raise
-
-
-@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5, float("nan")])
-def test_fusion_confidence_min_range_guard(bad):
-    cfg = PipelineConfig()
-    cfg.diarization.fusion.confidence_min = bad
-    with pytest.raises(ValueError, match="confidence_min must be in"):
-        cfg.__post_init__()
-
-
-@pytest.mark.parametrize("bad", [-0.1, float("nan")])
-def test_fusion_min_region_s_guard(bad):
-    cfg = PipelineConfig()
-    cfg.diarization.fusion.min_region_s = bad
-    with pytest.raises(ValueError, match="min_region_s must be >= 0"):
-        cfg.__post_init__()
-
-
-def test_fusion_yaml_round_trip(tmp_path):
-    """The nested diarization.fusion block round-trips through YAML (and rebuilds
-    as a FusionConfig, not a bare dict)."""
-    from asr_pipeline.config import FusionConfig
-    cfg = PipelineConfig()
-    cfg.diarization.fusion.enabled = True
-    cfg.diarization.fusion.embedding = "ecapa2"
-    cfg.diarization.fusion.confidence_min = 0.9
-    cfg.diarization.fusion.min_region_s = 1.0
-    out_yaml = tmp_path / "fusion.yaml"
-    save_pipeline_config_to_yaml(cfg, str(out_yaml))
-    again = load_pipeline_config_from_yaml(str(out_yaml))
-    assert isinstance(again.diarization.fusion, FusionConfig)
-    assert again.diarization.fusion.enabled is True
-    assert again.diarization.fusion.embedding == "ecapa2"
-    assert again.diarization.fusion.confidence_min == 0.9
-    assert again.diarization.fusion.min_region_s == 1.0
+def test_removed_fusion_block_is_dropped_on_load():
+    """The disagreement-aware fusion stage was removed (swept-and-rejected).
+    An old saved config that still carries a `diarization.fusion` block must
+    load without crashing — the loader drops the stale key."""
+    cfg = load_pipeline_config_from_dict({"diarization": {"fusion": {"enabled": True}}})
+    assert not hasattr(cfg.diarization, "fusion")
 
 
 def test_default_yaml_separation_matches_dataclass():
@@ -1225,3 +1176,247 @@ def test_valid_overlap_assign_min_margin_accepted(value):
     cfg = PipelineConfig()
     cfg.assembly.overlap_assign_min_margin = value
     cfg.__post_init__()      # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Sortformer (EEND) diarization backend
+# ---------------------------------------------------------------------------
+
+
+def test_sortformer_backend_defaults():
+    """Default backend is pyannote; the sortformer knobs carry the probe defaults
+    so an untouched config is byte-identical to the shipped pyannote path."""
+    d = PipelineConfig().diarization
+    assert d.backend == "pyannote"
+    assert d.sortformer_model_id == "nvidia/diar_sortformer_4spk-v1"
+    assert d.sortformer_threshold == 0.5
+
+
+def test_sortformer_fields_reach_dataclass_from_dict():
+    cfg = load_pipeline_config_from_dict({
+        "diarization": {"backend": "sortformer", "sortformer_threshold": 0.6}
+    })
+    assert cfg.diarization.backend == "sortformer"
+    assert cfg.diarization.sortformer_threshold == 0.6
+
+
+def test_sortformer_yaml_round_trip(tmp_path):
+    """The new dataclass-driven fields round-trip through YAML automatically."""
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.sortformer_model_id = "nvidia/diar_sortformer_4spk-v1"
+    cfg.diarization.sortformer_threshold = 0.45
+    out_yaml = tmp_path / "sortformer.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    back = load_pipeline_config_from_yaml(str(out_yaml)).diarization
+    assert back.backend == "sortformer"
+    assert back.sortformer_model_id == "nvidia/diar_sortformer_4spk-v1"
+    assert back.sortformer_threshold == 0.45
+
+
+def test_sortformer_requires_two_speakers():
+    """The 4-head EEND model is post-filtered to 2 speakers, so num_speakers != 2
+    on the sortformer path is a loud config error (SCOPE §4 — never a silent
+    miscount)."""
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.num_speakers = 3
+    with pytest.raises(ValueError, match="num_speakers"):
+        cfg.__post_init__()
+
+
+def test_sortformer_two_speakers_accepted():
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.num_speakers = 2
+    cfg.__post_init__()      # must not raise
+
+
+@pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5, float("nan"), float("inf")])
+def test_sortformer_threshold_out_of_range_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.sortformer_threshold = bad
+    with pytest.raises(ValueError, match="sortformer_threshold"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("good", [0.4, 0.5, 0.6])
+def test_sortformer_threshold_valid_accepted(good):
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.sortformer_threshold = good
+    cfg.__post_init__()      # must not raise
+
+
+def test_sortformer_backend_does_not_require_hf_token(monkeypatch):
+    """hf_token is a pyannote requirement; the sortformer worker reads $HF_TOKEN
+    from the process env for its (public) NeMo download, so a sortformer config
+    with no hf_token must validate cleanly (the pyannote path still fails loud)."""
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    # Construct straight into the sortformer backend so __post_init__ (which runs
+    # at construction) sees backend='sortformer' and skips the hf_token check.
+    cfg = PipelineConfig(
+        diarization=DiarizationConfig(backend="sortformer", hf_token=None)
+    )   # must not raise
+    # And the pyannote path with the same missing token still fails loud.
+    cfg.diarization.backend = "pyannote"
+    with pytest.raises(ValueError, match="hf_token"):
+        cfg.__post_init__()
+
+
+# ---------------------------------------------------------------------------
+# Sortformer v4.1 rehabilitation levers (L1-L4; V41_PREREG.md)
+# ---------------------------------------------------------------------------
+
+
+def test_v41_lever_defaults_preserve_v4():
+    """All four v4.1 levers default to the v4 behaviour (top-2 discard, flat
+    threshold, no fallback), so an untouched sortformer config is byte-identical
+    to `v4_eend` — the pre-registered "defaults preserve current behavior"."""
+    d = PipelineConfig().diarization
+    assert d.sortformer_head_policy == "top2"
+    assert d.sortformer_binarization == "flat"
+    assert d.sortformer_fallback == "none"
+    assert d.sortformer_merge_margin == 0.10
+    assert d.sortformer_onset == 0.70
+    assert d.sortformer_offset == 0.30
+    assert d.sortformer_pad_s == 0.06
+    assert d.sortformer_coverage_budget_s == 5.0
+
+
+@pytest.mark.parametrize("field,name", [
+    ("sortformer_head_policy", "diarization.sortformer_head_policy"),
+    ("sortformer_binarization", "diarization.sortformer_binarization"),
+    ("sortformer_fallback", "diarization.sortformer_fallback"),
+])
+def test_v41_enum_guards_reject_bad_value(field, name):
+    cfg = PipelineConfig()
+    setattr(cfg.diarization, field, "definitely_not_valid")
+    with pytest.raises(ValueError, match=name):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("field,good", [
+    ("sortformer_head_policy", "merge"),
+    ("sortformer_binarization", "hysteresis"),
+    ("sortformer_fallback", "gated"),
+])
+def test_v41_enum_guards_accept_valid_value(field, good):
+    cfg = PipelineConfig()
+    setattr(cfg.diarization, field, good)
+    cfg.__post_init__()   # must not raise
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+def test_v41_merge_margin_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_merge_margin = bad
+    with pytest.raises(ValueError, match="sortformer_merge_margin"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("good", [0.0, 0.1, 0.5])
+def test_v41_merge_margin_valid_accepted(good):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_merge_margin = good
+    cfg.__post_init__()   # must not raise
+
+
+@pytest.mark.parametrize("field,partner", [
+    ("sortformer_onset", "sortformer_offset"),
+    ("sortformer_offset", "sortformer_onset"),
+])
+@pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5, float("nan"), float("inf")])
+def test_v41_hysteresis_threshold_out_of_range_rejected(field, partner, bad):
+    """Onset / offset are probabilities strictly in (0, 1). Set only the target
+    knob bad (the partner stays valid) so each knob's own range guard is exercised
+    and named in the message."""
+    cfg = PipelineConfig()
+    setattr(cfg.diarization, field, bad)
+    setattr(cfg.diarization, partner, 0.5)   # valid partner
+    with pytest.raises(ValueError, match=field):
+        cfg.__post_init__()
+
+
+def test_v41_onset_below_offset_rejected():
+    """The NeMo hysteresis invariant: offset (closes) must be <= onset (opens)."""
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_onset = 0.30
+    cfg.diarization.sortformer_offset = 0.70
+    with pytest.raises(ValueError, match="sortformer_offset"):
+        cfg.__post_init__()
+
+
+def test_v41_onset_equal_offset_accepted():
+    """onset == offset is the degenerate flat case — allowed (offset <= onset)."""
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_onset = 0.5
+    cfg.diarization.sortformer_offset = 0.5
+    cfg.__post_init__()   # must not raise
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
+def test_v41_pad_s_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_pad_s = bad
+    with pytest.raises(ValueError, match="sortformer_pad_s"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+def test_v41_coverage_budget_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_coverage_budget_s = bad
+    with pytest.raises(ValueError, match="sortformer_coverage_budget_s"):
+        cfg.__post_init__()
+
+
+def test_v41_fields_reach_dataclass_from_dict():
+    cfg = load_pipeline_config_from_dict({
+        "diarization": {
+            "backend": "sortformer",
+            "sortformer_head_policy": "merge",
+            "sortformer_binarization": "hysteresis",
+            "sortformer_fallback": "gated",
+            "sortformer_merge_margin": 0.15,
+            "sortformer_onset": 0.65,
+            "sortformer_offset": 0.35,
+            "sortformer_pad_s": 0.08,
+            "sortformer_coverage_budget_s": 4.0,
+        }
+    })
+    d = cfg.diarization
+    assert d.sortformer_head_policy == "merge"
+    assert d.sortformer_binarization == "hysteresis"
+    assert d.sortformer_fallback == "gated"
+    assert d.sortformer_merge_margin == 0.15
+    assert d.sortformer_onset == 0.65
+    assert d.sortformer_offset == 0.35
+    assert d.sortformer_pad_s == 0.08
+    assert d.sortformer_coverage_budget_s == 4.0
+
+
+def test_v41_fields_yaml_round_trip(tmp_path):
+    """The v4.1 levers round-trip through YAML automatically (asdict-driven)."""
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.sortformer_head_policy = "merge"
+    cfg.diarization.sortformer_binarization = "hysteresis"
+    cfg.diarization.sortformer_fallback = "gated"
+    cfg.diarization.sortformer_merge_margin = 0.12
+    cfg.diarization.sortformer_onset = 0.68
+    cfg.diarization.sortformer_offset = 0.32
+    cfg.diarization.sortformer_pad_s = 0.05
+    cfg.diarization.sortformer_coverage_budget_s = 6.0
+    out_yaml = tmp_path / "v41.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    back = load_pipeline_config_from_yaml(str(out_yaml)).diarization
+    assert back.sortformer_head_policy == "merge"
+    assert back.sortformer_binarization == "hysteresis"
+    assert back.sortformer_fallback == "gated"
+    assert back.sortformer_merge_margin == 0.12
+    assert back.sortformer_onset == 0.68
+    assert back.sortformer_offset == 0.32
+    assert back.sortformer_pad_s == 0.05
+    assert back.sortformer_coverage_budget_s == 6.0

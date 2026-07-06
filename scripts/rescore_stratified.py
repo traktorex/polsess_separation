@@ -57,12 +57,26 @@ def load_split(args) -> list[str]:
     return frags
 
 
+# --normalize: apply the census-vetted Polish scoring normalizer (see
+# scripts/polish_scoring_normalizer.py) SYMMETRICALLY to reference and
+# hypothesis text before scoring. Secondary metric only — default off, and the
+# pre-registered primary numbers are always the unnormalized ones.
+NORMALIZE = False
+
+
+def _maybe_norm(utts):
+    if not NORMALIZE or utts is None:
+        return utts
+    from polish_scoring_normalizer import normalize_text
+    return [u._replace(text=normalize_text(u.text)) for u in utts]
+
+
 def _load_gt(frags):
     gt = {}
     for fid in frags:
         rec = load_recording(EVAL / fid)
         g = load_reference_utterances(rec) if rec is not None else {}
-        gt[fid] = {k: v for k, v in g.items() if v}
+        gt[fid] = {k: _maybe_norm(v) for k, v in g.items() if v}
     return gt
 
 
@@ -113,6 +127,7 @@ def per_fragment(cfg, gt, frags):
         hyp = read_per_speaker(d)
         if hyp is None or not gt[fid]:
             continue
+        hyp = {k: _maybe_norm(v) for k, v in hyp.items()}
         cp = cpwer_meeteval(gt[fid], hyp, session_id=fid)
         cc = cp_cer_meeteval(gt[fid], hyp, session_id=fid)
         # Speaker-agnostic content floor of the PIPELINE output: ORC-WER on the
@@ -140,7 +155,7 @@ def per_fragment(cfg, gt, frags):
                    ctE=orc["errors"], ctL=orc["length"],
                    mwE=mw["errors"], mwL=mw["length"],
                    ocE=oc["errors"], ocL=oc["length"])
-        mix = read_mixture(d)
+        mix = _maybe_norm(read_mixture(d))
         if mix is not None:
             mw = mimo_wer_meeteval(gt[fid], mix, session_id=fid)
             mc = mimo_cer_meeteval(gt[fid], mix, session_id=fid)
@@ -410,7 +425,16 @@ def main():
                          "cpWER/cpCER (+err/len), content floors, mixture floor, "
                          "purity, stratum, composite — so analysis isn't limited to "
                          "the tertile tables.")
+    ap.add_argument("--normalize", action="store_true",
+                    help="apply the census-vetted Polish scoring normalizer to "
+                         "ref+hyp before scoring (SECONDARY metric; primary "
+                         "numbers stay unnormalized)")
     args = ap.parse_args()
+    if args.normalize:
+        global NORMALIZE
+        NORMALIZE = True
+        print("### NORMALIZED SCORING: polish_scoring_normalizer rules applied "
+              "symmetrically to reference and hypothesis (secondary metric) ###")
 
     frags = load_split(args)
     gt = _load_gt(frags)

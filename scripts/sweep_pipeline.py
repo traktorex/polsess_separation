@@ -548,17 +548,6 @@ CONFIGS: dict[str, dict] = {
                        "relabel.enabled": True, "relabel.source": "global",
                        "relabel.embedding": "ecapa2",
                        "relabel.audio_source": "enhanced"},
-    # Option 3 — disagreement-aware fusion (SECOND_PASS_PLAN.md §5). A SECOND
-    # pyannote pass on the ENHANCED audio supplies IDENTITY only; presence
-    # (boundaries / overlaps / count) stays with the raw pass-1 result. A solo
-    # region's label is overridden only when pass 2 confidently (>= 0.75 single-
-    # speaker fraction) disagrees over >= 0.5 s. OFAT off the adopted ECAPA2
-    # diarization, like the B/B+ rows (so it isolates the second-pass effect over
-    # the embedder swap). The heaviest option (a whole extra diarization pass).
-    "dr_fuse":        {"enhancement.observation_mix_ratio": 0.3,
-                       "diarization.embedding": "ecapa2",
-                       "diarization.fusion.enabled": True,
-                       "diarization.fusion.embedding": "ecapa2"},
     # Stacked best-candidate: the three small winners combined — ECAPA2 diar +
     # ECAPA2 assembly anchor (opt 4) + B+ global relabel (dr_refineplus). Tests
     # whether the wins stack or B+'s overlap handoff already subsumes the anchor.
@@ -1189,6 +1178,170 @@ CONFIGS: dict[str, dict] = {
                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                     "relabel.solo_clustering_init": "rescue",
                     "transcription.loop_retry": True},
+    # Campaign v3 — phrase-loop mirror of loop_retry: = v2_finalist + the
+    # multi-token phrase-loop detect-and-retry (2 known test sites; see
+    # docs/sweep_plan/V3_TEST_PREREG.md).
+    "v3_phraseloop": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.embedding": "ecapa2",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True},
+    # Campaign v3 — LINKAGE OFAT off the v3_phraseloop finalist. Each row copies
+    # v3_phraseloop and swaps only the AgglomerativeClustering linkage
+    # (diarization.clustering_method, default "centroid" = stock pyannote 3.1).
+    # Applied via Pipeline.instantiate in the ECAPA2 embedding-swap path, where
+    # linkage decides exactly where short-segment mislabels are decided. This is
+    # the last exposed-but-never-swept diarizer knob. Expected NULL — the fused-
+    # cluster failures are embedding-geometry-bound, not linkage-bound (see
+    # _forensics/EMBEDDER_BAKEOFF.md); run to CLOSE the knob inventory with
+    # numbers, not to hunt a win. See GROUPS["link"].
+    "v3_link_ward": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "relabel.solo_clustering_init": "rescue",
+                     "transcription.loop_retry": True,
+                     "transcription.loop_retry_phrase": True,
+                     "diarization.clustering_method": "ward"},
+    "v3_link_avg": {"enhancement.observation_mix_ratio": 0.50,
+                    "diarization.embedding": "ecapa2",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "relabel.solo_clustering_init": "rescue",
+                    "transcription.loop_retry": True,
+                    "transcription.loop_retry_phrase": True,
+                    "diarization.clustering_method": "average"},
+    "v3_link_comp": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "relabel.solo_clustering_init": "rescue",
+                     "transcription.loop_retry": True,
+                     "transcription.loop_retry_phrase": True,
+                     "diarization.clustering_method": "complete"},
+    # Campaign v4 — EEND diarizer arm off the v3_phraseloop finalist. Swaps the
+    # pyannote+ECAPA2 clustering diarizer for NVIDIA Sortformer-v1 offline EEND
+    # (clustering-free), which the probe showed un-fuses the two speakers pyannote
+    # physically merged on the fused fragments (docs/sweep_plan/eend_probe.py +
+    # _forensics/EEND_PROBE.md: trio purity 0.790 -> 0.907). = v3_phraseloop MINUS
+    # diarization.embedding (pyannote-only; ignored on the EEND path) PLUS
+    # diarization.backend=sortformer. Needs $SORTFORMER_VENV_PY (isolated NeMo
+    # venv). PREREG PENDING — the open question is whether the diarization-purity
+    # gain survives the re-route + re-separate + relabel cascade into a cpWER win.
+    "v4_eend": {"enhancement.observation_mix_ratio": 0.50,
+                "diarization.backend": "sortformer",
+                "relabel.enabled": True, "relabel.source": "global",
+                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                "relabel.solo_clustering_init": "rescue",
+                "transcription.loop_retry": True,
+                "transcription.loop_retry_phrase": True},
+    # Campaign v4.1 — Sortformer rehabilitation levers (docs/sweep_plan/V41_PREREG.md).
+    # Base = v4_eend (its exact override set, copied per row); each arm turns on one
+    # or more of the four config-gated, default-OFF levers:
+    #   L1 merge-not-discard   (diarization.sortformer_head_policy=merge)
+    #   L2 hysteresis binarize (diarization.sortformer_binarization=hysteresis)
+    #   L3/L4 gated fallback   (diarization.sortformer_fallback=gated)
+    # v41_full = L1+L2+L3+L4 (the test candidate); the three decomposed diagnostics
+    # isolate each lever. Needs $SORTFORMER_VENV_PY. See GROUPS["v41"].
+    "v41_full": {"enhancement.observation_mix_ratio": 0.50,
+                 "diarization.backend": "sortformer",
+                 "diarization.sortformer_head_policy": "merge",
+                 "diarization.sortformer_binarization": "hysteresis",
+                 "diarization.sortformer_fallback": "gated",
+                 # no-op on the sortformer path; makes the L3/L4 fallback
+                 # reproduce the finalist diarizer (pyannote+ECAPA2, as in
+                 # v3_phraseloop) instead of stock resnet34-LM
+                 "diarization.embedding": "ecapa2",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                 "relabel.solo_clustering_init": "rescue",
+                 "transcription.loop_retry": True,
+                 "transcription.loop_retry_phrase": True},
+    "v41_merge": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_head_policy": "merge",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True},
+    # V5 Phase-2 ablation (V5_INSTRUMENT_PREREG.md §PHASE-2): the adopted
+    # instrument minus its separation subsystem — the "does separation help?"
+    # contrast under the v41_merge instrument (the historical `nosep` arm
+    # ablates off default.yaml, a different base). The relabel block is
+    # dropped too, of necessity: B+ relabel clusters the separated overlap
+    # streams, so config validation (correctly) rejects it with separation
+    # off. The ablation therefore removes separation AND its dependent
+    # attribution refinements — the full separation-dependent chain.
+    "v41_merge_nosep": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "separation.enabled": False,
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True},
+    "v41_hyst": {"enhancement.observation_mix_ratio": 0.50,
+                 "diarization.backend": "sortformer",
+                 "diarization.sortformer_binarization": "hysteresis",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                 "relabel.solo_clustering_init": "rescue",
+                 "transcription.loop_retry": True,
+                 "transcription.loop_retry_phrase": True},
+    "v41_fallback": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.backend": "sortformer",
+                     "diarization.sortformer_fallback": "gated",
+                     # see v41_full: fallback must reproduce pyannote+ECAPA2
+                     "diarization.embedding": "ecapa2",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "relabel.solo_clustering_init": "rescue",
+                     "transcription.loop_retry": True,
+                     "transcription.loop_retry_phrase": True},
+    # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms
+    # (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Base = v4_eend's exact
+    # override set (OA 0.5 + sortformer + relabel B+/global/ecapa2/enhanced/rescue
+    # + both loop retries), copied per row, with the diarizer model swapped to the
+    # streaming v2.1 checkpoint (NVIDIA Open Model License — the Life-2 commercial
+    # unlock) run offline via the worker's very-high-latency preset. NO
+    # diarization.embedding, NO fallback, NO hysteresis (author: one diarizer only;
+    # hysteresis dev-falsified). Needs $SORTFORMER_VENV_PY. See GROUPS["v2p1"].
+    #   v2p1_eend        — plain (top-2, flat 0.5): the raw v2.1 instrument.
+    #   v2p1_merge       — + head_policy=merge (the fold): reads the fold on v2.1.
+    #   v2p1_merge_th040 — + threshold=0.40: prices the overlap-starvation risk
+    #                      (probe: v2.1 detected 6.9 s overlap vs v1's 26.3 s).
+    "v2p1_eend": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_model_id":
+                      "nvidia/diar_streaming_sortformer_4spk-v2.1",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True},
+    "v2p1_merge": {"enhancement.observation_mix_ratio": 0.50,
+                   "diarization.backend": "sortformer",
+                   "diarization.sortformer_model_id":
+                       "nvidia/diar_streaming_sortformer_4spk-v2.1",
+                   "diarization.sortformer_head_policy": "merge",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "relabel.solo_clustering_init": "rescue",
+                   "transcription.loop_retry": True,
+                   "transcription.loop_retry_phrase": True},
+    "v2p1_merge_th040": {"enhancement.observation_mix_ratio": 0.50,
+                         "diarization.backend": "sortformer",
+                         "diarization.sortformer_model_id":
+                             "nvidia/diar_streaming_sortformer_4spk-v2.1",
+                         "diarization.sortformer_head_policy": "merge",
+                         "diarization.sortformer_threshold": 0.40,
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2",
+                         "relabel.audio_source": "enhanced",
+                         "relabel.solo_clustering_init": "rescue",
+                         "transcription.loop_retry": True,
+                         "transcription.loop_retry_phrase": True},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -1388,6 +1541,23 @@ GROUPS: dict[str, list[str]] = {
     # Campaign v2 round 2 — post-diagnosis levers (dr_oa050 already run, so it
     # is skipped on run and just anchors the rescore).
     "v2fix": ["dr_oa050", "v2_reseed", "v2_loopretry"],
+    # Campaign v3 — phrase-loop mirror of loop_retry (off the v2_finalist base).
+    "v3": ["v3_phraseloop"],
+    # Campaign v3 — linkage OFAT off v3_phraseloop (closes the diarizer-knob
+    # inventory; expected null). Rescore with --anchor v3_phraseloop.
+    "link": ["v3_link_ward", "v3_link_avg", "v3_link_comp"],
+    # Campaign v4 — EEND (Sortformer) diarizer arm off v3_phraseloop. Needs
+    # $SORTFORMER_VENV_PY. Rescore with --anchor v3_phraseloop. Prereg pending.
+    "v4": ["v4_eend"],
+    # Campaign v4.1 — Sortformer rehabilitation levers (docs/sweep_plan/V41_PREREG.md).
+    # v41_full = the test candidate (L1+L2+L3+L4); v41_merge/v41_hyst/v41_fallback
+    # decompose the levers. All off the v4_eend base. Needs $SORTFORMER_VENV_PY;
+    # rescore with --anchor v3_phraseloop (report vs v4_eend too).
+    "v41": ["v41_full", "v41_merge", "v41_hyst", "v41_fallback"],
+    # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms off the v4_eend
+    # base (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
+    # $SORTFORMER_VENV_PY; rescore with --anchor v3_phraseloop (report vs v4_eend).
+    "v2p1": ["v2p1_eend", "v2p1_merge", "v2p1_merge_th040"],
 }
 
 

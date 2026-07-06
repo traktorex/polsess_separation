@@ -40,6 +40,7 @@ from asr_pipeline.eval.metrics import (
     cpwer_meeteval,
     mimo_cer_meeteval,
     mimo_wer_meeteval,
+    orc_cer_meeteval,
     orc_wer_meeteval,
     orc_wer_multistream,
 )
@@ -75,7 +76,8 @@ __all__ = [
     "compute_layer2", "compute_layer3",
     # Low-level metrics
     "cpwer_meeteval", "orc_wer_meeteval", "mimo_wer_meeteval",
-    "orc_wer_multistream", "cp_cer_meeteval", "mimo_cer_meeteval",
+    "orc_wer_multistream", "cp_cer_meeteval", "orc_cer_meeteval",
+    "mimo_cer_meeteval",
     "compute_intrusive", "pesq_wb_chunked", "stoi_chunked", "squim_chunked",
     "load_squim_model", "unload_squim_model",
     # Transcript IO

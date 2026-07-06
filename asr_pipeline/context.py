@@ -100,6 +100,11 @@ class PipelineContext:
 
     # Stage 1 — diarization
     diarization: Optional[DiarizationResult] = None
+    # Stage 1 diagnostics (currently populated only by the sortformer backend):
+    # the head-miscount / L1-merge / L3-L4-fallback census fields, written verbatim
+    # into metadata.json by io.write_pipeline_outputs so a later census can count
+    # v4.1 lever firings. None on the pyannote path.
+    diarization_diag: Optional[Dict[str, Any]] = None
 
     # Stage 2 — routing
     # List of (start_s, end_s) overlap intervals (unpadded). SepFormer's

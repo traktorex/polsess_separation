@@ -48,8 +48,19 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 | knob | type | baseline | options/range | status | notes |
 |---|---|---|---|---|---|
-| `num_speakers` | int | 2 | — | 🔒 | corpus is 2-speaker |
-| `model_id` | str | pyannote/speaker-diarization-3.1 | — | 🔒 | one model in use |
+| `backend` | enum | pyannote | pyannote \| sortformer | ✅ | **`sortformer` ADOPTED in the shipped best config 2026-07-04 (V5 instrument reframe, `V5_INSTRUMENT_PREREG.md` §PHASE-2 VERDICT)** — dataclass default stays pyannote. NVIDIA Sortformer v1 offline, pure EEND (no embedding clustering) via isolated-venv worker (`scripts/sortformer_worker.py`, `$SORTFORMER_VENV_PY`, no default → loud crash). History: `v4_eend` test NOT ADOPTED under the deployment standard (13-rec veto tail, `EEND_ARM_PREREG.md` §VERDICT); re-adopted WITH the fold under the instrument criterion — test 24.0/16.5 vs pyannote 26.9/19.4, attribution gap collapsed, 12-rec tail documented (all inherited, none fold-caused) |
+| `num_speakers` | int | 2 | — | 🔒 | corpus is 2-speaker; sortformer backend hard-errors on ≠2 |
+| `model_id` | str | pyannote/speaker-diarization-3.1 | — | 🔒 | one model in use (pyannote path) |
+| `sortformer_model_id` | str | nvidia/diar_sortformer_4spk-v1 | — | ✅ | fixed-4-head model, top-2 by activity; head-miscount detector logs loudly at leak >5%. `nvidia/diar_streaming_sortformer_4spk-v2.1` (NVIDIA Open license = Life-2 track) swept as `v2p1_*` dev arms 2026-07-04: near-parity but lost to v1+fold on every V5 instrument criterion (`V5_INSTRUMENT_PREREG.md` §PHASE-1); worker auto-applies the offline very-high-latency preset for streaming ids |
+| `sortformer_threshold` | float | 0.5 | 0.0–1.0 | ⬜ | frame-activity binarization; probe showed purity robust 0.4–0.6, but the v4 under-detection tail (quiet-speaker deletions) makes <0.5 the named candidate lever for any v4.1 |
+| `sortformer_head_policy` | enum | top2 | top2 \| merge | ✅ | **`merge` (the fold) ADOPTED in the shipped best config 2026-07-04.** Reassigns discarded surplus-head runs (>= 0.4 s) to the nearest top-2 speaker by local ECAPA2 cosine margin (no global clustering); default `top2` = v4 discard. Test: repairs the miscount class (15a55a8a 26.5→7.6) with ZERO collateral (strictly dominates discard on all 118 frags); dataclass default stays top2 |
+| `sortformer_merge_margin` | float | 0.10 | >= 0 | ⬜ | **v4.1 L1** cosine margin a surplus run must clear to merge (anatomy true-margins 0.15–0.57). Only used when `head_policy=merge` |
+| `sortformer_binarization` | enum | flat | flat \| hysteresis | ⬜ | **v4.1 L2** (V41_PREREG.md). `hysteresis` = NeMo-style onset/offset dual threshold + pad, recovers quiet speech at lower leak; `flat` = v4 single-threshold (byte-identical). Swept as `v41_hyst`/`v41_full` |
+| `sortformer_onset` | float | 0.70 | (0,1), >= offset | ⬜ | **v4.1 L2** hysteresis open threshold. Only used when `binarization=hysteresis` |
+| `sortformer_offset` | float | 0.30 | (0,1), <= onset | ⬜ | **v4.1 L2** hysteresis close threshold. Only used when `binarization=hysteresis` |
+| `sortformer_pad_s` | float | 0.06 | >= 0 | ⬜ | **v4.1 L2** hysteresis segment pad (s). Only used when `binarization=hysteresis` |
+| `sortformer_fallback` | enum | none | none \| gated | ⬜ | **v4.1 L3/L4** (V41_PREREG.md). `gated` = fall back to pyannote end-to-end when segmentation-3.0 coverage uncovered > budget (L3) or the head-miscount + post-L1 unresolved leak persists (L4); loud + recorded in metadata. Swept as `v41_fallback`/`v41_full` |
+| `sortformer_coverage_budget_s` | float | 5.0 | > 0 | ⬜ | **v4.1 L3** uncovered-reference-speech budget triggering the pyannote fallback. Only used when `fallback=gated` |
 | `embedding` | str | resnet34-LM | resnet34-LM \| resnet293-LM \| ecapa2 \| eres2netv2 | ✅ | first-pass speaker embedder (triggers a 3.1-equivalent rebuild); ecapa2 adopted (`dr_emb_*`) |
 | `clustering_method` | enum | centroid | centroid \| average \| ... | ✅ | **promoted 2026-06-22** (was hard-coded linkage); agglomerative linkage in the embedding-swap path the best config uses; `dr_linkage_avg` |
 | `enabled` | bool | true | — | 🔒 | diarization is mandatory upstream |
@@ -127,6 +138,10 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `align_model_name` | str\| None | None (→ pl XLSR-53) | None \| HF wav2vec2 id | 🆕 | alternative Polish aligners affect tcpWER; untried |
 | `silence_floor` | float | 1e-4 | 0.0–1e-3 | ✅ | **promoted 2026-06-22** (was hard-coded `_SILENCE_FLOOR`); peak-amp gate below which a stream → empty transcript; direct deletion↔insertion trade on the WER decomposition; `dr_silfloor*` |
 | `retry_collapsed_chunk_size` | int | 8 | 0 (off) \| 8 | ✅ | detect-and-retry on collapsed streams; `f_noretry`, `dr_retry0` |
+| `collapse_min_duration_s` / `collapse_max_wps` | float | 18.0 / 0.7 | — | 📌 | collapse-detector gate feeding the chunked retry above |
+| `loop_retry` | bool | false (finalist YAML: **true**) | on/off | ✅ | **adopted 2026-07-02** (`V2_TEST_PREREG.md`): token-repetition-loop detect-and-retry; gate ×12; ngram constraint on the retry decode only (always-on ngram rejected — 61 % collateral); killed 6/6 test loops, zero off-target |
+| `loop_retry_phrase` | bool | false (finalist YAML: **true**) | on/off | ✅ | **adopted 2026-07-03** (`V3_TEST_PREREG.md` §v3.1): multi-word phrase-run detector (run ≥4; max genuine GT run = 2) the token gate can't see; same retry decode + length bound (retry may never out-grow the window — rejects counting-evasion hallucinations) |
+| `loop_retry_ngram` / `loop_score_threshold` | int/float | 3 / 0.4 | — | 📌 | shared mechanics for both loop levers; calibrated, not re-swept |
 | `initial_prompt` | str | "Rozmowa po polsku." | (text) | 🆕 | prompt wording can shift WER; untried |
 | `backend` | enum | whisperx | whisper \| whisperx | 📌 | eval needs whisperx (word alignment for tcpWER) |
 | `language` | str | pl | — | 🔒 | corpus is Polish |
