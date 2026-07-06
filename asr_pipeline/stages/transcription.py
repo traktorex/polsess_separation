@@ -353,6 +353,52 @@ class _WhisperXBackend:
             result = {**result, **aligned}
         return _normalise_result(result, self.cfg.language)
 
+    def _retranscribe_span(
+        self,
+        audio: np.ndarray,
+        s0: float,
+        e0: float,
+        *,
+        chunk_size: int,
+        ngram_override: Optional[int] = None,
+    ) -> list:
+        """Re-transcribe the ``[s0, e0]`` span and offset segments back onto the
+        original timeline — the slice / option-override / offset-splice boilerplate
+        shared by all three retry passes.
+
+        Slices ``audio`` at ``self._SR`` sample resolution (same index math as every
+        caller), re-runs the SAME backend on just that span at ``chunk_size``, and
+        returns a NEW list of segments with ``start`` / ``end`` shifted back by
+        ``s0`` (text untouched). When ``ngram_override`` is given, faster-whisper's
+        ``TranscriptionOptions.no_repeat_ngram_size`` is temporarily overridden via
+        ``dataclasses.replace`` for the decode and restored in a ``finally`` — the
+        exact route WhisperX itself uses for suppress_numerals; the global
+        ``no_repeat_ngram_size`` knob is never touched and the override never leaks
+        into the next window / stream. ``ngram_override=None`` decodes with the
+        options as-is. Callers keep their own detector + accept-guard: the offset
+        shift is uniform, so text-based guards and inter-segment gaps are unaffected.
+        """
+        sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
+        if ngram_override is None:
+            retry = self._asr.transcribe(
+                sub, language=self.cfg.language, chunk_size=chunk_size
+            )
+        else:
+            saved_options = self._asr.options
+            self._asr.options = replace(
+                saved_options, no_repeat_ngram_size=ngram_override
+            )
+            try:
+                retry = self._asr.transcribe(
+                    sub, language=self.cfg.language, chunk_size=chunk_size
+                )
+            finally:
+                # Restore the original options no matter what — the ngram override
+                # must never leak into the next window / stream.
+                self._asr.options = saved_options
+        rsegs = retry.get("segments") or []
+        return [{**rs, "start": rs["start"] + s0, "end": rs["end"] + s0} for rs in rsegs]
+
     def _retry_collapsed(self, audio: np.ndarray, segments: list) -> list:
         """Re-transcribe collapsed merged windows at a smaller chunk and splice.
 
@@ -379,9 +425,7 @@ class _WhisperXBackend:
                 out.append(seg)
                 continue
             s0, e0 = seg["start"], seg["end"]
-            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
-            retry = self._asr.transcribe(sub, language=self.cfg.language, chunk_size=cs)
-            rsegs = retry.get("segments") or []
+            rsegs = self._retranscribe_span(audio, s0, e0, chunk_size=cs)
             retry_words = sum(len(rs["text"].split()) for rs in rsegs)
             # Guard: keep the original unless the retry recovered more words.
             if not rsegs or retry_words <= nw:
@@ -392,8 +436,7 @@ class _WhisperXBackend:
                 f"({nw}w, {nw / max(dur, 1e-9):.2f} w/s) re-transcribed at "
                 f"chunk_size={cs} → {retry_words}w"
             )
-            for rs in rsegs:
-                out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
+            out.extend(rsegs)
         out.sort(key=lambda s: s["start"])
         return out
 
@@ -431,18 +474,10 @@ class _WhisperXBackend:
                 out.append(seg)
                 continue
             s0, e0 = seg["start"], seg["end"]
-            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
-            saved_options = self._asr.options
-            self._asr.options = replace(saved_options, no_repeat_ngram_size=ngram)
-            try:
-                retry = self._asr.transcribe(
-                    sub, language=self.cfg.language, chunk_size=self.cfg.chunk_size
-                )
-            finally:
-                # Restore the original options no matter what — the ngram override
-                # must never leak into the next window / stream.
-                self._asr.options = saved_options
-            rsegs = retry.get("segments") or []
+            rsegs = self._retranscribe_span(
+                audio, s0, e0,
+                chunk_size=self.cfg.chunk_size, ngram_override=ngram,
+            )
             retry_text = " ".join((rs.get("text") or "") for rs in rsegs).strip()
             retry_score = max(
                 (repetition_loop_score(rs.get("text")).score for rs in rsegs),
@@ -475,8 +510,7 @@ class _WhisperXBackend:
                 f"{retry_score:.2f} (no_repeat_ngram_size={ngram}); accepted, "
                 f"{len(rsegs)} segment(s)"
             )
-            for rs in rsegs:
-                out.append({**rs, "start": rs["start"] + s0, "end": rs["end"] + s0})
+            out.extend(rsegs)
         out.sort(key=lambda s: s["start"])
         return out
 
@@ -552,18 +586,10 @@ class _WhisperXBackend:
                 intervals.append([first, last, run])
         for first, last, run in reversed(intervals):
             s0, e0 = segments[first]["start"], segments[last]["end"]
-            sub = audio[int(s0 * self._SR):int(e0 * self._SR)]
-            saved_options = self._asr.options
-            self._asr.options = replace(saved_options, no_repeat_ngram_size=ngram)
-            try:
-                retry = self._asr.transcribe(
-                    sub, language=self.cfg.language, chunk_size=self.cfg.chunk_size
-                )
-            finally:
-                # Restore the original options no matter what — the ngram override
-                # must never leak into the next window / stream.
-                self._asr.options = saved_options
-            rsegs = retry.get("segments") or []
+            rsegs = self._retranscribe_span(
+                audio, s0, e0,
+                chunk_size=self.cfg.chunk_size, ngram_override=ngram,
+            )
             retry_text = " ".join((rs.get("text") or "") for rs in rsegs).strip()
             retry_tokens, _ = self._join_segment_tokens(rsegs)
             retry_still_loops = bool(find_phrase_runs(retry_tokens))
@@ -603,10 +629,7 @@ class _WhisperXBackend:
                 f"phrase-loop-retry window [{s0:.1f}-{e0:.1f}] run={run.run} "
                 f"phrase=«{run.phrase}»; accepted, {len(rsegs)} segment(s)"
             )
-            out[first:last + 1] = [
-                {**rs, "start": rs["start"] + s0, "end": rs["end"] + s0}
-                for rs in rsegs
-            ]
+            out[first:last + 1] = rsegs
         out.sort(key=lambda s: s["start"])
         return out
 

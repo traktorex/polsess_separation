@@ -215,6 +215,39 @@ def test_compute_intrusive_silent_estimate_is_flagged(capsys):
 
 
 # ---------------------------------------------------------------------------
+# E5 — non-finite estimate (NaN/Inf from an upstream separator/BWE output).
+# Previously flowed into SI-SDR/PESQ/STOI and was silently nan-dropped by
+# aggregation (SCOPE §4 violation); now DETECTED, flagged, and NaN-skipped —
+# without crashing eval. No pesq/pystoi backend needed (early return).
+# ---------------------------------------------------------------------------
+
+
+def test_compute_intrusive_nonfinite_estimate_is_nan_skipped():
+    target = _noise(SR * 30)
+    for bad in (np.nan, np.inf, -np.inf):
+        est = target.copy()
+        est[123] = bad
+        out = compute_intrusive(est, target, target, SR)
+        assert np.isnan(out["si_sdr"]) and np.isnan(out["si_sdri"])
+        assert np.isnan(out["pesq"]) and np.isnan(out["pesqi"])
+        assert np.isnan(out["stoi"]) and np.isnan(out["stoii"])
+        assert out["pesq_n_scored"] == 0
+
+
+def test_compute_intrusive_nonfinite_estimate_is_flagged(capsys):
+    # The drop must be VISIBLE (dlog → stdout), naming the stream — no longer
+    # silent (SCOPE §4.3).
+    target = _noise(SR * 30)
+    est = target.copy()
+    est[123] = np.nan
+    compute_intrusive(est, target, target, SR, label="recX/B")
+    captured = capsys.readouterr()
+    blob = captured.out + captured.err
+    assert "recX/B" in blob
+    assert "non-finite" in blob.lower()
+
+
+# ---------------------------------------------------------------------------
 # SQUIM chunker (fake model — never loads the real SQUIM)
 # ---------------------------------------------------------------------------
 

@@ -39,7 +39,7 @@ import torchaudio.functional as AF
 from asr_pipeline.config import SeparationConfig
 from asr_pipeline.context import OverlapSeparated, PipelineContext
 from asr_pipeline.debug_log import dlog
-from asr_pipeline.stages.base import Stage
+from asr_pipeline.stages.base import Stage, match_length
 
 
 def _log(msg: str) -> None:
@@ -304,12 +304,9 @@ def _separate_single(
     s1_hi = AF.resample(s1_lo, sr_separator, sr_pipeline).squeeze(0).numpy().astype(np.float32)
     s2_hi = AF.resample(s2_lo, sr_separator, sr_pipeline).squeeze(0).numpy().astype(np.float32)
 
-    def _fix(arr: np.ndarray) -> np.ndarray:
-        if len(arr) < orig_len:
-            return np.pad(arr, (0, orig_len - len(arr)))
-        return arr[:orig_len]
-
-    return _fix(s1_hi), _fix(s2_hi)
+    # Reconcile to the input length (the resample round-trip can drift a few
+    # samples): shared right-trim/tail-pad primitive from stages.base.
+    return match_length(s1_hi, orig_len), match_length(s2_hi, orig_len)
 
 
 def _pit_swap_if_needed(
@@ -667,43 +664,15 @@ class SeparationStage(Stage):
                 combined_vad_mask=np.maximum(mask1, mask2),
                 sample_rate=sr,
             )
-            # Guard: adjacent emit regions must never cross. snap_to_silence
-            # can extend each boundary outward by up to seam_search_radius_s
-            # + snap_silence_max_extend_s (~0.35 s); with routing's 0.5 s
-            # merge gap, the previous region's extended end and this one's
-            # extended start can overlap — the same audio would then be
-            # spliced into two overlap events (duplicated words in the
-            # transcript). Clamp this region's start to the previous end.
-            if results and emit_start_s < results[-1]["emit_end"]:
-                prev_emit_end = results[-1]["emit_end"]
-                if prev_emit_end >= emit_end_s:
-                    # Full swallow: the previous region's extended emit already
-                    # covers this overlap end-to-end, so the clamp would yield a
-                    # zero-length emit (emit_start >= emit_end). Appending it
-                    # would drop this overlap's speech from BOTH speaker streams
-                    # AND the transcript silently: _slice_emit returns a
-                    # zero-length array (skipped by _build_events) while its
-                    # degenerate (emit_start, emit_end) span is a no-op in the
-                    # solo-blocked-set subtraction, so the span is never
-                    # reclaimed as solo either. Instead skip this entry and fold
-                    # its span into the previous emit (extend if needed), so the
-                    # swallowed speech rides the previous overlap event and the
-                    # blocked set covers it exactly once. (SCOPE §4.1: log, don't
-                    # silently drop.)
-                    results[-1]["emit_end"] = float(max(prev_emit_end, emit_end_s))
-                    _log(
-                        f"run: overlap {idx}: emit [{emit_start_s:.3f}, "
-                        f"{emit_end_s:.3f}]s fully swallowed by previous emit_end "
-                        f"{prev_emit_end:.3f}s — folding into previous overlap, "
-                        f"dropping this entry"
-                    )
-                    continue
-                _log(
-                    f"run: overlap {idx}: emit_start {emit_start_s:.3f}s "
-                    f"crossed previous emit_end "
-                    f"{prev_emit_end:.3f}s — clamping"
-                )
-                emit_start_s = prev_emit_end
+            # Guard: adjacent emit regions must never cross (see
+            # _reconcile_emit_boundary). None => this overlap was fully
+            # swallowed and folded into the previous emit — skip it.
+            reconciled_start_s = self._reconcile_emit_boundary(
+                results, idx, emit_start_s, emit_end_s
+            )
+            if reconciled_start_s is None:
+                continue
+            emit_start_s = reconciled_start_s
 
             # The TypedDict schema is defined in `asr_pipeline/context.py`.
             # `s{1,2}_gated` is added by Stage 3c (post_separation_processing).
@@ -740,6 +709,58 @@ class SeparationStage(Stage):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _reconcile_emit_boundary(
+        self,
+        results: list[dict],
+        idx: int,
+        emit_start_s: float,
+        emit_end_s: float,
+    ) -> float | None:
+        """Reconcile this overlap's emit-start against the previous emit region.
+
+        Adjacent emit regions must never cross. snap_to_silence can extend each
+        boundary outward by up to seam_search_radius_s + snap_silence_max_extend_s
+        (~0.35 s); with routing's 0.5 s merge gap, the previous region's extended
+        end and this one's extended start can overlap — the same audio would then
+        be spliced into two overlap events (duplicated words in the transcript).
+
+        Returns the (possibly clamped) emit_start_s to use, or ``None`` when this
+        overlap was fully swallowed by the previous emit — in which case its span
+        is folded into ``results[-1]["emit_end"]`` (mutated in place) and the
+        caller must skip appending this entry.
+        """
+        if not (results and emit_start_s < results[-1]["emit_end"]):
+            return emit_start_s
+        prev_emit_end = results[-1]["emit_end"]
+        if prev_emit_end >= emit_end_s:
+            # Full swallow: the previous region's extended emit already
+            # covers this overlap end-to-end, so the clamp would yield a
+            # zero-length emit (emit_start >= emit_end). Appending it
+            # would drop this overlap's speech from BOTH speaker streams
+            # AND the transcript silently: _slice_emit returns a
+            # zero-length array (skipped by _build_events) while its
+            # degenerate (emit_start, emit_end) span is a no-op in the
+            # solo-blocked-set subtraction, so the span is never
+            # reclaimed as solo either. Instead skip this entry and fold
+            # its span into the previous emit (extend if needed), so the
+            # swallowed speech rides the previous overlap event and the
+            # blocked set covers it exactly once. (SCOPE §4.1: log, don't
+            # silently drop.)
+            results[-1]["emit_end"] = float(max(prev_emit_end, emit_end_s))
+            _log(
+                f"run: overlap {idx}: emit [{emit_start_s:.3f}, "
+                f"{emit_end_s:.3f}]s fully swallowed by previous emit_end "
+                f"{prev_emit_end:.3f}s — folding into previous overlap, "
+                f"dropping this entry"
+            )
+            return None
+        _log(
+            f"run: overlap {idx}: emit_start {emit_start_s:.3f}s "
+            f"crossed previous emit_end "
+            f"{prev_emit_end:.3f}s — clamping"
+        )
+        return prev_emit_end
+
     def _pick_window(
         self,
         start_s: float,

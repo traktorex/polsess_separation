@@ -231,20 +231,3 @@ def parse_eaf(path: str | Path) -> dict[str, list[Utterance]]:
         utts.sort(key=lambda u: u.start)
         out[label] = utts
     return out
-
-
-def format_untimed_gt(texts: Iterable[str]) -> str:
-    """Render utterance texts as an untimed GT file body (header + one per line).
-
-    The inverse of the ``_parse_untimed`` reader, kept beside it so the format
-    has exactly one definition. Blank/whitespace-only texts are dropped (an
-    empty utterance carries nothing to score). Returns a trailing-newline'd
-    string (empty body → just the header line).
-    """
-    body = [t.strip() for t in texts if t and t.strip()]
-    return "\n".join([_UNTIMED_HEADER, *body]) + "\n"
-
-
-def concat_utterances(utts: Iterable[Utterance]) -> str:
-    """Join the text of all utterances with single spaces."""
-    return " ".join(u.text for u in utts if u.text)

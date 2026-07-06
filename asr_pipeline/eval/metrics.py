@@ -523,49 +523,31 @@ def orc_wer_multistream(
     return _wer_result(orc, "orc_wer")
 
 
-def orc_cer_multistream(
+def orc_cer_charopt(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
     session_id: str,
     lang: str = "pl",
 ) -> Dict[str, object]:
-    """ORC-CER on a multi-stream hypothesis — the character analog of
-    :func:`orc_wer_multistream`. Char-tokenizes both sides (spaces scored, as in
-    :func:`cp_cer_meeteval`) so meeteval's ORC routine returns CER. The gap
-    ``cp-CER - ORC-CER`` is the attribution penalty in characters; ORC-CER <=
-    cp-CER always. Returns ``{"orc_cer", "errors", "length"}``."""
+    """ORC-CER re-optimised at the CHARACTER level — char analog of
+    :func:`orc_wer_multistream`.
+
+    Char-tokenizes both sides (spaces scored, as in :func:`cp_cer_meeteval`) and
+    runs meeteval's ORC routine on the char tokens, so the reference→stream
+    routing is chosen to minimise *character* errors — NOT reused from the
+    word-level assignment. (The ``charopt`` name marks that re-optimisation; it
+    reads more permissively than :func:`orc_cer_meeteval`, which reuses ORC-WER's
+    word-level routing.) The gap ``cp-CER - ORC-CER`` is the attribution penalty
+    in characters; ORC-CER <= cp-CER always. Returns
+    ``{"orc_cer", "errors", "length"}``."""
     from meeteval.wer import orcwer
 
     ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang, char_level=True)
     hyp = _ensure_nonempty_hyp(
         _seglst_from_dict(hyp_utts_by_spk, session_id, lang, char_level=True),
-        session_id, "orc_cer_multistream",
+        session_id, "orc_cer_charopt",
     )
     return _wer_result(orcwer(ref, hyp)[session_id], "orc_cer")
-
-
-def mimo_cer_multistream(
-    ref_utts_by_spk: Dict[str, List[Utterance]],
-    hyp_utts_by_spk: Dict[str, List[Utterance]],
-    session_id: str,
-    lang: str = "pl",
-) -> Dict[str, object]:
-    """MIMO-CER on a multi-stream hypothesis — the character analog of
-    :func:`mimo_wer_meeteval` on a per-speaker dict. The granularity-robust
-    content floor in characters. Returns ``{"mimo_cer", "errors", "length"}``.
-
-    SLOW: meeteval's MIMO assignment search blows up on char-token sequences
-    (~150x the word-level cost, ~11 s on a 90 s fragment), so it is NOT used in
-    routine scoring (rescore_stratified uses ORC-CER, which is ~0.7 s and
-    coincides with MIMO-CER on this data). Kept for one-off granularity checks."""
-    from meeteval.wer import mimower
-
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang, char_level=True)
-    hyp = _ensure_nonempty_hyp(
-        _seglst_from_dict(hyp_utts_by_spk, session_id, lang, char_level=True),
-        session_id, "mimo_cer_multistream",
-    )
-    return _wer_result(mimower(ref, hyp)[session_id], "mimo_cer")
 
 
 def cp_cer_meeteval(
@@ -673,7 +655,7 @@ def orc_cer_meeteval(
     routing (each reference utterance → the hypothesis stream that recognised it
     best), then score characters under **that fixed routing** — reusing the WER
     assignment exactly as :func:`cp_cer_meeteval` reuses cpWER's, *not*
-    re-optimising ORC at the character level (that is :func:`orc_cer_multistream`,
+    re-optimising ORC at the character level (that is :func:`orc_cer_charopt`,
     which grants extra routing freedom and so reads more permissively). Each
     stream's reference is concatenated in segment/time order, matching ORC's own
     merge; the single-stream case therefore reduces to the time-ordered mixture
@@ -724,10 +706,11 @@ def mimo_cer_meeteval(
     then score characters under **that fixed merge**.
 
     We deliberately reuse the word-level assignment rather than re-running MIMO
-    at the character level (:func:`mimo_cer_multistream`): char-level MIMO
-    re-optimises the interleaving to minimise *character* errors, which grants
-    extra reordering freedom (more permissive) and is ~150x slower. This is the
-    same discipline as :func:`cp_cer_meeteval`. Consequence of that choice: the
+    at the character level: a char-level MIMO would re-optimise the interleaving
+    to minimise *character* errors, which grants extra reordering freedom (more
+    permissive) and is ~150x slower (meeteval's MIMO assignment blows up on
+    char-token sequences). This is the same discipline as :func:`cp_cer_meeteval`.
+    Consequence of that choice: the
     merge is word-optimal, not char-optimal, so MIMO-CER is **not** guaranteed
     ≤ ORC-CER at the character level — a small, honest artifact of reusing the
     word assignment, not a bug.
@@ -764,3 +747,56 @@ def mimo_cer_meeteval(
             per_hyp[hyp_spk].append(q.popleft())
     leftover = [u for q in queues.values() for u in q]  # defensive; normally empty
     return _cer_under_routing(per_hyp, hyp_by_spk, lang, leftover)
+
+
+# ---------------------------------------------------------------------------
+# Per-fragment metric collection — the shared scoring core
+# ---------------------------------------------------------------------------
+
+
+def per_fragment_metrics(
+    ref: Dict[str, List[Utterance]],
+    hyp: Dict[str, List[Utterance]],
+    session_id: str,
+    mix: "List[Utterance] | None" = None,
+    lang: str = "pl",
+) -> Dict[str, Dict[str, object]]:
+    """The full Layer-3 per-fragment metric set for one (ref, hyp[, mix]).
+
+    ONE definition of the "meeteval calls → per-fragment err/len dicts" loop that
+    used to be re-implemented in ``scripts/rescore_stratified.py``,
+    ``scripts/dump_sweep_results.py`` and ``scripts/sweep_pipeline.py``. It returns
+    the raw meeteval sub-result dicts (each carrying its own ``errors``/``length``)
+    keyed by role, so every caller reads exactly the counts it always read — no
+    rounding, no aggregation here. The three call sites did not compute an
+    *identical* set (rescore skipped the mixture ORC-WER floor; sweep skipped the
+    ORC-CER content floor); this computes the **union** so numbers are unchanged
+    for each caller while the loop lives in one place. Extra computed sub-results
+    a caller doesn't use are simply ignored — no reported value changes.
+
+    ``ref``/``hyp`` are per-speaker dicts (already normalized/prepared by the
+    caller — e.g. rescore's ``--normalize`` runs before this). ``mix`` is the
+    single-stream mixture transcript (flat utterance list) or ``None``; the three
+    ``mix_*`` floors are present iff ``mix is not None``. Keys::
+
+        cp       cpwer_meeteval        (cpWER + tcpWER)
+        cpcer    cp_cer_meeteval       (cpCER, reuse cpWER routing)
+        orc      orc_wer_multistream   (WER content floor, ORC)
+        mimo     mimo_wer_meeteval     (WER content floor, MIMO — pipeline hyp)
+        orccer   orc_cer_charopt       (CER content floor, ORC char-reoptimised)
+        mix_orc  orc_wer_meeteval      (mixture floor, ORC-WER)      [mix only]
+        mix_mimo mimo_wer_meeteval     (mixture floor, MIMO-WER)     [mix only]
+        mix_cer  mimo_cer_meeteval     (mixture floor, MIMO-CER)     [mix only]
+    """
+    out: Dict[str, Dict[str, object]] = {
+        "cp": cpwer_meeteval(ref, hyp, session_id=session_id, lang=lang),
+        "cpcer": cp_cer_meeteval(ref, hyp, session_id=session_id, lang=lang),
+        "orc": orc_wer_multistream(ref, hyp, session_id=session_id, lang=lang),
+        "mimo": mimo_wer_meeteval(ref, hyp, session_id=session_id, lang=lang),
+        "orccer": orc_cer_charopt(ref, hyp, session_id=session_id, lang=lang),
+    }
+    if mix is not None:
+        out["mix_orc"] = orc_wer_meeteval(ref, mix, session_id=session_id, lang=lang)
+        out["mix_mimo"] = mimo_wer_meeteval(ref, mix, session_id=session_id, lang=lang)
+        out["mix_cer"] = mimo_cer_meeteval(ref, mix, session_id=session_id, lang=lang)
+    return out

@@ -51,7 +51,7 @@ import torchaudio.functional as AF
 from asr_pipeline.config import PostSeparationProcessingConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.debug_log import dlog
-from asr_pipeline.stages.base import Stage
+from asr_pipeline.stages.base import Stage, match_length as _match_length
 
 
 def _log(msg: str) -> None:
@@ -61,16 +61,11 @@ def _log(msg: str) -> None:
     dlog("post_separation_processing", msg)
 
 
-def _match_length(x: np.ndarray, n: int) -> np.ndarray:
-    """Right-trim or zero-pad ``x`` to exactly ``n`` samples (tail-aligned).
-
-    The neural backends emit audio that can drift by a handful of samples
-    (STFT/iSTFT framing, resample rounding), so both the gated output (matched
-    to the un-extended ``orig_len``) and the VAD mask (matched to the backend
-    output length before the multiply) are reconciled through this one
-    primitive. Zero-padding the mask gates out any uncovered tail.
-    """
-    return x[:n] if len(x) >= n else np.pad(x, (0, n - len(x)))
+# `_match_length` is the shared right-trim/zero-pad primitive promoted to
+# `stages.base`; imported under this name so callers (and the regression test)
+# keep the historical local reference. Used to reconcile both the gated output
+# (matched to ``orig_len``) and the VAD mask (matched to the backend output
+# length before the multiply — zero-padding gates out any uncovered tail).
 
 
 # ---------------------------------------------------------------------------

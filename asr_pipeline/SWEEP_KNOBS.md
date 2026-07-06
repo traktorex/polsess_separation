@@ -114,7 +114,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `overlap_rms_match_solo` | bool | true | true/false | 🆕 | toggle off untried (only on-by-default) |
 | `per_piece_rms_norm` | bool | false | true/false | ✅ | `asm_perpiece_rms` |
 | `target_rms` | float?\| None | null | — | 🆕 | only with `per_piece_rms_norm`; untried |
-| `min_solo_for_anchor_s` | float s | 3.0 | ~2–5 | 🆕 | sets the *diagnostic* `weak_anchor` flag only — NOT the actual anchor fallback (that's `anchor_min_duration_s`); minor |
+| `weak_anchor_warn_below_s` | float s | 3.0 | ~2–5 | 🆕 | sets the *diagnostic* `weak_anchor` flag only — NOT the actual anchor fallback (that's `anchor_min_duration_s`); minor |
 | `anchor_min_duration_s` | float s | 0.25 | 0.25–1.0 | ✅ | **promoted 2026-06-22** (was hard-coded `_ECAPA_MIN_DURATION_S`); the REAL fallback trigger — speaker with < this solo gets no anchor → positional attribution; `dr_anchmin*` |
 | `overlap_min_duration_s` | float s | 0.1 | 0.1–0.35 | ✅ | **promoted 2026-06-22** (was hard-coded `_ECAPA_OVERLAP_MIN_DURATION_S`); gates whether the per-overlap ECAPA decision runs at all (~⅓ of overlaps are sub-0.5 s); `dr_ovmin*` |
 | `crossfade_ms` | float ms | 5.0 | ~2–10 | 🆕 | internal seam fade; minor |

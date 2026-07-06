@@ -37,7 +37,7 @@ import torch
 
 from asr_pipeline.config import EnhancementConfig
 from asr_pipeline.context import PipelineContext
-from asr_pipeline.stages.base import Stage
+from asr_pipeline.stages.base import Stage, match_length
 
 
 # Inputs shorter than this (samples) are passed through unenhanced — too short
@@ -190,11 +190,9 @@ class _ClearVoiceBackend:
                 res_type=self.resample_quality,
             )
 
-        if len(out) > orig_len:
-            out = out[:orig_len]
-        elif len(out) < orig_len:
-            out = np.pad(out, (0, orig_len - len(out)))
-        return out.astype(np.float32)
+        # Reconcile length: the underlying decode helpers pad to their chunking
+        # window and don't truncate. Shared right-trim/tail-pad primitive.
+        return match_length(out, orig_len).astype(np.float32)
 
     def _cv_call(self, x_native: np.ndarray) -> np.ndarray:
         """One ClearVoice forward on native-rate mono audio → mono output."""

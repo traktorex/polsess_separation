@@ -49,7 +49,7 @@ post_separation_processing:
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
 assembly:
   enabled: true
-  min_solo_for_anchor_s: 3.0
+  weak_anchor_warn_below_s: 3.0
   anchor_max_duration_s: 240.0
   output_mode: full_length
   silence_separator_s: 0.3

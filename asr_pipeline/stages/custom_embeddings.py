@@ -35,6 +35,8 @@ pyannote default.
 
 from __future__ import annotations
 
+import gc
+from contextlib import contextmanager
 from typing import Optional
 
 import numpy as np
@@ -244,3 +246,79 @@ def build_custom_embedding(
     if name == "ecapa2":
         return ECAPA2Embedding(device=device)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared embedding plumbing (used by diarization + relabel + the L1 merge)
+# ---------------------------------------------------------------------------
+
+
+def embed_intervals(intervals, audio, sr, embedder, *, cap_s=None):
+    """Concatenate the audio under `intervals` (time order, optionally capped to
+    `cap_s` seconds) and embed it with a custom ECAPA2-style wrapper.
+
+    Single source of truth for the "slice intervals → concat → embed → drop if
+    unreliable" pattern shared by ``diarization._merge_surplus_heads`` and
+    ``relabel._embed_spans``. Returns a ``(dim,)`` float32 embedding, or ``None``
+    when there is nothing to embed, the usable audio is below the embedder's
+    ``min_num_samples``, or the embedding is non-finite — all three mean "no
+    reliable embedding", and callers treat them the same (drop the row / keep the
+    pass-1 label).
+    """
+    slices = []
+    total = 0.0
+    for s, e in intervals:
+        if cap_s is not None and total >= cap_s:
+            break
+        lo = max(0, int(s * sr))
+        hi = int(e * sr)
+        if cap_s is not None:
+            hi = min(hi, lo + int(max(0.0, cap_s - total) * sr))
+        if hi > lo:
+            slices.append(np.asarray(audio[lo:hi], dtype=np.float32))
+            total += (hi - lo) / sr
+    if not slices:
+        return None
+    concat = np.concatenate(slices)
+    if len(concat) < embedder.min_num_samples:
+        return None
+    wav = torch.from_numpy(concat).reshape(1, 1, -1)
+    emb = np.asarray(embedder(wav)[0], dtype=np.float32)
+    if not np.all(np.isfinite(emb)):
+        return None
+    return emb
+
+
+def release_gpu_memory() -> None:
+    """Drop-a-model teardown: run GC and free CUDA's cached blocks.
+
+    The phase-major discipline (one big model on the GPU at a time) requires the
+    ECAPA2 embedder's memory be released the moment a stage is done with it.
+    Shared by every ECAPA2 lifecycle site — ``RelabelStage.unload``,
+    ``AssemblyStage.unload``, and the scoped ``with_ecapa2`` teardown below — so
+    the same three lines aren't copied per site.
+    """
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+@contextmanager
+def with_ecapa2(device):
+    """Build an ECAPA2 embedder on `device`, yield it, and free it on exit.
+
+    For SCOPED ECAPA2 usage — the diarization L1 surplus-head merge, which loads
+    the embedder AFTER the Sortformer worker subprocess has exited (GPU free) and
+    must free it before the stage returns so it never co-resides with the next
+    stage's model (phase-major). Teardown (drop + ``release_gpu_memory``) runs
+    even if the body raises, exactly like the previous try/finally. Stages whose
+    embedder lives across the orchestrator's load→run→unload lifecycle
+    (Relabel/Assembly) keep their split load/unload and call ``release_gpu_memory``
+    in ``unload`` instead.
+    """
+    embedder = build_custom_embedding("ecapa2", device)
+    try:
+        yield embedder
+    finally:
+        del embedder
+        release_gpu_memory()
