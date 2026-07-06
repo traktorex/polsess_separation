@@ -29,13 +29,6 @@ Backends are selected via ``PostSeparationProcessingConfig.backend``:
                    params, fully convolutional, claims SOTA at 8→16 kHz.
                    Requires the user to download the pretrained
                    generator (see ``asr_pipeline/vendor/ap_bwe/README.md``).
-  - ``flowhigh`` : FlowHigh (Yun et al., ICASSP 2025, arXiv 2501.04926).
-                   Single-step flow-matching SR model from Resemble AI's
-                   pip-installable fork. Native output 48 kHz —
-                   downsampled to the pipeline rate inside the backend.
-                   Install:  ``pip install git+https://github.com/resemble-ai/flowhigh.git@dev``
-                   Checkpoints auto-download on first
-                   ``FlowHighSR.from_pretrained()``.
 
 This stage is always-on: it has no ``enabled`` flag because Stage 4
 depends on ``s_gated`` being populated. Skipping it would break
@@ -245,141 +238,6 @@ class _APBWEBackend:
 
 
 # ---------------------------------------------------------------------------
-# FlowHigh backend
-# ---------------------------------------------------------------------------
-
-
-_FLOWHIGH_TARGET_SR = 48_000  # FlowHigh always outputs at 48 kHz.
-# Shortest input FlowHigh can frame. generate() upsamples to 48 kHz — a fixed
-# 3× the pipeline-rate length, independent of flowhigh_input_sr — then runs
-# torch.stft(n_fft=2048, center=True, pad_mode="reflect"), whose reflect-pad
-# needs the 48 kHz length > n_fft//2 = 1024, i.e. pipeline-rate length > 341.
-# 512 clears that with margin and matches the silero VAD all-ones boundary.
-_FLOWHIGH_MIN_SAMPLES = 512
-
-
-class _FlowHighBackend:
-    """FlowHigh (Yun et al. 2025) wrapper.
-
-    The Resemble AI fork exposes a single ``FlowHighSR`` class with
-    ``from_pretrained(device=...)`` and ``generate(wav, sr_in, sr_out)``.
-    Native output is 48 kHz; we downsample back to the pipeline rate
-    inside ``extend()`` so callers see a same-rate-in/same-rate-out
-    contract identical to AP-BWE.
-
-    ``input_sr`` is configurable because the README only confirms
-    12 / 16 kHz; the model accepts "any rate < 48 kHz" but 8 kHz isn't
-    listed. Surfacing the knob lets the user A/B 16 (no resample-in) vs.
-    8 (matches the separator's actual spectral content) by ear.
-
-    Notes (foot-guns encoded in ``extend()``):
-    - Feed ``generate()`` numpy, not a tensor. Its signature declares
-      ``audio: np.ndarray`` and its scipy/librosa upsampling path operates
-      on numpy; the README example's ``torchaudio.load()`` tensor triggers
-      an implicit ``.numpy()`` on a CUDA tensor that fails.
-    - Restore the input level. FlowHigh peak-normalises internally and emits
-      output at a ~0.99 peak independent of the input, so we capture the
-      input RMS and rescale the output to it — keeping the level-preserving
-      "same level in, same level out" contract shared with naive / AP-BWE
-      (rather than relying on Stage 4's ``overlap_rms_match_solo``). The RMS
-      is measured on the *original* ``audio_np`` at ``sample_rate``, not the
-      resampled-for-model copy: a 16→8 kHz downsample drops 4-8 kHz energy
-      for full-band signals and would under-restore the level.
-    """
-
-    def __init__(self, input_sr: int) -> None:
-        self.input_sr = input_sr
-        self._model = None
-        self._device: torch.device | None = None
-
-    def load(self, device: torch.device) -> None:
-        try:
-            from flowhigh import FlowHighSR
-        except ImportError as e:
-            raise ImportError(
-                "FlowHigh backend selected but `flowhigh` package is not "
-                "installed. Install with:\n"
-                "    pip install git+https://github.com/resemble-ai/flowhigh.git@dev"
-            ) from e
-
-        _log(f"load: instantiating FlowHighSR on {device}...")
-        t0 = time.perf_counter()
-        # The README example passes the device as a string ("cuda"); pass
-        # the exact torch.device string so we honour the pipeline's device
-        # selection (in particular a specific GPU index).
-        model = FlowHighSR.from_pretrained(device=str(device))
-        try:
-            n_params = sum(p.numel() for p in model.parameters())
-        except Exception:
-            n_params = 0
-        _log(
-            f"load: FlowHigh ready "
-            f"({n_params/1e6:.1f}M params, {time.perf_counter()-t0:.2f}s) — "
-            f"input_sr={self.input_sr}, target_sr={_FLOWHIGH_TARGET_SR}"
-        )
-
-        self._model = model
-        self._device = device
-
-    def unload(self) -> None:
-        self._model = None
-        self._device = None
-
-    @torch.no_grad()
-    def extend(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        if self._model is None:
-            raise RuntimeError("FlowHighBackend.extend called before load().")
-        if len(audio_np) < _FLOWHIGH_MIN_SAMPLES:
-            # Too short to frame at 48 kHz — pass through (see constant).
-            return audio_np.astype(np.float32)
-
-        orig_len = len(audio_np)
-
-        # Feed generate() numpy, not a tensor (see class docstring Notes).
-        audio_for_model = audio_np.astype(np.float32)
-        if sample_rate != self.input_sr:
-            # Resample on CPU via torchaudio.functional (matches the rate
-            # of the rest of the pipeline's audio handling). Small input,
-            # cheap.
-            x_t = torch.from_numpy(audio_for_model).unsqueeze(0)
-            x_t = AF.resample(x_t, sample_rate, self.input_sr)
-            audio_for_model = x_t.squeeze(0).numpy().astype(np.float32)
-
-        # Input RMS to restore on the output (FlowHigh's output level is
-        # independent of the input). Measured on the original audio at
-        # sample_rate — see class docstring Notes for why not the resampled copy.
-        in_rms = float(np.sqrt(np.mean(audio_np.astype(np.float32) ** 2)))
-
-        wav_hr = self._model.generate(
-            audio_for_model, self.input_sr, _FLOWHIGH_TARGET_SR
-        )
-
-        # Output is a torch tensor on the model's device, shape [1, T].
-        if wav_hr.dim() == 2:
-            wav_hr = wav_hr.squeeze(0)
-        if _FLOWHIGH_TARGET_SR != sample_rate:
-            wav_hr = AF.resample(
-                wav_hr.unsqueeze(0), _FLOWHIGH_TARGET_SR, sample_rate
-            ).squeeze(0)
-        out = _match_length(wav_hr.detach().cpu().numpy().astype(np.float32), orig_len)
-
-        # Restore the input level. Guard only out_rms (divide-by-zero): a
-        # near-silent input (in_rms≈0) must map to a near-silent output, NOT be
-        # left at FlowHigh's ~0.99 internal peak — so in_rms is NOT in the guard.
-        out_rms = float(np.sqrt(np.mean(out ** 2))) if len(out) else 0.0
-        if out_rms > 1e-8:
-            out = out * (in_rms / out_rms)
-            # Defensive: peak-clip protection. If the rescale pushed past
-            # ±1 (shouldn't happen if input RMS < 1, but pathological
-            # inputs exist), shrink to fit. Hard-clipping here would be
-            # worse than a slight level miss.
-            peak = float(np.max(np.abs(out)))
-            if peak > 1.0:
-                out = out / peak
-        return out
-
-
-# ---------------------------------------------------------------------------
 # Stage dispatcher
 # ---------------------------------------------------------------------------
 
@@ -394,7 +252,7 @@ class PostSeparationProcessingStage(Stage):
         super().__init__(enabled=True)
         self.config = config
         self._backend: (
-            _NaiveBackend | _APBWEBackend | _FlowHighBackend | None
+            _NaiveBackend | _APBWEBackend | None
         ) = None
 
     def load(self, device: torch.device) -> None:
@@ -403,8 +261,6 @@ class PostSeparationProcessingStage(Stage):
             backend = _NaiveBackend()
         elif self.config.backend == "ap_bwe":
             backend = _APBWEBackend(self.config.checkpoint_path)
-        elif self.config.backend == "flowhigh":
-            backend = _FlowHighBackend(self.config.flowhigh_input_sr)
         else:
             raise ValueError(
                 f"Unknown post_separation_processing backend: "
@@ -415,14 +271,9 @@ class PostSeparationProcessingStage(Stage):
 
     def load_signature(self) -> tuple:
         # The naive backend has no per-config state beyond the backend
-        # name itself. AP-BWE additionally pulls a checkpoint from disk;
-        # FlowHigh's behaviour depends on the input-SR knob (changing it
-        # doesn't change which weights are loaded, but it changes what gets
-        # fed to the model, so include it for re-run safety).
+        # name itself. AP-BWE additionally pulls a checkpoint from disk.
         if self.config.backend == "ap_bwe":
             return (self.config.backend, self.config.checkpoint_path)
-        if self.config.backend == "flowhigh":
-            return (self.config.backend, self.config.flowhigh_input_sr)
         return (self.config.backend,)
 
     def unload(self) -> None:

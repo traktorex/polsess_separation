@@ -57,16 +57,11 @@ post_separation_processing:
   # Stage 4 depends on the masked `_gated` arrays this stage writes,
   # so there's no `enabled` knob. Set `backend: naive` to apply only
   # the mask (no neural BWE).
-  backend: ap_bwe                       # naive | ap_bwe | flowhigh
+  backend: ap_bwe                       # naive | ap_bwe
   # PyTorch .pt files are zip archives — point at the file itself, NOT at
   # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
   # (extension is ignored by torch.load).
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
-  # FlowHigh-only knob: input SR fed to FlowHighSR.generate(). README
-  # examples use 12k/16k; the docs say "any rate < 48 kHz".  Default
-  # 16000 = pipeline rate, no resample on the way in. Ignored unless
-  # `backend: flowhigh`.
-  flowhigh_input_sr: 16000
 
 assembly:
   enabled: true

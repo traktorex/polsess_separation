@@ -89,77 +89,30 @@ def _runs_from_mask(mask, fs: float, max_gap: float, min_dur: float):
     return [(a, b) for a, b in runs if (b - a) >= min_dur - 1e-9]
 
 
-def _hysteresis_mask(prob, fs: float, onset: float, offset: float, pad_s: float):
-    """Dual-threshold (Schmitt) binarization of a 1-D probability sequence -> bool
-    mask, with symmetric padding. Ported from NeMo `vad_utils.binarization`
-    (onset opens / offset closes) + pad_onset/pad_offset (V41_PREREG.md L2).
-
-    A segment OPENS at ``prob >= onset`` and stays open until ``prob < offset``;
-    each closed segment is padded by ``pad_s`` on both sides (clamped to the
-    array). The CALLER applies the SAME gap-fill / min-duration post-steps
-    (`_runs_from_mask`, with `_SF_MAX_GAP_S` / `_SF_MIN_DUR_S`) the flat path
-    uses, so the two binarization modes differ ONLY in how the raw mask is formed.
-    """
-    prob = np.asarray(prob, dtype=np.float32)
-    T = prob.shape[0]
-    mask = np.zeros(T, dtype=bool)
-    pad = int(round(pad_s / fs)) if fs > 0 else 0
-    active = False
-    seg_start = 0
-    for i in range(T):
-        if not active:
-            if prob[i] >= onset:
-                active = True
-                seg_start = i
-        elif prob[i] < offset:
-            mask[max(0, seg_start - pad):min(T, i + pad)] = True
-            active = False
-    if active:                       # segment still open at the end of the array
-        mask[max(0, seg_start - pad):T] = True
-    return mask
-
-
-def sortformer_turns_from_probs(
-    probs,
-    frame_rate_s: float,
-    threshold: float,
-    *,
-    binarization: str = "flat",
-    onset: float = 0.70,
-    offset: float = 0.30,
-    pad_s: float = 0.06,
-):
+def sortformer_turns_from_probs(probs, frame_rate_s: float, threshold: float):
     """(T, S) sigmoid speaker-activity -> (turns, diag).
 
     Ported from docs/sweep_plan/eend_probe.py::candidate_metrics (the turn +
     head-selection half; the probe's diar_purity scoring stays in the probe).
-    Binarize the activity (flat threshold, or v4.1 L2 hysteresis when
-    ``binarization == "hysteresis"``), gap-fill + min-duration each head's runs,
-    pick the 2 most-active heads as our 2 speakers, and label their runs. Flat
-    mode is byte-identical to the pre-v4.1 behaviour. Returns:
+    Binarize the activity at ``threshold``, gap-fill + min-duration each head's
+    runs, pick the 2 most-active heads as our 2 speakers, and label their runs.
+    Returns:
 
       turns : list of (label, start_s, end_s) for the 2 selected heads. Labels
               are "SPEAKER_00"/"SPEAKER_01" (most-active head first) so downstream
               — which treats speaker ids as opaque, sorted strings for the A/B
               letter — sees a clean 2-speaker set exactly like the pyannote path.
       diag  : {"top2", "n_spk", "leak", "head_dur_s", "speech_s", "head_runs",
-              "frame_rate_s", "binarization"} where `leak` is the activity
-              duration OUTSIDE the top-2 heads as a fraction of total speech (the
-              head-3/4 Polish-OOD miscount signal), `n_spk` the # heads active
-              > 5% of speech, and `head_runs` the per-head (gap-filled,
-              min-dur'd) run lists the L1 merge lever consumes.
+              "frame_rate_s"} where `leak` is the activity duration OUTSIDE the
+              top-2 heads as a fraction of total speech (the head-3/4 Polish-OOD
+              miscount signal), `n_spk` the # heads active > 5% of speech, and
+              `head_runs` the per-head (gap-filled, min-dur'd) run lists the L1
+              merge lever consumes.
     """
     probs = np.asarray(probs, dtype=np.float32)
     fs = float(frame_rate_s)
     S = probs.shape[1]
-    if binarization == "hysteresis":
-        mask = np.stack(
-            [_hysteresis_mask(probs[:, k], fs, onset, offset, pad_s)
-             for k in range(S)],
-            axis=1,
-        )                                           # (T, S)
-    else:
-        mask = probs >= threshold                   # (T, S)
+    mask = probs >= threshold                       # (T, S)
     # per-head runs + active duration (after smoothing)
     head_runs = [
         _runs_from_mask(mask[:, k], fs, _SF_MAX_GAP_S, _SF_MIN_DUR_S)
@@ -196,7 +149,6 @@ def sortformer_turns_from_probs(
         # census diag (the stage copies only scalar fields into metadata).
         "head_runs": head_runs,
         "frame_rate_s": fs,
-        "binarization": binarization,
     }
     return turns, diag
 
@@ -224,7 +176,7 @@ def build_sortformer_annotation(turns):
 
 
 # ---------------------------------------------------------------------------
-# v4.1 rehabilitation levers (V41_PREREG.md) — L1 merge, L3 coverage
+# Surplus-head merge (V41_PREREG.md L1)
 # ---------------------------------------------------------------------------
 
 
@@ -289,7 +241,7 @@ def _merge_surplus_heads(
     >= `min_dur_s`, embed that audio span and assign it to the top-2 speaker whose
     SOLO speech (frames where ONLY that head is active) it embeds closest to — but
     only when the cosine margin (best - other) >= `merge_margin`. Below-margin runs
-    stay discarded and are counted as UNRESOLVED leak (feeds L4). Runs shorter than
+    stay discarded and are counted as UNRESOLVED leak. Runs shorter than
     `min_dur_s` stay discarded (embeddings unreliable) and are counted separately.
     Local embedding only — NO global clustering.
 
@@ -340,7 +292,7 @@ def _merge_surplus_heads(
         run_emb = _embed_audio_span([(a, b)], audio, sr, embedder) if have_refs else None
         if run_emb is None:
             # No usable reference for one speaker, or an unembeddable run → cannot
-            # decide → leave discarded, count as unresolved leak (feeds L4).
+            # decide → leave discarded, count as unresolved leak.
             stats["n_unresolved"] += 1
             stats["unresolved_s"] += dur
             continue
@@ -364,51 +316,6 @@ def _merge_surplus_heads(
         stats["unresolved_s"] / speech_tot if speech_tot > 0 else 0.0
     )
     return merged_turns, stats
-
-
-def pyannote_segmentation_speech(audio, sample_rate: int, device, token):
-    """L3 coverage reference (V41_PREREG.md L3): pyannote segmentation-3.0 used
-    VAD-style → a list of (start_s, end_s) speech intervals. NO clustering, NO
-    embedding — just the union of local speech activity.
-
-    segmentation-3.0 is MIT-licensed and already a dependency (it is the
-    segmentation model inside speaker-diarization-3.1). Loaded here directly, after
-    the sortformer worker subprocess has exited so the GPU is free. Fails loud if
-    the model can't load (SCOPE §4). Monkeypatched out in tests.
-    """
-    from pyannote.audio.pipelines import VoiceActivityDetection
-
-    vad = VoiceActivityDetection(
-        segmentation="pyannote/segmentation-3.0", token=token
-    )
-    # segmentation-3.0 is a powerset model: VoiceActivityDetection fixes its
-    # onset/offset internally (0.5) and only exposes the min-duration post-filters.
-    # 0.0/0.0 = no post-filtering → the raw speech union (the VAD-style intent).
-    vad.instantiate({"min_duration_on": 0.0, "min_duration_off": 0.0})
-    vad.to(device)
-    waveform = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
-    try:
-        annotation = vad({"waveform": waveform, "sample_rate": sample_rate})
-        speech = [
-            (float(seg.start), float(seg.end))
-            for seg in annotation.get_timeline().support()
-        ]
-    finally:
-        # Free the reference model before returning so a subsequent L3/L4 pyannote
-        # fallback isn't co-resident with it (phase-major, one model at a time).
-        del vad
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    return speech
-
-
-def _uncovered_seconds(reference, covered) -> float:
-    """Seconds of `reference` speech NOT covered by `covered` (both interval
-    lists): sum of (reference − covered). Pure."""
-    return float(
-        sum(e - s for s, e in _subtract(_coalesce(reference), _coalesce(covered)))
-    )
 
 
 def run_sortformer_worker(venv_py: str, model_id: str, audio, sample_rate: int):
@@ -632,9 +539,8 @@ class DiarizationStage(Stage):
         self._device = None    # torch.device recorded at load (v4.1 needs it)
 
     def load(self, device: torch.device) -> None:
-        # Record the device: the sortformer v4.1 levers load their own models
-        # (ECAPA2 for L1, segmentation-3.0 for L3, the pyannote fallback for L3/L4)
-        # inside run(), which only receives ctx.
+        # Record the device: the sortformer L1 merge lever loads its own model
+        # (ECAPA2) inside run(), which only receives ctx.
         self._device = device
         if self.config.backend == "sortformer":
             self._load_sortformer()
@@ -726,13 +632,11 @@ class DiarizationStage(Stage):
 
     def _run_sortformer(self, ctx: PipelineContext) -> None:
         """Sortformer (EEND) branch of run(). Shell out to the isolated-venv
-        worker for the raw per-frame activity, then follow the fixed v4.1 decision
-        order: binarize (flat|hysteresis, L2) → top-2 selection → L1 merge (if
-        enabled) → recompute diag → L3 coverage + L4 miscount gate (if fallback
-        gated) → either the pyannote fallback OR build the SAME DiarizationResult
-        as the pyannote path. All lever activations + fallback decisions are logged
-        loudly and recorded in `ctx.diarization_diag` (→ metadata.json). Every lever
-        defaults OFF, so a stock sortformer config is byte-identical to v4."""
+        worker for the raw per-frame activity, then follow the fixed decision
+        order: binarize (L2) → top-2 selection → L1 merge (if head_policy=merge)
+        → build the SAME DiarizationResult as the pyannote path. Lever activations
+        are logged loudly and recorded in `ctx.diarization_diag` (→ metadata.json).
+        """
         if self._venv_py is None:
             raise RuntimeError("DiarizationStage.run called before load().")
         if ctx.audio is None:
@@ -742,20 +646,14 @@ class DiarizationStage(Stage):
         _log(
             f"run: diarizing {len(ctx.audio)/ctx.sample_rate:.1f}s via sortformer "
             f"(num_speakers={dcfg.num_speakers}, "
-            f"binarization={dcfg.sortformer_binarization}, "
-            f"head_policy={dcfg.sortformer_head_policy}, "
-            f"fallback={dcfg.sortformer_fallback})..."
+            f"head_policy={dcfg.sortformer_head_policy})..."
         )
         probs, frame_rate_s = run_sortformer_worker(
             self._venv_py, dcfg.sortformer_model_id, ctx.audio, ctx.sample_rate,
         )
-        # L2 — binarize (flat | hysteresis) + top-2 selection.
+        # L2 — binarize (flat threshold) + top-2 selection.
         turns, diag = sortformer_turns_from_probs(
             probs, frame_rate_s, dcfg.sortformer_threshold,
-            binarization=dcfg.sortformer_binarization,
-            onset=dcfg.sortformer_onset,
-            offset=dcfg.sortformer_offset,
-            pad_s=dcfg.sortformer_pad_s,
         )
         top2 = diag["top2"]
         head_runs = diag["head_runs"]
@@ -787,7 +685,6 @@ class DiarizationStage(Stage):
             "speech_s": round(float(diag["speech_s"]), 3),
             "head_dur_s": [round(float(d), 3) for d in diag["head_dur_s"]],
             "head_policy": dcfg.sortformer_head_policy,
-            "binarization": dcfg.sortformer_binarization,
             "miscount_warning": bool(miscount),
         }
 
@@ -832,63 +729,9 @@ class DiarizationStage(Stage):
             )
             sf_diag["merge"] = merge_stats
 
-        # Recomputed diag feeding L4: post-L1 unresolved leak when merge ran, else
-        # the raw top-2 leak (L1 off → nothing was resolved).
-        gate_leak = (
-            merge_stats["unresolved_leak"] if merge_stats is not None
-            else float(diag["leak"])
-        )
-
-        # --- L3 coverage + L4 miscount gate ---
-        fallback_reason = None
-        if dcfg.sortformer_fallback == "gated":
-            # Covered union = the two top-2 heads' binarized speech + any merged
-            # runs; the reference is an INDEPENDENT segmentation-3.0 speech union.
-            covered = [iv for k in top2 for iv in head_runs[k]]
-            covered += [(a, b) for (_lbl, a, b) in merged_turns]
-            _log("run: L3 gate — computing pyannote segmentation-3.0 coverage "
-                 "reference (VAD-style, no clustering)...")
-            reference = pyannote_segmentation_speech(
-                ctx.audio, ctx.sample_rate, self._device, dcfg.hf_token
-            )
-            uncovered_s = _uncovered_seconds(reference, covered)
-            reference_s = float(sum(e - s for s, e in _coalesce(reference)))
-            covered_s = float(sum(e - s for s, e in _coalesce(covered)))
-            l3_fires = uncovered_s > dcfg.sortformer_coverage_budget_s
-            l4_fires = miscount and gate_leak > _SF_LEAK_WARN_FRAC
-            sf_diag["fallback"] = {
-                "policy": "gated",
-                "uncovered_s": round(uncovered_s, 3),
-                "budget_s": dcfg.sortformer_coverage_budget_s,
-                "reference_speech_s": round(reference_s, 3),
-                "covered_speech_s": round(covered_s, 3),
-                "gate_leak_frac": round(float(gate_leak), 4),
-                "l3_coverage_fires": bool(l3_fires),
-                "l4_miscount_unresolved_fires": bool(l4_fires),
-                "fired": False,
-                "reason": None,
-            }
-            reasons = []
-            if l3_fires:
-                reasons.append(
-                    f"coverage-uncovered {uncovered_s:.1f}s > "
-                    f"{dcfg.sortformer_coverage_budget_s}s"
-                )
-            if l4_fires:
-                reasons.append("miscount-unresolved")
-            if reasons:
-                fallback_reason = "; ".join(reasons)
-                sf_diag["fallback"]["fired"] = True
-                sf_diag["fallback"]["reason"] = fallback_reason
-                sf_diag["fallback"]["backend"] = "pyannote"
-
         ctx.diarization_diag = sf_diag
 
-        if fallback_reason is not None:
-            self._pyannote_fallback(ctx, fallback_reason)
-            return
-
-        # No fallback — build the sortformer annotation (+ any L1-merged turns).
+        # Build the sortformer annotation (+ any L1-merged turns).
         diar = build_sortformer_annotation(turns)
         seg_df = diar_to_segments_df(diar)
         ovl_df = _overlaps_df_from_annotation(diar)
@@ -902,45 +745,8 @@ class DiarizationStage(Stage):
         _log(
             f"run: {len(seg_df)} segment(s), {len(ovl_df)} overlap region(s) "
             f"over {total_dur:.1f}s (sortformer, top2 heads={top2}, "
-            f"policy={dcfg.sortformer_head_policy}, "
-            f"binarization={dcfg.sortformer_binarization})"
+            f"policy={dcfg.sortformer_head_policy})"
         )
-
-    def _pyannote_fallback(self, ctx: PipelineContext, reason: str) -> None:
-        """L3/L4 fallback: run the pyannote backend END-TO-END for THIS recording.
-
-        The sortformer worker subprocess has already exited, so the GPU is free.
-        The stage was loaded as the sortformer backend (no pyannote pipeline
-        resident), so build + run + free a pyannote pipeline locally here. Loud
-        (SCOPE §4 — an explicit designed policy, never a silent substitution); the
-        firing is already recorded in `ctx.diarization_diag`. A missing hf_token /
-        embedder failure surfaces loudly from `build_pyannote_pipeline`."""
-        _log(
-            f"run: FALLBACK to pyannote backend ({reason}) — building the pyannote "
-            f"pipeline for this recording and re-diarizing..."
-        )
-        pipeline = build_pyannote_pipeline(self.config, self._device)
-        try:
-            diar = run_pyannote(
-                pipeline, ctx.audio, ctx.sample_rate, self.config.num_speakers
-            )
-            seg_df = diar_to_segments_df(diar)
-            ovl_df = _overlaps_df_from_annotation(diar)
-            total_dur = len(ctx.audio) / ctx.sample_rate
-            ctx.diarization = DiarizationResult(
-                segments_df=seg_df,
-                overlaps_df=ovl_df,
-                total_duration_s=total_dur,
-            )
-            _log(
-                f"run: pyannote fallback produced {len(seg_df)} segment(s), "
-                f"{len(ovl_df)} overlap region(s) over {total_dur:.1f}s"
-            )
-        finally:
-            del pipeline
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
 
     def unload(self) -> None:
         self._pipeline = None

@@ -19,7 +19,6 @@ from asr_pipeline.stages.relabel import (
     _align_to_old,
     _cluster_two,
     _overlap_pairings,
-    _run_level_flips,
     _solo_embedding_spans,
 )
 
@@ -476,98 +475,6 @@ def test_overlap_pairings_same_cluster_omitted():
     clusters = np.array([0, 0])           # both to cluster 0 → degenerate
     pairings = _overlap_pairings(meta, clusters, {0: "A", 1: "B"}, ["A", "B"])
     assert pairings == {}
-
-
-# ---------------------------------------------------------------------------
-# Run-level (contiguous-run) relabel pass — _run_level_flips
-# ---------------------------------------------------------------------------
-
-
-def test_run_level_flips_contiguous_misrouted_run():
-    """A contiguous run of A-voice solos filed to stream B (the class-A chunk
-    swap): its mean [1,0] is closer to the clean A centroid than to the
-    contaminated B centroid → the whole run flips. Real B / A runs stay put."""
-    # time order streams: B, A, A, [B B B]=misrouted A-voice, A, A, B.
-    emb = np.array([
-        [0.0, 1.0],   # 0 real B
-        [1.0, 0.0],   # 1 real A
-        [1.0, 0.0],   # 2 real A
-        [1.0, 0.0],   # 3 misrouted (A-voice, labelled B)
-        [1.0, 0.0],   # 4 misrouted
-        [1.0, 0.0],   # 5 misrouted
-        [1.0, 0.0],   # 6 real A
-        [1.0, 0.0],   # 7 real A
-        [0.0, 1.0],   # 8 real B
-    ], dtype=np.float32)
-    stream = ["B", "A", "A", "B", "B", "B", "A", "A", "B"]
-    flips = _run_level_flips(np.arange(9), emb, stream, ["A", "B"], run_margin=0.05)
-    assert flips == {3, 4, 5}
-
-
-def test_run_level_below_margin_run_untouched():
-    """Same geometry, but a margin (0.5) wider than the run's ~0.168 centroid gap
-    leaves the run untouched — the flip only fires on a clear pull."""
-    emb = np.array([
-        [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0],
-        [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0],
-    ], dtype=np.float32)
-    stream = ["B", "A", "A", "B", "B", "B", "A", "A", "B"]
-    flips = _run_level_flips(np.arange(9), emb, stream, ["A", "B"], run_margin=0.5)
-    assert flips == set()
-
-
-def test_run_level_whole_stream_run_not_flipped():
-    """A run that IS its entire stream is never flipped (the flip-everything
-    guard). Here stream B = a single contiguous A-voice run; a whole-stream flip
-    would just be a free global swap and empty B — so it is skipped."""
-    emb = np.array([
-        [0.0, 1.0], [0.0, 1.0],   # A stream (B-voice embeddings, but that is fine)
-        [1.0, 0.0], [1.0, 0.0],   # B stream = entire, A-voice
-        [0.0, 1.0], [0.0, 1.0],   # A stream
-    ], dtype=np.float32)
-    stream = ["A", "A", "B", "B", "A", "A"]
-    flips = _run_level_flips(np.arange(6), emb, stream, ["A", "B"], run_margin=0.05)
-    assert flips == set()
-
-
-def test_run_level_empty_stream_no_flips():
-    """One stream has no members → nothing to compare against → no flips."""
-    emb = np.array([[1.0, 0.0], [1.0, 0.0]], dtype=np.float32)
-    stream = ["A", "A"]
-    flips = _run_level_flips(np.arange(2), emb, stream, ["A", "B"], run_margin=0.05)
-    assert flips == set()
-
-
-def test_run_level_deterministic():
-    """Same input twice → identical flip set (fixed centroids, fixed order)."""
-    emb = np.array([
-        [0.0, 1.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0],
-        [1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [0.0, 1.0],
-    ], dtype=np.float32)
-    stream = ["B", "A", "A", "B", "B", "B", "A", "A", "B"]
-    f1 = _run_level_flips(np.arange(9), emb, stream, ["A", "B"], 0.05)
-    f2 = _run_level_flips(np.arange(9), emb, stream, ["A", "B"], 0.05)
-    assert f1 == f2 == {3, 4, 5}
-
-
-def test_run_level_stage_threaded_and_safe(monkeypatch):
-    """End-to-end wiring: run_level=True is threaded through RelabelStage.run and
-    is SAFE — it never corrupts a case the global relabel already resolves. On the
-    db15fc57 miniature the run-level pass runs but changes nothing (the global
-    2-means already produced a self-consistent labelling), so labels match the
-    run_level=False result exactly."""
-    table = {0.5: [1.0, 0.0], -0.5: [0.0, 1.0], 0.25: [0.95, 0.05]}
-    marks = [(0.0, 2.0, 0.5), (2.0, 4.0, -0.5), (4.0, 6.0, 0.5), (6.0, 8.5, 0.25)]
-    rows = [("A", 0.0, 2.0), ("B", 2.0, 4.0), ("A", 4.0, 6.0), ("B", 6.0, 8.5)]
-
-    def _labels(run_level):
-        stage = _stage(RelabelConfig(enabled=True, audio_source="raw",
-                                     run_level=run_level), _FakeEmbedder(table))
-        ctx = _ctx(rows, _audio_with(marks, 9.0))
-        stage.run(ctx)
-        return ctx.diarization.segments_df["speaker"].tolist()
-
-    assert _labels(True) == _labels(False) == ["A", "B", "A", "A"]
 
 
 # ---------------------------------------------------------------------------

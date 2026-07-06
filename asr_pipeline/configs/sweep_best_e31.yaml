@@ -49,7 +49,7 @@ routing:
 
 enhancement:
   enabled: true
-  backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k | zipenhancer_16k
+  backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k
   max_segment_length_s: 8.0
   # Observation Adding (Iwamoto 2022 / Wang 2024): out = (1-r)*enhanced + r*observed,
   # on the solo regions. r=0.3 is the sweep optimum — dilutes SE artifacts that hurt
@@ -76,9 +76,8 @@ separation:
 
 post_separation_processing:
   # ap_bwe (NOT naive): on e31, naive BWE was worse than ap_bwe.
-  backend: ap_bwe                          # naive | ap_bwe | flowhigh
+  backend: ap_bwe                          # naive | ap_bwe
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
-  flowhigh_input_sr: 16000
 
 assembly:
   enabled: true

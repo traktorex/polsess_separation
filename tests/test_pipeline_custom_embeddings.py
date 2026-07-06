@@ -7,7 +7,7 @@ Two tiers:
     BaseCustomSpeakerEmbedding mask handling, NaN-on-short-signal bookkeeping,
     shape contract, and the diarization-stage injection path with the real
     model build stubbed out.
-  - Real-model tests (ecapa2 / eres2netv2): SKIPPED when the model can't be
+  - Real-model tests (ecapa2): SKIPPED when the model can't be
     loaded (offline / not downloaded). They assert the verified interface
     constants and a basic discriminativeness sanity check.
 
@@ -140,7 +140,7 @@ def test_build_custom_embedding_unknown_returns_none():
 
 
 def test_custom_names_inventory():
-    assert set(CUSTOM_EMBEDDING_NAMES) == {"ecapa2", "eres2netv2"}
+    assert set(CUSTOM_EMBEDDING_NAMES) == {"ecapa2"}
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +258,7 @@ def _two_speaker_signals(n=16000, sr=16000):
     return a, b
 
 
-@pytest.mark.parametrize("name", ["ecapa2", "eres2netv2"])
+@pytest.mark.parametrize("name", ["ecapa2"])
 def test_real_model_interface_and_discriminativeness(name):
     emb = _try_build(name)
 

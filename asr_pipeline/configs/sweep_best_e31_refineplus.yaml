@@ -93,7 +93,6 @@ separation:
 post_separation_processing:
   backend: ap_bwe
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
-  flowhigh_input_sr: 16000
 
 # 2nd-pass identity re-clustering (B+). Runs after post_separation_processing,
 # before assembly; re-IDs solos + assigns overlap streams via global ECAPA2

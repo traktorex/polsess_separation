@@ -22,16 +22,11 @@ classes do:
     ``.min_num_samples`` (int).
   - ``.to(device)`` returning ``self``.
 
-The two supported embedders (verified empirically on CPU, 2026-06-18):
+The supported embedder (verified empirically on CPU, 2026-06-18):
 
   - ``"ecapa2"``  — Jenthe/ECAPA2, a single TorchScript blob ``ecapa2.pt``
     pulled from the HF hub. Input ``(batch, num_samples)`` @ 16 kHz, output
     ``(batch, 192)``. CC-BY-NC (research use). min_num_samples ≈ 400.
-  - ``"eres2netv2"`` — 3D-Speaker ERes2NetV2 via ModelScope
-    (``iic/speech_eres2netv2_sv_zh-cn_16k-common``). embed_dim 192, 16 kHz.
-    Its nn.Module extracts its own Kaldi fbank and processes ONE utterance per
-    forward (it treats a stacked batch as multichannel), so the wrapper loops
-    per batch item. min_num_samples ≈ 2000 (std-pooling needs >1 frame).
 
 SCOPE §4 (no silent substitution): if a configured custom embedder fails to
 load, the factory / wrapper raises loudly — there is no quiet fall-back to the
@@ -40,7 +35,6 @@ pyannote default.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -52,7 +46,7 @@ from pyannote.audio.core.inference import BaseInference
 
 # Names accepted by the `diarization.embedding` config knob (besides None and a
 # pyannote-format model id). Single source of truth for the selector.
-CUSTOM_EMBEDDING_NAMES = ("ecapa2", "eres2netv2")
+CUSTOM_EMBEDDING_NAMES = ("ecapa2",)
 
 
 def _apply_masks_to_signals(
@@ -83,10 +77,8 @@ class BaseCustomSpeakerEmbedding(BaseInference):
     Subclasses implement ``_embed_one(signal_1d) -> (dimension,) np.ndarray``
     for a single mono 16 kHz waveform on ``self.device``; this base supplies the
     pyannote interface (``__call__`` with the mask/short-signal/NaN bookkeeping,
-    the four properties, ``to``). The per-item loop matches both custom models'
-    real constraint: neither batches cleanly (ECAPA2's TorchScript does, but
-    ERes2NetV2 treats a stacked batch as multichannel), so a single uniform
-    per-item path keeps behaviour identical and simple.
+    the four properties, ``to``). Embedding is done one item at a time — a single
+    uniform per-item path keeps the mask/short-signal/NaN bookkeeping simple.
     """
 
     metric = "cosine"
@@ -239,103 +231,16 @@ class ECAPA2Embedding(BaseCustomSpeakerEmbedding):
         return out.squeeze(0).float().cpu().numpy()
 
 
-class ERes2NetV2Embedding(BaseCustomSpeakerEmbedding):
-    """3D-Speaker ERes2NetV2 embedder via ModelScope.
-
-    The underlying nn.Module (``SpeakerVerificationERes2NetV2``) extracts its own
-    Kaldi fbank and embeds ONE utterance per forward — a stacked batch is treated
-    as multichannel — so the base class's per-item loop is required, not just
-    convenient. Returns ``(1, embed_dim)``; we squeeze to ``(embed_dim,)``.
-
-    ModelScope's pipeline framework imports the HF ``datasets`` library, which
-    the repo's own top-level ``datasets/`` package shadows when the repo root is
-    on ``sys.path`` (the same collision ``enhancement.py`` dodges with a
-    subprocess worker). A persistent embedder can't live in a subprocess — it is
-    called per clustering batch — so instead we drop the repo root from
-    ``sys.path`` and purge any cached shadow ``datasets`` module *only* around
-    the ModelScope import, then restore ``sys.path`` so the repo's ``datasets/``
-    registry stays importable for the rest of the run.
-    """
-
-    MODEL_ID = "iic/speech_eres2netv2_sv_zh-cn_16k-common"
-
-    def __init__(self, device: Optional[torch.device] = None) -> None:
-        super().__init__(device=device)
-        self.model_ = self._build_modelscope_model(self.device)
-
-    @staticmethod
-    def _build_modelscope_model(device: torch.device):
-        import os
-        import sys
-
-        repo_root = str(Path(__file__).resolve().parents[2])
-        saved_path = list(sys.path)
-        saved_datasets = {
-            name: mod
-            for name, mod in sys.modules.items()
-            if name == "datasets" or name.startswith("datasets.")
-        }
-        try:
-            # Remove repo root / cwd entries so `import datasets` inside
-            # modelscope resolves to the site-packages HF library, not the
-            # repo's separator-dataset registry.
-            sys.path = [
-                p for p in sys.path if p not in ("", ".", os.getcwd(), repo_root)
-            ]
-            for name in list(saved_datasets):
-                del sys.modules[name]
-
-            from modelscope.pipelines import pipeline
-            from modelscope.utils.constant import Tasks
-
-            # Fail loud (SCOPE §4) if the model can't be fetched/built.
-            sv = pipeline(
-                task=Tasks.speaker_verification,
-                model=ERes2NetV2Embedding.MODEL_ID,
-                device=("cuda" if device.type == "cuda" else "cpu"),
-            )
-            model = sv.model  # SpeakerVerificationERes2NetV2 (an nn.Module)
-        finally:
-            # Restore sys.path and the shadow `datasets` module so later code
-            # (e.g. the separator's registry) sees the repo package again.
-            sys.path = saved_path
-            for name, mod in saved_datasets.items():
-                sys.modules.setdefault(name, mod)
-        return model
-
-    def _move_to(self, device: torch.device) -> None:
-        # The ModelScope wrapper holds its device internally; move the inner
-        # embedding network and update the recorded device so fbank-side tensors
-        # land on the right device.
-        self.model_.embedding_model.to(device)
-        self.model_.device = device
-
-    @property
-    def dimension(self) -> int:
-        # Known from the model config — avoids a probe forward that would trip
-        # the std-pooling on a zero signal.
-        return int(self.model_.embed_dim)
-
-    @torch.inference_mode()
-    def _embed_one(self, signal: torch.Tensor) -> np.ndarray:
-        # The module accepts a 1-D waveform on CPU (it does fbank on CPU then
-        # moves features to its own device); returns (1, embed_dim).
-        out = self.model_(signal.float().cpu())
-        return np.asarray(out).reshape(-1)
-
-
 def build_custom_embedding(
     name: str, device: torch.device
 ) -> Optional[BaseCustomSpeakerEmbedding]:
     """Return a custom embedder wrapper for a known custom name, else None.
 
     ``name`` is the value of ``DiarizationConfig.embedding``. Returns the
-    wrapper (already on ``device``) for ``"ecapa2"`` / ``"eres2netv2"``, and
-    ``None`` for anything else — letting the caller treat a non-custom string as
-    a pyannote-format model id. Construction failures propagate (SCOPE §4).
+    wrapper (already on ``device``) for ``"ecapa2"``, and ``None`` for anything
+    else — letting the caller treat a non-custom string as a pyannote-format
+    model id. Construction failures propagate (SCOPE §4).
     """
     if name == "ecapa2":
         return ECAPA2Embedding(device=device)
-    if name == "eres2netv2":
-        return ERes2NetV2Embedding(device=device)
     return None

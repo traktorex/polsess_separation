@@ -218,106 +218,6 @@ class _ClearVoiceBackend:
         return _hann_overlap_add(x, window, self._cv_call)
 
 
-class _ZipEnhancerBackend:
-    """ZipEnhancer — ModelScope ``iic/speech_zipenhancer_ans_multiloss_16k_base``,
-    a native-16 kHz monaural speech-enhancement model, run via ModelScope's
-    ``acoustic-noise-suppression`` pipeline.
-
-    Unlike :class:`_ClearVoiceBackend`, the ModelScope pipeline does its own
-    internal segmented decode for long audio, so we do NOT overlap-add here.
-    I/O follows the pipeline's tested path: write the native-rate mono signal
-    to a temp wav, call the pipeline, read ``result['output_pcm']`` (int16 PCM).
-    """
-
-    native_sample_rate = 16_000
-
-    def __init__(
-        self,
-        model_id: str = "iic/speech_zipenhancer_ans_multiloss_16k_base",
-        resample_quality: str = "soxr_hq",
-    ) -> None:
-        self.model_id = model_id
-        # librosa/soxr resampling filter (EnhancementConfig.resample_quality);
-        # only used when the working SR differs from this 16k backend's native.
-        self.resample_quality = resample_quality
-        self._device: torch.device | None = None
-        self._worker = None
-
-    def load(self, device: torch.device) -> None:
-        # Run via a subprocess worker (scripts/zipenhancer_worker.py). The repo
-        # has a local top-level `datasets/` package that shadows the HF
-        # `datasets` modelscope's pipeline framework imports, so the modelscope
-        # call is isolated in a process whose sys.path excludes the repo root.
-        from pathlib import Path
-
-        self._device = device
-        self._worker = (
-            Path(__file__).resolve().parents[2] / "scripts" / "zipenhancer_worker.py"
-        )
-        if not self._worker.exists():
-            raise FileNotFoundError(f"ZipEnhancer worker missing: {self._worker}")
-
-    def unload(self) -> None:
-        self._device = None
-        self._worker = None
-
-    @torch.no_grad()
-    def enhance(self, audio_np: np.ndarray, sample_rate: int) -> np.ndarray:
-        if self._worker is None:
-            raise RuntimeError("ZipEnhancerBackend.enhance called before load().")
-        if len(audio_np) < _MIN_ENHANCE_SAMPLES:
-            return audio_np.astype(np.float32)
-
-        orig_len = len(audio_np)
-        x = audio_np.astype(np.float32)
-        if sample_rate != self.native_sample_rate:
-            x = librosa.resample(
-                x, orig_sr=sample_rate, target_sr=self.native_sample_rate,
-                res_type=self.resample_quality,
-            )
-
-        out = self._run(x)
-
-        if sample_rate != self.native_sample_rate:
-            out = librosa.resample(
-                out, orig_sr=self.native_sample_rate, target_sr=sample_rate,
-                res_type=self.resample_quality,
-            )
-
-        if len(out) > orig_len:
-            out = out[:orig_len]
-        elif len(out) < orig_len:
-            out = np.pad(out, (0, orig_len - len(out)))
-        return out.astype(np.float32)
-
-    def _run(self, x_16k: np.ndarray) -> np.ndarray:
-        """One ModelScope ANS forward via the subprocess worker → mono float."""
-        import os
-        import subprocess
-        import sys
-        import tempfile
-
-        import soundfile as sf
-
-        fd_i, tin = tempfile.mkstemp(suffix=".wav"); os.close(fd_i)
-        fd_o, tout = tempfile.mkstemp(suffix=".wav"); os.close(fd_o)
-        try:
-            sf.write(tin, x_16k, self.native_sample_rate)
-            subprocess.run(
-                [sys.executable, str(self._worker), "--in", tin, "--out", tout,
-                 "--model", self.model_id, "--sr", str(self.native_sample_rate)],
-                check=True, capture_output=True, cwd="/tmp",
-            )
-            out, _ = sf.read(tout, dtype="float32")
-        finally:
-            for p in (tin, tout):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-        return np.asarray(out, dtype=np.float32)
-
-
 # ---------------------------------------------------------------------------
 # Stage dispatcher
 # ---------------------------------------------------------------------------
@@ -337,17 +237,13 @@ class EnhancementStage(Stage):
     def __init__(self, config: EnhancementConfig) -> None:
         super().__init__(enabled=config.enabled)
         self.config = config
-        self._backend: "_ClearVoiceBackend | _ZipEnhancerBackend | None" = None
+        self._backend: "_ClearVoiceBackend | None" = None
 
     def load(self, device: torch.device) -> None:
         if self.config.backend in _CLEARVOICE_BACKENDS:
             model_name, native_sr = _CLEARVOICE_BACKENDS[self.config.backend]
             backend = _ClearVoiceBackend(
                 model_name, native_sr, self.config.resample_quality
-            )
-        elif self.config.backend == "zipenhancer_16k":
-            backend = _ZipEnhancerBackend(
-                resample_quality=self.config.resample_quality
             )
         else:
             raise ValueError(

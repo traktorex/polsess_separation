@@ -4,9 +4,8 @@ Run as a SUBPROCESS by ``asr_pipeline.stages.transcription._CohereXBackend``.
 It runs in the ISOLATED CohereX venv — the ``coherex`` package + its transformers
 pins + the 2B Cohere model conflict with the main venv, so they cannot share it.
 The backend invokes this script with the ``$COHEREX_VENV_PY`` interpreter, NOT the
-main-venv python. (Same isolation rationale as the Brouhaha scorer; contrast
-``zipenhancer_worker.py``, which only escapes an import shadow and still uses the
-main venv via ``sys.executable``.)
+main-venv python. (Same isolation rationale as the Brouhaha scorer and the
+Sortformer worker, whose pinned deps also cannot share the main venv.)
 
 Keep this script free of any ``import`` from the repo (no ``asr_pipeline`` etc.) —
 it must import cleanly under the CohereX venv, which does not have the repo on path,
