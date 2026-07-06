@@ -1,4 +1,4 @@
-"""Stage 5 — Whisper ASR per assembled per-speaker stream.
+"""Stage 5 — ASR per assembled per-speaker stream.
 
 Two backends, same per-speaker output shape::
 
@@ -6,9 +6,10 @@ Two backends, same per-speaker output shape::
                                 "text": str, "words": [...optional...]}],
      "language": str}
 
-- ``whisper``: vanilla openai-whisper. Fast to set up, no wav2vec2 alignment.
 - ``whisperx``: WhisperX = faster-whisper + wav2vec2 forced alignment.
   Word-level timestamps to ±50 ms. Supports arbitrary HF Whisper model ids.
+  The default/shipped backend.
+- ``coherex``: Cohere ASR (Diffio-AI/CohereX) via an isolated-venv subprocess.
 """
 
 from __future__ import annotations
@@ -144,137 +145,6 @@ def _sanitise_segment_times(seg: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Backends
 # ---------------------------------------------------------------------------
-
-
-class _WhisperBackend:
-    """openai-whisper. Canonical OpenAI checkpoints only."""
-
-    def __init__(self, cfg: TranscriptionConfig) -> None:
-        self.cfg = cfg
-        self._model = None
-        self._device: Optional[torch.device] = None
-        self._retry_ignored_logged = False
-
-    def load(self, device: torch.device) -> None:
-        import whisper
-        self._model = whisper.load_model(self.cfg.model_name, device=str(device))
-        self._device = device
-
-    def transcribe(self, audio: np.ndarray) -> dict:
-        # Decode knobs route into openai-whisper's transcribe(): temperature /
-        # no_speech_threshold / compression_ratio_threshold /
-        # condition_on_previous_text are named params; beam_size / patience /
-        # length_penalty fall through transcribe()'s **decode_options into
-        # DecodingOptions.
-        #
-        # The anti-hallucination knobs (no_repeat_ngram_size / repetition_penalty
-        # / hallucination_silence_threshold) plus suppress_numerals / vad_onset /
-        # vad_offset are WhisperX/faster-whisper-only. openai-whisper has no
-        # equivalent (the first two would crash DecodingOptions;
-        # hallucination_silence_threshold is a DIFFERENT algorithm; suppress_
-        # numerals / vad_* belong to WhisperX's VAD pipeline) — forwarding any
-        # would crash or silently substitute behaviour (SCOPE §4.1). So they are
-        # never passed here; a non-default value with backend="whisper" is a loud
-        # configuration error, not a quiet downgrade. The defaults are no-ops.
-        self._reject_unsupported_knobs()
-        self._warn_retry_ignored()
-        # length_penalty is supported by both backends, but the no-op value
-        # differs: faster-whisper's default is 1.0 while openai-whisper's is
-        # None (plain length normalisation), and 1.0 there is NOT equivalent to
-        # None. So forward it only when the user actually changed it — at the
-        # default 1.0 we omit it entirely, letting openai-whisper use its own
-        # None default and keeping the baseline byte-identical.
-        extra_decode = {}
-        if self.cfg.length_penalty != 1.0:
-            extra_decode["length_penalty"] = self.cfg.length_penalty
-        result = self._model.transcribe(
-            audio.astype(np.float32),
-            language=self.cfg.language,
-            initial_prompt=self.cfg.initial_prompt,
-            word_timestamps=self.cfg.word_timestamps,
-            beam_size=self.cfg.beam_size,
-            patience=self.cfg.patience,
-            temperature=tuple(_temperature_schedule(self.cfg.temperature)),
-            condition_on_previous_text=self.cfg.condition_on_previous_text,
-            no_speech_threshold=self.cfg.no_speech_threshold,
-            compression_ratio_threshold=self.cfg.compression_ratio_threshold,
-            verbose=False,
-            **extra_decode,
-        )
-        return _normalise_result(result, self.cfg.language)
-
-    def _reject_unsupported_knobs(self) -> None:
-        """Fail loud if a faster-whisper-only anti-hallucination knob is set
-        while running the openai-whisper backend (SCOPE §4.1: no silent
-        substitution). Defaults (0 / 1.0 / None) pass silently — they're a
-        no-op and never reach openai-whisper."""
-        unsupported = []
-        if self.cfg.no_repeat_ngram_size != 0:
-            unsupported.append(
-                f"no_repeat_ngram_size={self.cfg.no_repeat_ngram_size}"
-            )
-        if self.cfg.repetition_penalty != 1.0:
-            unsupported.append(
-                f"repetition_penalty={self.cfg.repetition_penalty}"
-            )
-        if self.cfg.hallucination_silence_threshold is not None:
-            unsupported.append(
-                "hallucination_silence_threshold="
-                f"{self.cfg.hallucination_silence_threshold}"
-            )
-        # chunk_size is a WhisperX VAD-pipeline knob; openai-whisper does its own
-        # internal 30 s windowing and has no equivalent, so a non-default value
-        # would silently no-op (SCOPE §4.1). 30 = WhisperX default = no-op here.
-        if self.cfg.chunk_size != 30:
-            unsupported.append(f"chunk_size={self.cfg.chunk_size}")
-        # suppress_numerals is popped by WhisperX's load_model into its VAD
-        # pipeline; openai-whisper has no equivalent. False = no-op.
-        if self.cfg.suppress_numerals:
-            unsupported.append(
-                f"suppress_numerals={self.cfg.suppress_numerals}"
-            )
-        # vad_onset / vad_offset configure WhisperX's internal VAD; openai-whisper
-        # has none. Defaults (0.500 / 0.363 = WhisperX's own) = no-op.
-        if self.cfg.vad_onset != 0.500:
-            unsupported.append(f"vad_onset={self.cfg.vad_onset}")
-        if self.cfg.vad_offset != 0.363:
-            unsupported.append(f"vad_offset={self.cfg.vad_offset}")
-        if unsupported:
-            raise ValueError(
-                "transcription.backend='whisper' (openai-whisper) does not "
-                "support the WhisperX-only knobs "
-                f"{', '.join(unsupported)} — they only take effect with "
-                "backend='whisperx'. Either switch to backend='whisperx' or "
-                "leave these at their defaults (no_repeat_ngram_size=0, "
-                "repetition_penalty=1.0, hallucination_silence_threshold=None, "
-                "chunk_size=30, suppress_numerals=False, vad_onset=0.500, "
-                "vad_offset=0.363)."
-            )
-
-    def _warn_retry_ignored(self) -> None:
-        """Visibly note (once) that the collapsed-window detect-and-retry is
-        WhisperX-only and is ignored on the openai-whisper backend.
-
-        Unlike the hard-rejected WhisperX-only knobs above, retry defaults to ON
-        (retry_collapsed_chunk_size=8), so a hard error would break this backend
-        out of the box. openai-whisper does its own internal windowing and does
-        not exhibit the WhisperX over-merge collapse, so retry simply does not
-        apply — but per SCOPE §4.1 the no-op must be visible, not silent."""
-        if self.cfg.retry_collapsed_chunk_size != 0 and not self._retry_ignored_logged:
-            _log(
-                "retry_collapsed_chunk_size="
-                f"{self.cfg.retry_collapsed_chunk_size} is a WhisperX-only knob "
-                "(collapsed-window detect-and-retry); the 'whisper' "
-                "(openai-whisper) backend has its own internal windowing and "
-                "does not collapse this way, so it is ignored here. Switch to "
-                "backend='whisperx' to enable it, or set "
-                "retry_collapsed_chunk_size=0 to silence this note."
-            )
-            self._retry_ignored_logged = True
-
-    def unload(self) -> None:
-        self._model = None
-        self._device = None
 
 
 _CT2_CACHE_ROOT = Path.home() / "models" / "ct2-whisper"
@@ -758,8 +628,8 @@ class _CohereXBackend:
     CohereX's ``coherex`` package + transformers pins + the 2B Cohere model
     conflict with the main venv, so this backend shells out to the interpreter in
     ``$COHEREX_VENV_PY`` running ``scripts/coherex_worker.py`` (same isolation as
-    the Brouhaha scorer; unlike ``_ZipEnhancerBackend`` it cannot use the main
-    venv via ``sys.executable``). The worker loads the model per ``transcribe``
+    the Brouhaha scorer; its pinned deps mean it cannot use the main venv via
+    ``sys.executable``). The worker loads the model per ``transcribe``
     call (per-speaker stream) — a few extra minutes on a single recording; for
     batch eval use the standalone sweep driver instead. SCOPE §4: a missing
     venv/worker is a loud crash at ``load`` — never a silent fall-back to WhisperX.
@@ -849,7 +719,7 @@ class TranscriptionStage(Stage):
         super().__init__(enabled=config.enabled)
         self.config = config
         self._backend: Optional[
-            _WhisperBackend | _WhisperXBackend | _CohereXBackend] = None
+            _WhisperXBackend | _CohereXBackend] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -875,9 +745,7 @@ class TranscriptionStage(Stage):
                 f"backend='whisperx' or set {'/'.join(set_flags)}=False. (No "
                 "silent no-op — SCOPE §4.1.)"
             )
-        if self.config.backend == "whisper":
-            self._backend = _WhisperBackend(self.config)
-        elif self.config.backend == "whisperx":
+        if self.config.backend == "whisperx":
             self._backend = _WhisperXBackend(self.config)
         elif self.config.backend == "coherex":
             self._backend = _CohereXBackend(self.config)

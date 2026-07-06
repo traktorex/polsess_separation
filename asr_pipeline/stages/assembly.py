@@ -38,12 +38,10 @@ For each speaker:
 6. Build a `TimestampMap` that records the (concat_*) -> (orig_*) mapping
    for every piece in every speaker's stream.
 
-Speaker-assignment offers three strategies via `assembly.overlap_assignment`:
-the POC's per-overlap ECAPA argmax (`ecapa_argmax`, default); `continuity_tiebreak`,
-which re-decides near-ties with local bracketing-solo anchors (`_continuity_decision`);
-and `consensus_2means`, a global constrained-2-means pre-pass (`_consensus_pairings`)
-that decides all overlaps jointly so consensus can overrule a lone confident-but-wrong
-one. All dispatch inside `_assign_overlaps`.
+Speaker assignment uses per-overlap ECAPA argmax against the solo anchors,
+with the RelabelStage's B+ global-clustering handoff (`external_pairings`)
+taking precedence for the overlaps it covers. All dispatch inside
+`_assign_overlaps`.
 """
 
 from __future__ import annotations
@@ -226,280 +224,6 @@ def _cap_anchor_audio(
 
 def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a * b).sum())
-
-
-def _local_anchor(
-    solo_intervals: list[Interval],
-    ovl_start: float,
-    ovl_end: float,
-    window_s: float,
-    audio: np.ndarray,
-    ecapa,
-    device: torch.device,
-    sr: int,
-    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
-) -> Optional[torch.Tensor]:
-    """ECAPA embedding from a speaker's solo audio bracketing one overlap.
-
-    Concatenates the speaker's solo intervals clipped to ``[ovl_start -
-    window_s, ovl_end + window_s]`` and embeds them. Returns None when there is
-    less than ``anchor_min_duration_s`` of local solo — too little for a stable
-    embedding, so the caller falls back to the global anchor. This is the
-    "speech continuity" signal: the speaker's voice right next to the overlap,
-    which tracks local channel/SNR conditions better than the global anchor.
-    """
-    lo_t = ovl_start - window_s
-    hi_t = ovl_end + window_s
-    slices: list[np.ndarray] = []
-    for s, e in solo_intervals:
-        cs = max(s, lo_t)
-        ce = min(e, hi_t)
-        if ce > cs:
-            lo = int(cs * sr)
-            hi = int(ce * sr)
-            if hi > lo:
-                slices.append(audio[lo:hi].astype(np.float32))
-    if not slices:
-        return None
-    concat = np.concatenate(slices)
-    if len(concat) < int(sr * anchor_min_duration_s):
-        return None
-    return _ecapa_embed(concat, ecapa, device, sr, anchor_min_duration_s).cpu()
-
-
-def _continuity_decision(
-    argmax_pairing: str,
-    straight: float,
-    swapped: float,
-    margin: float,
-    emb1: torch.Tensor,
-    emb2: torch.Tensor,
-    a: str,
-    b: str,
-    ovl: dict,
-    window_s: float,
-    solo_intervals_by_spk: Optional[dict[str, list[Interval]]],
-    audio: Optional[np.ndarray],
-    ecapa,
-    device: torch.device,
-    sr: int,
-    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
-) -> tuple[str, str]:
-    """Continuity tie-break for one overlap. Returns ``(chosen, pairing_label)``.
-
-    When the global-anchor straight/swapped gap clears ``margin`` the global
-    argmax stands (decisive — no need to second-guess). On a near-tie it
-    re-decides using *local* anchors (:func:`_local_anchor`) from the solo audio
-    bracketing the overlap, falling back to the global argmax whenever a local
-    anchor is unavailable or non-finite. Stateless: depends only on this
-    overlap's neighbourhood (no carry-forward chain), so it cannot propagate one
-    wrong decision the way the ``overlap_assign_min_margin`` prior can.
-    """
-    if abs(straight - swapped) >= margin:
-        return argmax_pairing, argmax_pairing
-    if not solo_intervals_by_spk or audio is None:
-        return argmax_pairing, f"{argmax_pairing} (continuity unavailable)"
-    ovl_start = float(ovl["emit_start"])
-    ovl_end = float(ovl["emit_end"])
-    la = _local_anchor(solo_intervals_by_spk.get(a, []), ovl_start, ovl_end,
-                       window_s, audio, ecapa, device, sr, anchor_min_duration_s)
-    lb = _local_anchor(solo_intervals_by_spk.get(b, []), ovl_start, ovl_end,
-                       window_s, audio, ecapa, device, sr, anchor_min_duration_s)
-    if la is None or lb is None:
-        return argmax_pairing, f"{argmax_pairing} (continuity unavailable)"
-    straight_l = _cos(emb1, la) + _cos(emb2, lb)
-    swapped_l = _cos(emb1, lb) + _cos(emb2, la)
-    if not (np.isfinite(straight_l) and np.isfinite(swapped_l)):
-        return argmax_pairing, f"{argmax_pairing} (continuity non-finite)"
-    chosen = "straight" if straight_l >= swapped_l else "swapped"
-    return chosen, f"{chosen} (continuity tie-break)"
-
-
-def _consensus_pairings(
-    overlap_separated: list,
-    anchors: dict[str, Optional[torch.Tensor]],
-    speakers: list[str],
-    ecapa,
-    device: torch.device,
-    sr: int,
-    max_iter: int = 10,
-    overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
-    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
-) -> dict[int, str]:
-    """Global per-overlap pairings by constrained 2-means (consensus).
-
-    Seeds two centroids from the solo anchors, then alternates until the pairings
-    stop changing: (1) assign each overlap's two streams to the centroids by best
-    summed cosine, (2) recompute each centroid from the solo anchor PLUS the
-    overlap embeddings now assigned to it. Because every overlap votes into the
-    centroids, a lone confident-but-wrong per-overlap decision can be overruled
-    by the consensus of the rest — the lever that ecapa_argmax / continuity (both
-    per-overlap) cannot reach. The per-overlap constraint (the two streams go to
-    different speakers) is intrinsic to the straight/swapped choice.
-
-    Returns ``{i_ovl: 'straight'|'swapped'}`` for ECAPA-eligible overlaps only;
-    an empty dict when an anchor is missing or no overlap is eligible (the caller
-    then falls back to the per-overlap argmax path, never dropping a region).
-    """
-    if len(speakers) < 2 or any(anchors.get(s) is None for s in speakers[:2]):
-        return {}
-    a, b = speakers[0], speakers[1]
-    min_len = int(sr * overlap_min_duration_s)
-    embs: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
-    for i, ovl in enumerate(overlap_separated):
-        if "s1_gated" not in ovl or len(ovl["s1_gated"]) < min_len:
-            continue
-        e1 = _ecapa_embed(ovl["s1_gated"], ecapa, device, sr, anchor_min_duration_s).cpu()
-        e2 = _ecapa_embed(ovl["s2_gated"], ecapa, device, sr, anchor_min_duration_s).cpu()
-        if torch.isfinite(e1).all() and torch.isfinite(e2).all():
-            embs[i] = (e1, e2)
-    if not embs:
-        return {}
-    cA, cB = anchors[a].clone(), anchors[b].clone()
-    pairings: dict[int, str] = {}
-    for _ in range(max_iter):
-        new = {
-            i: ("straight"
-                if _cos(e1, cA) + _cos(e2, cB) >= _cos(e1, cB) + _cos(e2, cA)
-                else "swapped")
-            for i, (e1, e2) in embs.items()
-        }
-        if new == pairings:
-            break
-        pairings = new
-        va, vb = [anchors[a]], [anchors[b]]
-        for i, (e1, e2) in embs.items():
-            hi, lo = (e1, e2) if pairings[i] == "straight" else (e2, e1)
-            va.append(hi)
-            vb.append(lo)
-        cA = torch.stack(va).mean(0); cA = cA / (cA.norm() + 1e-8)
-        cB = torch.stack(vb).mean(0); cB = cB / (cB.norm() + 1e-8)
-    return pairings
-
-
-def _cluster2_pairings(
-    overlap_separated: list,
-    anchors: dict[str, Optional[torch.Tensor]],
-    speakers: list[str],
-    ecapa,
-    device: torch.device,
-    sr: int,
-    max_iter: int = 50,
-    overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
-    anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
-) -> dict[int, str]:
-    """Per-overlap pairings from an UNCONSTRAINED cosine 2-means over ALL the
-    fragment's separated overlap-stream embeddings (`assignment_mode="cluster2"`).
-
-    Unlike `_consensus_pairings` (which picks a straight/swapped *permutation* per
-    overlap under the constraint that an overlap's two streams go to different
-    speakers), this clusters each stream embedding INDEPENDENTLY:
-
-      1. Embed every present, long-enough overlap stream (reusing `_ecapa_embed`
-         — no new model load); too-short streams are skipped and keep the loop's
-         fixed-assignment path.
-      2. L2-normalise, seed two centroids from the two solo anchors (so the result
-         is deterministic — no RNG), run Lloyd's to convergence (cap `max_iter`).
-      3. Map each cluster onto stream A/B by centroid-to-anchor similarity, with a
-         deterministic tie-break when both clusters prefer the same anchor (the
-         stronger match keeps that anchor, the other cluster takes the remaining
-         stream; logged).
-      4. Emit `{i_ovl -> "straight"|"swapped"}` for overlaps whose two streams
-         landed in DIFFERENT clusters. An overlap with both streams in one cluster
-         (a separation failure) or only one embeddable stream is left undecided
-         and omitted → assembly's anchor ladder decides it (logged).
-
-    With < 2 embeddable streams clustering is undefined; returns `{}` (every
-    overlap falls through to the argmax ladder — a genuine no-op equivalence,
-    logged so it is visible, SCOPE §4). Also `{}` when an anchor is missing.
-
-    NOTE (measured in-code, mirrors the `consensus_2means` finding): because the
-    same anchors are used as BOTH the 2-means seeds and the cluster→stream map,
-    the *permutation* this returns on symmetric (A,B) overlap pairs coincides with
-    the per-overlap argmax — the only behavioural difference is the same-cluster
-    fall-through in step 4. It is kept as a documentable sweep lever.
-    """
-    if len(speakers) < 2 or any(anchors.get(s) is None for s in speakers[:2]):
-        return {}
-    a, b = speakers[0], speakers[1]
-    min_len = int(sr * overlap_min_duration_s)
-    # One embedding per present, long-enough stream; keyed by (i_ovl, stream).
-    embs: list[torch.Tensor] = []
-    meta: list[tuple[int, str]] = []
-    for i_ovl, ovl in enumerate(overlap_separated):
-        if "s1_gated" not in ovl or "s2_gated" not in ovl:
-            continue
-        for stream, key in (("s1", "s1_gated"), ("s2", "s2_gated")):
-            arr = ovl[key]
-            if len(arr) < min_len:
-                continue
-            e = _ecapa_embed(arr, ecapa, device, sr, anchor_min_duration_s).cpu()
-            if torch.isfinite(e).all():
-                embs.append(e)
-                meta.append((i_ovl, stream))
-    if len(embs) < 2:
-        _log(
-            f"cluster2: only {len(embs)} embeddable overlap stream(s) (< 2) — "
-            f"clustering undefined; all overlaps use the anchor-argmax ladder."
-        )
-        return {}
-    # `_ecapa_embed` already unit-norms, but normalise again defensively.
-    X = torch.stack(embs)
-    X = X / (X.norm(dim=1, keepdim=True) + 1e-8)
-    anchor_a = anchors[a] / (anchors[a].norm() + 1e-8)
-    anchor_b = anchors[b] / (anchors[b].norm() + 1e-8)
-    # Cluster 0 seeded from anchor A, cluster 1 from anchor B.
-    c0, c1 = anchor_a.clone(), anchor_b.clone()
-    labels = torch.zeros(len(embs), dtype=torch.long)
-    for _ in range(max_iter):
-        new = ((X @ c1) > (X @ c0)).long()   # 0 -> cluster 0, 1 -> cluster 1
-        if torch.equal(new, labels):
-            break
-        labels = new
-        if (labels == 0).any():
-            c0 = X[labels == 0].mean(0); c0 = c0 / (c0.norm() + 1e-8)
-        if (labels == 1).any():
-            c1 = X[labels == 1].mean(0); c1 = c1 / (c1.norm() + 1e-8)
-    # Map each converged cluster centroid onto a stream identity by its closer
-    # anchor. `pref[k]` is cluster k's preferred stream label.
-    pref = []
-    for c in (c0, c1):
-        pref.append(a if _cos(c, anchor_a) >= _cos(c, anchor_b) else b)
-    if pref[0] != pref[1]:
-        cluster_stream = {0: pref[0], 1: pref[1]}
-    else:
-        # Both clusters prefer the same anchor: the stronger match keeps it, the
-        # other cluster takes the remaining stream (deterministic tie-break).
-        shared = pref[0]
-        other = b if shared == a else a
-        shared_anchor = anchor_a if shared == a else anchor_b
-        s0, s1 = _cos(c0, shared_anchor), _cos(c1, shared_anchor)
-        cluster_stream = {0: shared, 1: other} if s0 >= s1 else {0: other, 1: shared}
-        _log(
-            f"cluster2: both clusters prefer {shared!r}; resolved by stronger "
-            f"match (c0={s0:.3f}, c1={s1:.3f}) -> {cluster_stream}"
-        )
-    # Per-overlap straight/swapped from which cluster each stream fell into.
-    by_ovl: dict[int, dict[str, int]] = {}
-    for (i_ovl, stream), lbl in zip(meta, labels.tolist()):
-        by_ovl.setdefault(i_ovl, {})[stream] = int(lbl)
-    pairings: dict[int, str] = {}
-    for i_ovl, streams in by_ovl.items():
-        if "s1" not in streams or "s2" not in streams:
-            _log(
-                f"  cluster2 overlap {i_ovl}: only one embeddable stream "
-                f"({sorted(streams)}) — omitted, assembly anchor decides"
-            )
-            continue
-        if streams["s1"] == streams["s2"]:
-            _log(
-                f"  cluster2 overlap {i_ovl}: both streams in one cluster "
-                f"({cluster_stream[streams['s1']]!r}) — degenerate, omitted, "
-                f"assembly anchor decides"
-            )
-            continue
-        pairings[i_ovl] = "straight" if cluster_stream[streams["s1"]] == a else "swapped"
-    return pairings
 
 
 # ---------------------------------------------------------------------------
@@ -810,70 +534,26 @@ def _assign_overlaps(
     ecapa,
     device: torch.device,
     sr: int,
-    min_margin: float = 0.0,
     *,
-    strategy: str = "ecapa_argmax",
-    assignment_mode: str = "anchor_argmax",
-    continuity_margin: float = 0.0,
-    continuity_window_s: float = 10.0,
-    solo_intervals_by_spk: Optional[dict[str, list[Interval]]] = None,
-    assembly_audio: Optional[np.ndarray] = None,
     external_pairings: Optional[dict[int, str]] = None,
     overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
     anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
-    summed cosine similarity to the anchors. Falls back to fixed assignment
-    when an anchor is missing or the streams are too short to embed
-    (< 0.1 s) — never drops a region. Slices each picked stream to the
+    summed cosine similarity to the anchors (``ecapa_argmax``). Falls back to
+    fixed assignment when an anchor is missing or the streams are too short to
+    embed (< 0.1 s) — never drops a region. Slices each picked stream to the
     emit region.
-
-    ``strategy`` selects how a finite ECAPA decision is finalised:
-
-    - ``"ecapa_argmax"`` (default): argmax(straight, swapped), with the optional
-      ``min_margin`` carry-forward prior described below.
-    - ``"continuity_tiebreak"``: argmax, but a near-tie (gap <
-      ``continuity_margin``) is re-decided by :func:`_continuity_decision` using
-      *local* anchors from the solo audio bracketing the overlap (needs
-      ``solo_intervals_by_spk`` + ``assembly_audio``). ``min_margin`` is ignored
-      in this mode.
-    - ``"consensus_2means"``: a pre-pass (:func:`_consensus_pairings`) decides
-      every overlap jointly via constrained 2-means over all overlap embeddings +
-      the solo anchors, so the consensus can overrule a lone confident-but-wrong
-      per-overlap decision. The loop then looks up each overlap's pairing.
-
-    ``assignment_mode`` selects overlap-stream routing, orthogonal to ``strategy``:
-
-    - ``"anchor_argmax"`` (default): the per-overlap ``strategy`` above governs.
-      Byte-identical to the pre-knob pipeline.
-    - ``"cluster2"``: a global pre-pass (:func:`_cluster2_pairings`) clusters ALL
-      overlap-stream embeddings into 2 (seeded from the anchors) and emits a
-      per-overlap pairing; the loop looks it up (no per-overlap re-embed). Sits
-      BELOW ``external_pairings`` and ABOVE ``consensus``/``strategy`` in
-      precedence: B+ handoff wins where present, cluster2 fills the rest, and any
-      overlap cluster2 leaves undecided (too short / same-cluster degenerate)
-      falls through to the ``strategy`` ladder.
 
     ``external_pairings`` (B+ handoff, ``ctx.overlap_speaker_assignment``):
     `{i_ovl -> "straight"|"swapped"}` decided up front by the RelabelStage global
     clustering. When present, an ECAPA-eligible overlap whose ``i_ovl`` is in the
     dict uses the external pairing directly (NO per-overlap re-embed), labelled
-    ``"<chosen> (relabel_global)"`` — it takes precedence over ALL three
-    ``strategy`` modes AND over ``cluster2`` for the overlaps it covers (a strictly
-    stronger global decision). Overlaps NOT in the dict (B+ dropped them as
-    sub-min / leaked / degenerate, or they are ECAPA-ineligible here) fall through
-    to the existing ladder unchanged — the SCOPE-compliant fall-soft to current
-    behaviour.
-
-    ``min_margin`` (default 0.0 = off, ``ecapa_argmax`` only) gates a
-    carry-forward prior on the ECAPA path: when ``abs(straight - swapped) <
-    min_margin`` the ECAPA decision is too close to trust (short overlaps where
-    the cosines near-tie), so the overlap inherits ``last_pairing`` — the most
-    recent *confident* (margin-clearing) ECAPA decision — instead of the noisy
-    argmax. With the default margin of 0, every finite decision clears the (zero)
-    gap and the prior never fires, so behaviour is the pure-argmax baseline. The
-    first confident decision seeds the prior; ambiguous overlaps before any
-    confident one (or when the gate is off) fall through to plain argmax.
+    ``"<chosen> (relabel_global)"`` — a strictly stronger global decision that
+    takes precedence over the per-overlap argmax. Overlaps NOT in the dict (B+
+    dropped them as sub-min / leaked / degenerate, or they are ECAPA-ineligible
+    here) fall through to the per-overlap argmax unchanged — the SCOPE-compliant
+    fall-soft to current behaviour.
 
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
     emit_pieces: {speaker: audio_np}}`.
@@ -893,31 +573,6 @@ def _assign_overlaps(
     t_start = time.perf_counter()
     min_overlap_len = int(sr * overlap_min_duration_s)
     assignments: list[dict] = []
-    # Carry-forward prior for the margin gate: the last confident (margin-clearing)
-    # ECAPA pairing, "straight" or "swapped". None until the first confident
-    # decision. Only consulted when min_margin > 0 (the gate is off at default).
-    last_pairing: Optional[str] = None
-    # Consensus 2-means decides every overlap jointly up front (one pre-pass over
-    # all overlaps); the per-overlap loop below then just looks up its pairing.
-    consensus = (
-        _consensus_pairings(
-            overlap_separated, anchors, speakers, ecapa, device, sr,
-            overlap_min_duration_s=overlap_min_duration_s,
-            anchor_min_duration_s=anchor_min_duration_s,
-        )
-        if strategy == "consensus_2means" else None
-    )
-    # cluster2 pre-pass: a global 2-means over all overlap-stream embeddings
-    # (orthogonal to `strategy`; see the docstring). Empty when < 2 embeddable
-    # streams or an anchor is missing → every overlap falls through to `strategy`.
-    cluster2 = (
-        _cluster2_pairings(
-            overlap_separated, anchors, speakers, ecapa, device, sr,
-            overlap_min_duration_s=overlap_min_duration_s,
-            anchor_min_duration_s=anchor_min_duration_s,
-        )
-        if assignment_mode == "cluster2" else None
-    )
     for i_ovl, ovl in enumerate(overlap_separated):
         if "s1_gated" not in ovl or "s2_gated" not in ovl:
             raise RuntimeError(
@@ -937,25 +592,6 @@ def _assign_overlaps(
                 # per-overlap strategies, so it overrides them for this overlap.
                 chosen = external_pairings[i_ovl]
                 pairing = f"{chosen} (relabel_global)"
-                stream_for = (
-                    {a: ovl["s1_gated"], b: ovl["s2_gated"]} if chosen == "straight"
-                    else {a: ovl["s2_gated"], b: ovl["s1_gated"]}
-                )
-            elif cluster2 is not None and i_ovl in cluster2:
-                # Global cluster2 pre-decided this overlap (embeddings computed in
-                # the pre-pass, so no per-overlap re-embed here).
-                chosen = cluster2[i_ovl]
-                pairing = f"{chosen} (cluster2)"
-                stream_for = (
-                    {a: ovl["s1_gated"], b: ovl["s2_gated"]} if chosen == "straight"
-                    else {a: ovl["s2_gated"], b: ovl["s1_gated"]}
-                )
-            elif consensus is not None and i_ovl in consensus:
-                # Global consensus (2-means) pre-decided this overlap from ALL
-                # overlaps jointly; use it directly (its embeddings were computed
-                # in the pre-pass, so no per-overlap re-embed is needed here).
-                chosen = consensus[i_ovl]
-                pairing = f"{chosen} (consensus)"
                 stream_for = (
                     {a: ovl["s1_gated"], b: ovl["s2_gated"]} if chosen == "straight"
                     else {a: ovl["s2_gated"], b: ovl["s1_gated"]}
@@ -987,34 +623,8 @@ def _assign_overlaps(
                     pairing = "arbitrary (non-finite cosine)"
                 else:
                     # Argmax pairing (the `>=` tie-break keeps stream order).
-                    argmax_pairing = "straight" if straight >= swapped else "swapped"
-                    if strategy == "continuity_tiebreak":
-                        # Near-ties re-decided by local (bracketing-solo) anchors;
-                        # decisive gaps keep the global argmax. Stateless.
-                        chosen, pairing = _continuity_decision(
-                            argmax_pairing, straight, swapped, continuity_margin,
-                            emb1, emb2, a, b, ovl, continuity_window_s,
-                            solo_intervals_by_spk, assembly_audio,
-                            ecapa, device, sr, anchor_min_duration_s,
-                        )
-                    # Margin gate (off when min_margin == 0): a near-tie ECAPA
-                    # decision is unreliable on short overlaps, so when the gap is
-                    # below the margin AND we already have a confident prior, inherit
-                    # it instead of trusting the argmax. A confident (margin-clearing)
-                    # decision updates the prior for later ambiguous overlaps.
-                    elif (
-                        min_margin > 0
-                        and abs(straight - swapped) < min_margin
-                        and last_pairing is not None
-                    ):
-                        pairing = f"{last_pairing} (carry-forward prior)"
-                        chosen = last_pairing
-                    else:
-                        pairing = argmax_pairing
-                        chosen = argmax_pairing
-                        if min_margin > 0 and abs(straight - swapped) >= min_margin:
-                            last_pairing = argmax_pairing
-                    if chosen == "straight":
+                    pairing = "straight" if straight >= swapped else "swapped"
+                    if pairing == "straight":
                         stream_for = {a: ovl["s1_gated"], b: ovl["s2_gated"]}
                     else:
                         stream_for = {a: ovl["s2_gated"], b: ovl["s1_gated"]}
@@ -1353,13 +963,6 @@ class AssemblyStage(Stage):
             assignments = _assign_overlaps(
                 ctx.overlap_separated, anchors, speakers,
                 self._ecapa, self._device, sr,
-                min_margin=cfg.overlap_assign_min_margin,
-                strategy=cfg.overlap_assignment,
-                assignment_mode=cfg.assignment_mode,
-                continuity_margin=cfg.continuity_tiebreak_margin,
-                continuity_window_s=cfg.continuity_window_s,
-                solo_intervals_by_spk=solo_intervals_by_spk,
-                assembly_audio=assembly_audio,
                 external_pairings=ctx.overlap_speaker_assignment,
                 overlap_min_duration_s=cfg.overlap_min_duration_s,
                 anchor_min_duration_s=cfg.anchor_min_duration_s,

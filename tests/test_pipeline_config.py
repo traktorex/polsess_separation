@@ -289,67 +289,6 @@ def test_relabel_yaml_round_trip(tmp_path):
     assert again.assembly.anchor_embedding == "ecapa2"
 
 
-# ---------------------------------------------------------------------------
-# Campaign v2 attribution levers — assembly.assignment_mode + relabel.run_level
-# ---------------------------------------------------------------------------
-
-
-def test_v2_attribution_lever_defaults_are_noops():
-    """The two new v2 levers default to the current pipeline: cluster2 off,
-    run-level off (so default.yaml stays byte-identical / the pin test green)."""
-    cfg = PipelineConfig()
-    assert cfg.assembly.assignment_mode == "anchor_argmax"
-    assert cfg.relabel.run_level is False
-    assert cfg.relabel.run_margin == 0.05
-
-
-def test_assignment_mode_enum_guard():
-    cfg = PipelineConfig()
-    cfg.assembly.assignment_mode = "cluster3"
-    with pytest.raises(ValueError, match="assembly.assignment_mode"):
-        cfg.__post_init__()
-
-
-@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
-def test_run_margin_invalid_rejected(bad):
-    cfg = PipelineConfig()
-    cfg.relabel.run_margin = bad
-    with pytest.raises(ValueError, match="run_margin"):
-        cfg.__post_init__()
-
-
-@pytest.mark.parametrize("good", [0.0, 0.05, 0.5, 2.0])
-def test_run_margin_valid_accepted(good):
-    cfg = PipelineConfig()
-    cfg.relabel.run_margin = good
-    cfg.__post_init__()   # must not raise
-
-
-def test_v2_fields_reach_dataclasses_from_dict():
-    """A YAML/dict override for the v2 levers reaches the stage dataclasses."""
-    cfg = load_pipeline_config_from_dict({
-        "assembly": {"assignment_mode": "cluster2"},
-        "relabel": {"enabled": True, "source": "global", "audio_source": "raw",
-                    "run_level": True, "run_margin": 0.12},
-    })
-    assert cfg.assembly.assignment_mode == "cluster2"
-    assert cfg.relabel.run_level is True
-    assert cfg.relabel.run_margin == 0.12
-
-
-def test_v2_fields_yaml_round_trip(tmp_path):
-    cfg = PipelineConfig()
-    cfg.assembly.assignment_mode = "cluster2"
-    cfg.relabel.run_level = True
-    cfg.relabel.run_margin = 0.2
-    out_yaml = tmp_path / "v2.yaml"
-    save_pipeline_config_to_yaml(cfg, str(out_yaml))
-    again = load_pipeline_config_from_yaml(str(out_yaml))
-    assert again.assembly.assignment_mode == "cluster2"
-    assert again.relabel.run_level is True
-    assert again.relabel.run_margin == 0.2
-
-
 # --- Solo onset boundary pad (assembly.solo_onset_pad_s) ---
 
 
@@ -485,16 +424,6 @@ def test_invalid_separation_numbers_raise(field, value):
     with pytest.raises(ValueError, match=field):
         cfg = PipelineConfig()
         setattr(cfg.separation, field, value)
-        cfg.__post_init__()
-
-
-def test_flowhigh_input_sr_must_be_positive():
-    """The fourth numeric guard (separate from the separation.* block above):
-    a non-positive FlowHigh input rate fails at config time, not deep inside
-    the post-separation backend."""
-    with pytest.raises(ValueError, match="flowhigh_input_sr"):
-        cfg = PipelineConfig()
-        cfg.post_separation_processing.flowhigh_input_sr = 0
         cfg.__post_init__()
 
 
@@ -1143,42 +1072,6 @@ def test_valid_tier2_transcription_knob_edges_accepted(field, value):
 
 
 # ---------------------------------------------------------------------------
-# Tier-2 attribution lever: assembly.overlap_assign_min_margin
-# ---------------------------------------------------------------------------
-
-
-def test_overlap_assign_min_margin_default_is_off():
-    """0.0 = off (pure argmax, byte-identical baseline); default.yaml may omit
-    the knob, so it must fall back to the dataclass default of 0.0."""
-    assert PipelineConfig().assembly.overlap_assign_min_margin == 0.0
-    y = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).assembly
-    assert y.overlap_assign_min_margin == 0.0
-
-
-def test_overlap_assign_min_margin_loads_from_dict():
-    cfg = load_pipeline_config_from_dict(
-        {"assembly": {"overlap_assign_min_margin": 0.05}}
-    )
-    assert cfg.assembly.overlap_assign_min_margin == 0.05
-
-
-@pytest.mark.parametrize("value", [-0.1, 1.0, 1.5, float("inf"), float("nan")])
-def test_invalid_overlap_assign_min_margin_raises(value):
-    """Out-of-[0,1) margin fails loud at config time, naming the knob."""
-    with pytest.raises(ValueError, match="overlap_assign_min_margin"):
-        cfg = PipelineConfig()
-        cfg.assembly.overlap_assign_min_margin = value
-        cfg.__post_init__()
-
-
-@pytest.mark.parametrize("value", [0.0, 0.05, 0.5, 0.999])
-def test_valid_overlap_assign_min_margin_accepted(value):
-    cfg = PipelineConfig()
-    cfg.assembly.overlap_assign_min_margin = value
-    cfg.__post_init__()      # must not raise
-
-
-# ---------------------------------------------------------------------------
 # Sortformer (EEND) diarization backend
 # ---------------------------------------------------------------------------
 
@@ -1271,24 +1164,15 @@ def test_sortformer_backend_does_not_require_hf_token(monkeypatch):
 
 
 def test_v41_lever_defaults_preserve_v4():
-    """All four v4.1 levers default to the v4 behaviour (top-2 discard, flat
-    threshold, no fallback), so an untouched sortformer config is byte-identical
-    to `v4_eend` — the pre-registered "defaults preserve current behavior"."""
+    """The surviving v4.1 levers default to the v4 behaviour (top-2 discard), so
+    an untouched sortformer config is byte-identical to `v4_eend`."""
     d = PipelineConfig().diarization
     assert d.sortformer_head_policy == "top2"
-    assert d.sortformer_binarization == "flat"
-    assert d.sortformer_fallback == "none"
     assert d.sortformer_merge_margin == 0.10
-    assert d.sortformer_onset == 0.70
-    assert d.sortformer_offset == 0.30
-    assert d.sortformer_pad_s == 0.06
-    assert d.sortformer_coverage_budget_s == 5.0
 
 
 @pytest.mark.parametrize("field,name", [
     ("sortformer_head_policy", "diarization.sortformer_head_policy"),
-    ("sortformer_binarization", "diarization.sortformer_binarization"),
-    ("sortformer_fallback", "diarization.sortformer_fallback"),
 ])
 def test_v41_enum_guards_reject_bad_value(field, name):
     cfg = PipelineConfig()
@@ -1299,8 +1183,6 @@ def test_v41_enum_guards_reject_bad_value(field, name):
 
 @pytest.mark.parametrize("field,good", [
     ("sortformer_head_policy", "merge"),
-    ("sortformer_binarization", "hysteresis"),
-    ("sortformer_fallback", "gated"),
 ])
 def test_v41_enum_guards_accept_valid_value(field, good):
     cfg = PipelineConfig()
@@ -1323,78 +1205,17 @@ def test_v41_merge_margin_valid_accepted(good):
     cfg.__post_init__()   # must not raise
 
 
-@pytest.mark.parametrize("field,partner", [
-    ("sortformer_onset", "sortformer_offset"),
-    ("sortformer_offset", "sortformer_onset"),
-])
-@pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5, float("nan"), float("inf")])
-def test_v41_hysteresis_threshold_out_of_range_rejected(field, partner, bad):
-    """Onset / offset are probabilities strictly in (0, 1). Set only the target
-    knob bad (the partner stays valid) so each knob's own range guard is exercised
-    and named in the message."""
-    cfg = PipelineConfig()
-    setattr(cfg.diarization, field, bad)
-    setattr(cfg.diarization, partner, 0.5)   # valid partner
-    with pytest.raises(ValueError, match=field):
-        cfg.__post_init__()
-
-
-def test_v41_onset_below_offset_rejected():
-    """The NeMo hysteresis invariant: offset (closes) must be <= onset (opens)."""
-    cfg = PipelineConfig()
-    cfg.diarization.sortformer_onset = 0.30
-    cfg.diarization.sortformer_offset = 0.70
-    with pytest.raises(ValueError, match="sortformer_offset"):
-        cfg.__post_init__()
-
-
-def test_v41_onset_equal_offset_accepted():
-    """onset == offset is the degenerate flat case — allowed (offset <= onset)."""
-    cfg = PipelineConfig()
-    cfg.diarization.sortformer_onset = 0.5
-    cfg.diarization.sortformer_offset = 0.5
-    cfg.__post_init__()   # must not raise
-
-
-@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf")])
-def test_v41_pad_s_invalid_rejected(bad):
-    cfg = PipelineConfig()
-    cfg.diarization.sortformer_pad_s = bad
-    with pytest.raises(ValueError, match="sortformer_pad_s"):
-        cfg.__post_init__()
-
-
-@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
-def test_v41_coverage_budget_invalid_rejected(bad):
-    cfg = PipelineConfig()
-    cfg.diarization.sortformer_coverage_budget_s = bad
-    with pytest.raises(ValueError, match="sortformer_coverage_budget_s"):
-        cfg.__post_init__()
-
-
 def test_v41_fields_reach_dataclass_from_dict():
     cfg = load_pipeline_config_from_dict({
         "diarization": {
             "backend": "sortformer",
             "sortformer_head_policy": "merge",
-            "sortformer_binarization": "hysteresis",
-            "sortformer_fallback": "gated",
             "sortformer_merge_margin": 0.15,
-            "sortformer_onset": 0.65,
-            "sortformer_offset": 0.35,
-            "sortformer_pad_s": 0.08,
-            "sortformer_coverage_budget_s": 4.0,
         }
     })
     d = cfg.diarization
     assert d.sortformer_head_policy == "merge"
-    assert d.sortformer_binarization == "hysteresis"
-    assert d.sortformer_fallback == "gated"
     assert d.sortformer_merge_margin == 0.15
-    assert d.sortformer_onset == 0.65
-    assert d.sortformer_offset == 0.35
-    assert d.sortformer_pad_s == 0.08
-    assert d.sortformer_coverage_budget_s == 4.0
 
 
 def test_v41_fields_yaml_round_trip(tmp_path):
@@ -1402,21 +1223,9 @@ def test_v41_fields_yaml_round_trip(tmp_path):
     cfg = PipelineConfig()
     cfg.diarization.backend = "sortformer"
     cfg.diarization.sortformer_head_policy = "merge"
-    cfg.diarization.sortformer_binarization = "hysteresis"
-    cfg.diarization.sortformer_fallback = "gated"
     cfg.diarization.sortformer_merge_margin = 0.12
-    cfg.diarization.sortformer_onset = 0.68
-    cfg.diarization.sortformer_offset = 0.32
-    cfg.diarization.sortformer_pad_s = 0.05
-    cfg.diarization.sortformer_coverage_budget_s = 6.0
     out_yaml = tmp_path / "v41.yaml"
     save_pipeline_config_to_yaml(cfg, str(out_yaml))
     back = load_pipeline_config_from_yaml(str(out_yaml)).diarization
     assert back.sortformer_head_policy == "merge"
-    assert back.sortformer_binarization == "hysteresis"
-    assert back.sortformer_fallback == "gated"
     assert back.sortformer_merge_margin == 0.12
-    assert back.sortformer_onset == 0.68
-    assert back.sortformer_offset == 0.32
-    assert back.sortformer_pad_s == 0.05
-    assert back.sortformer_coverage_budget_s == 6.0

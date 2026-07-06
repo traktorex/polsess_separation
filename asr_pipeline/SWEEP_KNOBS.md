@@ -55,13 +55,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `sortformer_threshold` | float | 0.5 | 0.0–1.0 | ⬜ | frame-activity binarization; probe showed purity robust 0.4–0.6, but the v4 under-detection tail (quiet-speaker deletions) makes <0.5 the named candidate lever for any v4.1 |
 | `sortformer_head_policy` | enum | top2 | top2 \| merge | ✅ | **`merge` (the fold) ADOPTED in the shipped best config 2026-07-04.** Reassigns discarded surplus-head runs (>= 0.4 s) to the nearest top-2 speaker by local ECAPA2 cosine margin (no global clustering); default `top2` = v4 discard. Test: repairs the miscount class (15a55a8a 26.5→7.6) with ZERO collateral (strictly dominates discard on all 118 frags); dataclass default stays top2 |
 | `sortformer_merge_margin` | float | 0.10 | >= 0 | ⬜ | **v4.1 L1** cosine margin a surplus run must clear to merge (anatomy true-margins 0.15–0.57). Only used when `head_policy=merge` |
-| `sortformer_binarization` | enum | flat | flat \| hysteresis | ⬜ | **v4.1 L2** (V41_PREREG.md). `hysteresis` = NeMo-style onset/offset dual threshold + pad, recovers quiet speech at lower leak; `flat` = v4 single-threshold (byte-identical). Swept as `v41_hyst`/`v41_full` |
-| `sortformer_onset` | float | 0.70 | (0,1), >= offset | ⬜ | **v4.1 L2** hysteresis open threshold. Only used when `binarization=hysteresis` |
-| `sortformer_offset` | float | 0.30 | (0,1), <= onset | ⬜ | **v4.1 L2** hysteresis close threshold. Only used when `binarization=hysteresis` |
-| `sortformer_pad_s` | float | 0.06 | >= 0 | ⬜ | **v4.1 L2** hysteresis segment pad (s). Only used when `binarization=hysteresis` |
-| `sortformer_fallback` | enum | none | none \| gated | ⬜ | **v4.1 L3/L4** (V41_PREREG.md). `gated` = fall back to pyannote end-to-end when segmentation-3.0 coverage uncovered > budget (L3) or the head-miscount + post-L1 unresolved leak persists (L4); loud + recorded in metadata. Swept as `v41_fallback`/`v41_full` |
-| `sortformer_coverage_budget_s` | float | 5.0 | > 0 | ⬜ | **v4.1 L3** uncovered-reference-speech budget triggering the pyannote fallback. Only used when `fallback=gated` |
-| `embedding` | str | resnet34-LM | resnet34-LM \| resnet293-LM \| ecapa2 \| eres2netv2 | ✅ | first-pass speaker embedder (triggers a 3.1-equivalent rebuild); ecapa2 adopted (`dr_emb_*`) |
+| `embedding` | str | resnet34-LM | resnet34-LM \| resnet293-LM \| ecapa2 | ✅ | first-pass speaker embedder (triggers a 3.1-equivalent rebuild); ecapa2 adopted (`dr_emb_*`). (`eres2netv2` removed 2026-07-06 — swept-and-lost, zh-cn domain mismatch.) |
 | `clustering_method` | enum | centroid | centroid \| average \| ... | ✅ | **promoted 2026-06-22** (was hard-coded linkage); agglomerative linkage in the embedding-swap path the best config uses; `dr_linkage_avg` |
 | `enabled` | bool | true | — | 🔒 | diarization is mandatory upstream |
 
@@ -77,7 +71,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 | knob | type | baseline | options/range | status | notes |
 |---|---|---|---|---|---|
-| `backend` | enum | frcrn_se_16k | frcrn_se_16k \| mossformer_gan_se_16k \| zipenhancer_16k | ✅ | frcrn & mossformer_gan swept. ⚠️ `mossformer2_se_48k` is **NOT valid** — `config.py.__post_init__` allows only frcrn/mossformer_gan/zipenhancer; it would raise. Do not sweep it (also the worst enhancer, 34.5, e23-era). |
+| `backend` | enum | frcrn_se_16k | frcrn_se_16k \| mossformer_gan_se_16k | ✅ | frcrn & mossformer_gan swept. ⚠️ `mossformer2_se_48k` and ModelScope `zipenhancer_16k` are **NOT valid** — `config.py.__post_init__` allows only frcrn/mossformer_gan; they would raise. (zipenhancer removed 2026-07-06, swept-and-lost.) |
 | `observation_mix_ratio` | float | 0.0 (yaml 0.3) | 0.0–0.5 | ✅ | dry/wet artifact-dilution (Observation Adding); heavily swept (`f_oa0*`, `dr_oa0*`) |
 | `resample_quality` | enum | soxr_hq | soxr_hq \| soxr_vhq \| kaiser_best | ✅ | **promoted 2026-06-22** (was hard-coded `res_type`); anti-alias filter into the enhancer + OA blend, upstream of OA; `dr_resample_*` |
 | `enabled` | bool | true | true/false | ✅ | `enh_none` ablation corner |
@@ -109,8 +103,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 | knob | type | baseline | options/range | status | notes |
 |---|---|---|---|---|---|
-| `backend` | enum | ap_bwe | naive \| ap_bwe \| flowhigh | ✅ | `bwe_naive`, `bwe_flowhigh`, flowhigh variants |
-| `flowhigh_input_sr` | int | 16000 | 8000 \| 16000 | ✅ | only used by flowhigh; `flowhigh16` arm |
+| `backend` | enum | ap_bwe | naive \| ap_bwe | ✅ | `bwe_naive` vs `ap_bwe`. (FlowHigh backend + `flowhigh_input_sr` removed 2026-07-06 — swept-and-lost, external git dep.) |
 | `checkpoint_path` | str | AP-BWE g_8kto16k | — | 🔒 | AP-BWE weights path |
 
 ## Stage 4 — Assembly (`assembly.*`)
@@ -143,7 +136,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 | `loop_retry_phrase` | bool | false (finalist YAML: **true**) | on/off | ✅ | **adopted 2026-07-03** (`V3_TEST_PREREG.md` §v3.1): multi-word phrase-run detector (run ≥4; max genuine GT run = 2) the token gate can't see; same retry decode + length bound (retry may never out-grow the window — rejects counting-evasion hallucinations) |
 | `loop_retry_ngram` / `loop_score_threshold` | int/float | 3 / 0.4 | — | 📌 | shared mechanics for both loop levers; calibrated, not re-swept |
 | `initial_prompt` | str | "Rozmowa po polsku." | (text) | 🆕 | prompt wording can shift WER; untried |
-| `backend` | enum | whisperx | whisper \| whisperx | 📌 | eval needs whisperx (word alignment for tcpWER) |
+| `backend` | enum | whisperx | whisperx \| coherex | 📌 | eval needs whisperx (word alignment for tcpWER); coherex kept for re-test. (base openai-`whisper` removed 2026-07-06.) |
 | `language` | str | pl | — | 🔒 | corpus is Polish |
 | `word_timestamps` | bool | true | — | 🔒 | needed for alignment |
 | `transcribe_mixture` | bool | (eval: true) | — | 📌 | eval pins true (ORC-WER) |
@@ -163,7 +156,7 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 Ranked rough priority for a thorough sweep, beyond what `CONFIGS` already covers:
 
-1. ~~**`enhancement.backend = mossformer2_se_48k`**~~ — **INVALID / removed 2026-06-22.** `config.py.__post_init__` rejects it (allows only frcrn/mossformer_gan/zipenhancer); it was also the worst enhancer (34.5, e23-era). Do not add it.
+1. ~~**`enhancement.backend = mossformer2_se_48k`**~~ — **INVALID / removed 2026-06-22.** `config.py.__post_init__` rejects it (allows only frcrn/mossformer_gan); it was also the worst enhancer (34.5, e23-era). Do not add it.
 2. **`separation.context_window_mode`** (expand_to_chunk / fixed_pad / none) — a real, untouched lever on what the separator sees; with `context_pad_seconds` for the `fixed_pad` arm.
 3. **`transcription.model_name`** — extend beyond large-v2/v3 to a Polish Whisper finetune (HF id via whisperx).
 4. **`transcription.align_model_name`** — alternative Polish wav2vec2 aligners (tcpWER quality).

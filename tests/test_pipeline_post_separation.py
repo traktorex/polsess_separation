@@ -10,8 +10,6 @@ with stub models (no weights); the neural forwards themselves are a
 third-party boundary and are not exercised here.
 """
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 import torch
@@ -21,7 +19,6 @@ from asr_pipeline.context import PipelineContext
 from asr_pipeline.stages.post_separation_processing import (
     PostSeparationProcessingStage,
     _APBWEBackend,
-    _FlowHighBackend,
     _NaiveBackend,
     _match_length,
 )
@@ -191,7 +188,6 @@ def _cfg(backend, **kw):
 
 def test_load_dispatches_to_correct_backend(monkeypatch):
     monkeypatch.setattr(_APBWEBackend, "load", lambda self, device: None)
-    monkeypatch.setattr(_FlowHighBackend, "load", lambda self, device: None)
     dev = torch.device("cpu")
 
     s = PostSeparationProcessingStage(_cfg("naive"))
@@ -202,11 +198,6 @@ def test_load_dispatches_to_correct_backend(monkeypatch):
     s.load(dev)
     assert isinstance(s._backend, _APBWEBackend)
     assert s._backend.checkpoint_path == "/x/y.zip"     # threaded through
-
-    s = PostSeparationProcessingStage(_cfg("flowhigh", flowhigh_input_sr=8000))
-    s.load(dev)
-    assert isinstance(s._backend, _FlowHighBackend)
-    assert s._backend.input_sr == 8000
 
 
 def test_unknown_backend_raises():
@@ -221,7 +212,6 @@ def test_load_signature_shapes():
     sig = lambda **kw: PostSeparationProcessingStage(_cfg(**kw)).load_signature()
     assert sig(backend="naive") == ("naive",)
     assert sig(backend="ap_bwe", checkpoint_path="/x/y") == ("ap_bwe", "/x/y")
-    assert sig(backend="flowhigh", flowhigh_input_sr=8000) == ("flowhigh", 8000)
 
 
 # ---------------------------------------------------------------------------
@@ -260,55 +250,6 @@ def test_apbwe_short_input_passes_through_without_crashing():
     out = backend.extend(np.full(400, 0.3, dtype=np.float64), SR)
     assert out.dtype == np.float32
     assert len(out) == 400
-
-
-# ---------------------------------------------------------------------------
-# FlowHigh extend: guard, level restoration, near-silent
-# ---------------------------------------------------------------------------
-
-
-def _flowhigh_with_const_model(const: float) -> _FlowHighBackend:
-    """A FlowHigh backend whose generate() returns a constant 48 kHz tensor."""
-    backend = _FlowHighBackend(SR)
-    backend._device = torch.device("cpu")
-
-    def fake_generate(audio, sr_in, sr_out):
-        n48 = int(len(audio) * sr_out / sr_in)
-        return torch.full((1, n48), const)
-
-    backend._model = SimpleNamespace(generate=fake_generate)
-    return backend
-
-
-def test_flowhigh_extend_before_load_raises():
-    with pytest.raises(RuntimeError, match="before load"):
-        _FlowHighBackend(SR).extend(np.ones(1024, np.float32), SR)
-
-
-def test_flowhigh_short_input_passes_through_as_float32():
-    backend = _flowhigh_with_const_model(0.9)
-    out = backend.extend(np.full(256, 0.3, dtype=np.float64), SR)   # < 512
-    assert out.dtype == np.float32
-    assert len(out) == 256
-
-
-def test_flowhigh_restores_input_rms():
-    backend = _flowhigh_with_const_model(0.9)
-    x = np.full(1024, 0.2, dtype=np.float32)            # in-RMS = 0.2
-    out = backend.extend(x, SR)
-    assert len(out) == 1024
-    out_rms = float(np.sqrt(np.mean(out ** 2)))
-    assert abs(out_rms - 0.2) < 1e-3                    # level preserved
-
-
-def test_flowhigh_near_silent_input_not_amplified():
-    # The fix: a near-silent input must map to a near-silent output, not be
-    # left at FlowHigh's ~0.9 internal peak (pre-fix the in_rms>1e-8 guard
-    # skipped the rescale, leaking full-scale content).
-    backend = _flowhigh_with_const_model(0.9)
-    x = np.full(1024, 1e-9, dtype=np.float32)
-    out = backend.extend(x, SR)
-    assert float(np.max(np.abs(out))) < 1e-3
 
 
 # ---------------------------------------------------------------------------

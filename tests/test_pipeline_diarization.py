@@ -224,10 +224,8 @@ def test_spill_noop_when_no_diarization(tmp_path):
 # with a canned-JSON stub worker — no GPU, no NeMo.
 
 from asr_pipeline.stages.diarization import (
-    _hysteresis_mask,
     _merge_surplus_heads,
     _runs_from_mask,
-    _uncovered_seconds,
     build_sortformer_annotation,
     sortformer_turns_from_probs,
 )
@@ -415,34 +413,12 @@ def test_sortformer_worker_nonzero_exit_fails_loud(tmp_path, monkeypatch):
 # ===========================================================================
 
 
-# --- L2 hysteresis binarization -------------------------------------------
-
-
-def test_hysteresis_opens_at_onset_rides_dip_closes_at_offset():
-    # 0.6 < onset(0.7) → never opens; 0.75 opens; 0.4 is between offset(0.3) and
-    # onset so the open segment rides through it; 0.2 < offset closes it.
-    prob = np.array([0.6, 0.75, 0.4, 0.2], dtype=np.float32)
-    mask = _hysteresis_mask(prob, _FS, onset=0.70, offset=0.30, pad_s=0.0)
-    assert mask.astype(int).tolist() == [0, 1, 1, 0]
-
-
-def test_hysteresis_pad_extends_both_sides():
-    # one-frame pad (0.08 s / 0.08 s = 1) grows the [1,2) segment to [0,3).
-    prob = np.array([0.0, 0.9, 0.1, 0.0], dtype=np.float32)
-    mask = _hysteresis_mask(prob, _FS, onset=0.70, offset=0.30, pad_s=_FS)
-    assert mask.astype(int).tolist() == [1, 1, 1, 0]
-
-
-def test_hysteresis_segment_open_at_end_is_closed():
-    # a segment still open at the last frame is emitted through the array end.
-    prob = np.array([0.0, 0.9, 0.9], dtype=np.float32)
-    mask = _hysteresis_mask(prob, _FS, onset=0.70, offset=0.30, pad_s=0.0)
-    assert mask.astype(int).tolist() == [0, 1, 1]
+# --- flat binarization -----------------------------------------------------
 
 
 def test_flat_binarization_byte_identical_on_fixture():
-    # Regression guard (V41_PREREG.md L2 "flat mode must remain byte-identical"):
-    # head 0 active [0, 4.0)s, head 1 [4.0, 8.0)s → the exact pre-v4.1 flat turns.
+    # Regression guard: head 0 active [0, 4.0)s, head 1 [4.0, 8.0)s → the exact
+    # flat turns.
     probs = _probs({0: [(0, 50)], 1: [(50, 100)]}, T=100)
     turns, diag = sortformer_turns_from_probs(probs, _FS, threshold=0.5)
     assert [(l, round(float(a), 4), round(float(b), 4)) for l, a, b in turns] == [
@@ -452,25 +428,6 @@ def test_flat_binarization_byte_identical_on_fixture():
     assert diag["top2"] == [0, 1]
     assert diag["n_spk"] == 2
     assert diag["leak"] == 0.0
-    assert diag["binarization"] == "flat"
-
-
-def test_hysteresis_merges_within_turn_dip_that_flat_splits():
-    # head 0 = 0.9 for 20 frames, dips to 0.4 for 5 frames (> the 0.1 s gap-fill),
-    # then 0.9 for 20 more. Flat-0.5 splits it into TWO runs (the dip is silence
-    # below 0.5); hysteresis (onset 0.7 / offset 0.3) rides the dip → ONE run.
-    T = 45
-    probs = np.zeros((T, 4), dtype=np.float32)
-    probs[0:20, 0] = 0.9
-    probs[20:25, 0] = 0.4
-    probs[25:45, 0] = 0.9
-    probs[:, 1] = 0.9        # head 1 constant so top-2 is well-defined
-    _t, flat = sortformer_turns_from_probs(probs, _FS, 0.5)
-    _t2, hyst = sortformer_turns_from_probs(
-        probs, _FS, 0.5, binarization="hysteresis", onset=0.70, offset=0.30, pad_s=0.06
-    )
-    assert len(flat["head_runs"][0]) == 2      # flat splits at the dip
-    assert len(hyst["head_runs"][0]) == 1      # hysteresis holds through it
 
 
 # --- L1 merge-not-discard --------------------------------------------------
@@ -606,111 +563,3 @@ def test_sortformer_stage_l1_merge_reassigns_surplus(tmp_path, monkeypatch):
     assert ctx.diarization_diag["head_policy"] == "merge"
 
 
-# --- L3 coverage-triggered fallback + L4 miscount gate ---------------------
-
-
-def test_uncovered_seconds_math():
-    # reference speech [0,10]; covered [0,3] and [7,9] → uncovered = 3..7 + 9..10 = 5.
-    assert _uncovered_seconds([(0.0, 10.0)], [(0.0, 3.0), (7.0, 9.0)]) == pytest.approx(5.0)
-    assert _uncovered_seconds([(0.0, 10.0)], [(0.0, 10.0)]) == pytest.approx(0.0)
-
-
-def _fake_pyannote_pipeline():
-    """A stand-in build_pyannote_pipeline return: a callable pipeline whose diar
-    has two DISTINCT speaker labels A/B (so a test can tell the fallback ran)."""
-    diar = _FakeDiar([(_Seg(0.0, 1.0), "A"), (_Seg(1.0, 2.0), "B")], [])
-    return _FakePipeline(diar)
-
-
-def test_sortformer_l3_coverage_fallback_fires(tmp_path, monkeypatch):
-    # Sortformer covers only ~20 s, but the (stubbed) segmentation-3.0 reference
-    # reports 90 s of speech → uncovered ~70 s > budget → fall back to pyannote.
-    body = _sf_probs_body({0: [(0, 125)], 1: [(125, 250)]}, T=250)
-    stub = _stub_venv_py(tmp_path, body)
-    monkeypatch.setenv("SORTFORMER_VENV_PY", str(stub))
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.pyannote_segmentation_speech",
-        lambda *a, **k: [(0.0, 90.0)],
-    )
-    called = {}
-    def _fake_build(config, device):
-        called["built"] = True
-        return _fake_pyannote_pipeline()
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.build_pyannote_pipeline", _fake_build
-    )
-
-    cfg = DiarizationConfig(backend="sortformer", sortformer_fallback="gated",
-                            sortformer_coverage_budget_s=5.0)
-    stage = DiarizationStage(cfg)
-    stage.load(torch.device("cpu"))
-    ctx = _ctx(np.zeros(16_000, dtype=np.float32))
-    stage.run(ctx)
-
-    assert called.get("built") is True                       # fallback pipeline built
-    assert set(ctx.diarization.segments_df["speaker"]) == {"A", "B"}  # pyannote result
-    fb = ctx.diarization_diag["fallback"]
-    assert fb["fired"] is True
-    assert fb["backend"] == "pyannote"
-    assert "coverage-uncovered" in fb["reason"]
-    assert fb["l3_coverage_fires"] is True
-    assert fb["uncovered_s"] == pytest.approx(70.0, abs=1e-2)
-
-
-def test_sortformer_l4_miscount_fallback_fires(tmp_path, monkeypatch):
-    # Head 2 leaks ~24% of speech (n_spk=3) → miscount; with head_policy=top2 the
-    # gate uses the RAW leak. Coverage reference is small so L3 does NOT fire —
-    # isolating the L4 "miscount-unresolved" path.
-    body = _sf_probs_body({0: [(0, 250)], 1: [(0, 250)], 2: [(0, 60)]}, T=250)
-    stub = _stub_venv_py(tmp_path, body)
-    monkeypatch.setenv("SORTFORMER_VENV_PY", str(stub))
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.pyannote_segmentation_speech",
-        lambda *a, **k: [(0.0, 20.0)],       # fully covered → L3 quiet
-    )
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.build_pyannote_pipeline",
-        lambda config, device: _fake_pyannote_pipeline(),
-    )
-    cfg = DiarizationConfig(backend="sortformer", sortformer_fallback="gated")
-    stage = DiarizationStage(cfg)
-    stage.load(torch.device("cpu"))
-    ctx = _ctx(np.zeros(16_000, dtype=np.float32))
-    stage.run(ctx)
-
-    fb = ctx.diarization_diag["fallback"]
-    assert fb["fired"] is True
-    assert fb["l4_miscount_unresolved_fires"] is True
-    assert fb["l3_coverage_fires"] is False
-    assert fb["reason"] == "miscount-unresolved"
-    assert set(ctx.diarization.segments_df["speaker"]) == {"A", "B"}
-
-
-def test_sortformer_gated_no_fallback_when_covered_and_no_miscount(tmp_path, monkeypatch):
-    # Clean 2-speaker recording, fully covered → neither L3 nor L4 fires → the
-    # sortformer result stands (SPEAKER_00/01), and the diag records fired=False.
-    body = _sf_probs_body({0: [(0, 125)], 1: [(125, 250)]}, T=250)
-    stub = _stub_venv_py(tmp_path, body)
-    monkeypatch.setenv("SORTFORMER_VENV_PY", str(stub))
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.pyannote_segmentation_speech",
-        lambda *a, **k: [(0.0, 20.0)],
-    )
-    # If the fallback wrongly fired this would be called → make it a loud failure.
-    monkeypatch.setattr(
-        "asr_pipeline.stages.diarization.build_pyannote_pipeline",
-        lambda config, device: (_ for _ in ()).throw(
-            AssertionError("fallback must NOT fire on a clean covered recording")
-        ),
-    )
-    cfg = DiarizationConfig(backend="sortformer", sortformer_fallback="gated")
-    stage = DiarizationStage(cfg)
-    stage.load(torch.device("cpu"))
-    ctx = _ctx(np.zeros(16_000, dtype=np.float32))
-    stage.run(ctx)
-
-    assert set(ctx.diarization.segments_df["speaker"]) == {"SPEAKER_00", "SPEAKER_01"}
-    fb = ctx.diarization_diag["fallback"]
-    assert fb["fired"] is False
-    assert fb["l3_coverage_fires"] is False
-    assert fb["l4_miscount_unresolved_fires"] is False

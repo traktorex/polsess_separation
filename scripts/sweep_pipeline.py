@@ -87,7 +87,6 @@ CONFIGS: dict[str, dict] = {
     "enh_none":          {"enhancement.enabled": False},
     # --- bandwidth extension (overlap regions) ---
     "bwe_naive":         {"post_separation_processing.backend": "naive"},
-    "bwe_flowhigh":      {"post_separation_processing.backend": "flowhigh"},
     # --- separation knobs ---
     "sep_seam_zc":       {"separation.seam_mode": "zero_crossing"},
     "sep_seam_boundary": {"separation.seam_mode": "overlap_boundary"},
@@ -133,20 +132,6 @@ CONFIGS: dict[str, dict] = {
                              "separation.vad_soft_threshold": 0.2,
                              "separation.vad_attack_frames": 2,
                              "separation.vad_release_frames": 2},
-    # --- BWE decision (SCOPE open question 4): flowhigh vs ap_bwe on the
-    # round-2/3 winner, not the mpsenet baseline (where round-1's bwe_*
-    # configs were swamped by enhancement errors) ---
-    "frcrn_vad_strict_flowhigh": {"enhancement.backend": "frcrn_se_16k",
-                                  "separation.vad_threshold": 0.5,
-                                  "separation.vad_soft_threshold": 0.2,
-                                  "post_separation_processing.backend": "flowhigh"},
-    # input_sr A/B: default.yaml ships flowhigh_input_sr=8000 (matches the
-    # separator's spectral content); this arm feeds 16 kHz instead.
-    "frcrn_vad_strict_flowhigh16": {"enhancement.backend": "frcrn_se_16k",
-                                    "separation.vad_threshold": 0.5,
-                                    "separation.vad_soft_threshold": 0.2,
-                                    "post_separation_processing.backend": "flowhigh",
-                                    "post_separation_processing.flowhigh_input_sr": 16_000},
 
     # ======================================================================
     # MossFormer2-separator comprehensive sweep (2026-06-13). Baseline =
@@ -186,10 +171,6 @@ CONFIGS: dict[str, dict] = {
     "r1_vol_none":          {"separation.volume_normalization": "none"},
     # --- BWE (overlap regions) ---
     "r1_bwe_naive":         {"post_separation_processing.backend": "naive"},
-    "r1_bwe_flowhigh8":     {"post_separation_processing.backend": "flowhigh",
-                             "post_separation_processing.flowhigh_input_sr": 8_000},
-    "r1_bwe_flowhigh16":    {"post_separation_processing.backend": "flowhigh",
-                             "post_separation_processing.flowhigh_input_sr": 16_000},
     # --- routing ---
     "r1_merge_03":          {"routing.merge_gap": 0.3},
     "r1_merge_08":          {"routing.merge_gap": 0.8},
@@ -207,10 +188,6 @@ CONFIGS: dict[str, dict] = {
     # ======================================================================
     "r2_best_naive": {"enhancement.enabled": False, "transcription.model_name": "large-v3-turbo",
                       "post_separation_processing.backend": "naive",
-                      "assembly.overlap_rms_match_solo": False, "transcription.beam_size": 10},
-    "r2_best_fh16":  {"enhancement.enabled": False, "transcription.model_name": "large-v3-turbo",
-                      "post_separation_processing.backend": "flowhigh",
-                      "post_separation_processing.flowhigh_input_sr": 16_000,
                       "assembly.overlap_rms_match_solo": False, "transcription.beam_size": 10},
     "r2_best_v3":    {"enhancement.enabled": False, "transcription.model_name": "large-v3",
                       "post_separation_processing.backend": "naive",
@@ -253,9 +230,6 @@ CONFIGS: dict[str, dict] = {
     "r3_best_beam10":     {"enhancement.enabled": False,
                            "post_separation_processing.backend": "naive",
                            "transcription.beam_size": 10},
-    "r3_best_flowhigh16": {"enhancement.enabled": False,
-                           "post_separation_processing.backend": "flowhigh",
-                           "post_separation_processing.flowhigh_input_sr": 16_000},
     # thesis ablation: separation's value at the best config
     "r3_best_nosep":      {"enhancement.enabled": False,
                            "post_separation_processing.backend": "naive",
@@ -291,10 +265,6 @@ CONFIGS: dict[str, dict] = {
                           "transcription.no_repeat_ngram_size": 3},
     "ah_apbwe_nrng3":    {"enhancement.enabled": False,
                           "transcription.no_repeat_ngram_size": 3},
-    "ah_flowhigh_nrng3": {"enhancement.enabled": False,
-                          "post_separation_processing.backend": "flowhigh",
-                          "post_separation_processing.flowhigh_input_sr": 16_000,
-                          "transcription.no_repeat_ngram_size": 3},
 
     # ======================================================================
     # Enhancement-model comparison (point 3, 2026-06-14): which SE backend gives
@@ -307,9 +277,6 @@ CONFIGS: dict[str, dict] = {
     "c_mossgan_nrng3": {"enhancement.backend": "mossformer_gan_se_16k",
                         "post_separation_processing.backend": "naive",
                         "transcription.no_repeat_ngram_size": 3},
-    "c_zipenhancer_nrng3": {"enhancement.backend": "zipenhancer_16k",
-                            "post_separation_processing.backend": "naive",
-                            "transcription.no_repeat_ngram_size": 3},
 
     # ======================================================================
     # Observation Adding (OA) / dry-wet mix (2026-06-14, Iwamoto et al. 2022 /
@@ -385,7 +352,6 @@ CONFIGS: dict[str, dict] = {
     # See GROUPS["final"]. (Replaces the erratic r1–r4/ah/c/oa rounds for the
     # record — those stay defined for reproducibility.)
     # ======================================================================
-    "f_enh_zip":  {"enhancement.backend": "zipenhancer_16k"},
     "f_oa03":     {"enhancement.observation_mix_ratio": 0.3},
     "f_oa05":     {"enhancement.observation_mix_ratio": 0.5},
     "f_oa07":     {"enhancement.observation_mix_ratio": 0.7},
@@ -433,41 +399,11 @@ CONFIGS: dict[str, dict] = {
     # Lower WhisperX VAD offset: keep trailing speech the VAD would clip.
     "t2_vad_offset_lo":    {"enhancement.observation_mix_ratio": 0.3,
                             "transcription.vad_offset": 0.20},
-    # Attribution fix #1: margin-gated carry-forward prior on near-tie overlaps.
-    "t2_attr_margin":      {"enhancement.observation_mix_ratio": 0.3,
-                            "assembly.overlap_assign_min_margin": 0.05},
     # bardsai Polish Whisper-large-v2 finetune (transformers format; the
     # pipeline's _ensure_ct2_model auto-converts it to CT2 on first use).
     "t2_bardsai_pl":       {"enhancement.observation_mix_ratio": 0.3,
                             "transcription.model_name":
                             "bardsai/whisper-large-v2-pl-v2"},
-
-    # ======================================================================
-    # Attribution lever: CONTINUITY TIE-BREAK (2026-06-17). Near-tie overlap
-    # pairings are re-decided by *local* bracketing-solo ECAPA anchors (the
-    # "speech continuity" signal) instead of the global anchors. OFAT off the
-    # OA-0.3 finalist (f_oa03); a tau grid over the near-tie threshold (summed-
-    # cosine gap, range [0,2]). tau is the swept hypothesis: tau=0 == f_oa03
-    # (no-op), so the smallest tau that shrinks the attribution gap WITHOUT a
-    # per-recording winner-veto regression wins. Stateless (no carry-forward),
-    # unlike the dud t2_attr_margin. See GROUPS["attr"].
-    # ======================================================================
-    "ct_tau01": {"enhancement.observation_mix_ratio": 0.3,
-                 "assembly.overlap_assignment": "continuity_tiebreak",
-                 "assembly.continuity_tiebreak_margin": 0.1},
-    "ct_tau02": {"enhancement.observation_mix_ratio": 0.3,
-                 "assembly.overlap_assignment": "continuity_tiebreak",
-                 "assembly.continuity_tiebreak_margin": 0.2},
-    "ct_tau04": {"enhancement.observation_mix_ratio": 0.3,
-                 "assembly.overlap_assignment": "continuity_tiebreak",
-                 "assembly.continuity_tiebreak_margin": 0.4},
-    # Consensus 2-means (global constrained re-clustering of overlap pairings).
-    # Hypothesis: outvote a lone confident-but-wrong per-overlap decision. NOTE:
-    # anchor-seeded consensus is mathematically ~= per-overlap argmax (0/40k flips
-    # in random search), so this is expected to be a no-op — run to confirm on
-    # real data. See GROUPS["attr"].
-    "cm_consensus": {"enhancement.observation_mix_ratio": 0.3,
-                     "assembly.overlap_assignment": "consensus_2means"},
 
     # ======================================================================
     # Phase 3: DIARIZATION front-end knobs (pyannote instantiate), OFAT off
@@ -500,13 +436,11 @@ CONFIGS: dict[str, dict] = {
                       "diarization.embedding": "pyannote/wespeaker-voxceleb-resnet34-LM"},
     "dr_emb_r293lm": {"enhancement.observation_mix_ratio": 0.3,
                       "diarization.embedding": "eek/wespeaker-voxceleb-resnet293-LM"},
-    # Custom embedders (stages/custom_embeddings.py wrapper). ECAPA2 = best
+    # Custom embedder (stages/custom_embeddings.py wrapper). ECAPA2 = best
     # short-utterance EER (the on-target lever for db15fc57's ~2.5s mislabel;
-    # CC-BY-NC, fine for the thesis). ERes2NetV2 = short-utt + multilingual.
+    # CC-BY-NC, fine for the thesis).
     "dr_emb_ecapa2": {"enhancement.observation_mix_ratio": 0.3,
                       "diarization.embedding": "ecapa2"},
-    "dr_emb_eres2":  {"enhancement.observation_mix_ratio": 0.3,
-                      "diarization.embedding": "eres2netv2"},
 
     # ======================================================================
     # 2nd-pass identity re-clustering + assembly embedder swap
@@ -515,8 +449,7 @@ CONFIGS: dict[str, dict] = {
     # ECAPA2-on-raw diarization base (`_E2`) plus its one new lever, so each
     # isolates its marginal effect over the embedder swap the diagnosis says does
     # NOT by itself fix db15fc57. Score on ALL dev; dr_emb_ecapa2 is the anchor
-    # in the rescore (GROUPS["refine2"]). Option 3 (fusion / dr_fuse) is a
-    # separate later build and is deliberately NOT here.
+    # in the rescore (GROUPS["refine2"]).
     # ======================================================================
     # Base shared by all rows below (the adopted ECAPA2 diarization).
     # Inlined per row (CONFIGS values are flat dicts), matching dr_emb_ecapa2.
@@ -852,14 +785,6 @@ CONFIGS: dict[str, dict] = {
                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                    "separation.vad_attack_frames": 3,
                    "separation.vad_release_frames": 3},
-    # BWE flowhigh backend at 8 kHz input — matches the separator's 0-4 kHz
-    # output (apples-to-apples with ap_bwe's 8k->16k path). Single flowhigh arm.
-    "dr_bwe_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
-                        "diarization.embedding": "ecapa2",
-                        "relabel.enabled": True, "relabel.source": "global",
-                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                        "post_separation_processing.backend": "flowhigh",
-                        "post_separation_processing.flowhigh_input_sr": 8000},
     # seam_silence_threshold finer grid (anchor = 0.5).
     "dr_seamsil02": {"enhancement.observation_mix_ratio": 0.3,
                      "diarization.embedding": "ecapa2",
@@ -935,12 +860,6 @@ CONFIGS: dict[str, dict] = {
                         "relabel.enabled": True, "relabel.source": "global",
                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                         "diarization.clustering_method": "ward"},
-    # enhancement backend — ZipEnhancer at the anchor base (OA 0.3).
-    "dr_enh_zip": {"enhancement.observation_mix_ratio": 0.3,
-                   "enhancement.backend": "zipenhancer_16k",
-                   "diarization.embedding": "ecapa2",
-                   "relabel.enabled": True, "relabel.source": "global",
-                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
     # ASR — Cohere Transcribe (coherex backend; isolated venv at run time).
     "dr_cohere": {"enhancement.observation_mix_ratio": 0.3,
                   "diarization.embedding": "ecapa2",
@@ -1006,37 +925,6 @@ CONFIGS: dict[str, dict] = {
                       "relabel.enabled": True, "relabel.source": "global",
                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                       "post_separation_processing.backend": "naive"},
-    "dr_oa03_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
-                         "diarization.embedding": "ecapa2",
-                         "relabel.enabled": True, "relabel.source": "global",
-                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                         "post_separation_processing.backend": "flowhigh",
-                         "post_separation_processing.flowhigh_input_sr": 8000},
-    "dr_oa02_flowhigh": {"enhancement.observation_mix_ratio": 0.20,
-                         "diarization.embedding": "ecapa2",
-                         "relabel.enabled": True, "relabel.source": "global",
-                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                         "post_separation_processing.backend": "flowhigh",
-                         "post_separation_processing.flowhigh_input_sr": 8000},
-    "dr_oa04_flowhigh": {"enhancement.observation_mix_ratio": 0.40,
-                         "diarization.embedding": "ecapa2",
-                         "relabel.enabled": True, "relabel.source": "global",
-                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                         "post_separation_processing.backend": "flowhigh",
-                         "post_separation_processing.flowhigh_input_sr": 8000},
-    "dr_enh_zip_oa040": {"enhancement.observation_mix_ratio": 0.40,
-                         "enhancement.backend": "zipenhancer_16k",
-                         "diarization.embedding": "ecapa2",
-                         "relabel.enabled": True, "relabel.source": "global",
-                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced"},
-    "dr_vad050_flowhigh": {"enhancement.observation_mix_ratio": 0.3,
-                           "diarization.embedding": "ecapa2",
-                           "relabel.enabled": True, "relabel.source": "global",
-                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                           "separation.vad_threshold": 0.5,
-                           "separation.vad_soft_threshold": 0.2,
-                           "post_separation_processing.backend": "flowhigh",
-                           "post_separation_processing.flowhigh_input_sr": 8000},
 
     # ======================================================================
     # PHASE 2 (2026-06-24): OA × large-v3 stack + OA-peak bracket. Phase-1
@@ -1085,15 +973,6 @@ CONFIGS: dict[str, dict] = {
     # See GROUPS["v2dev"]. Levers:
     #   v2_ngram3    - anti-hallucination guard (recognition-floor lever, not
     #                  attribution; the block's non-attribution control).
-    #   v2_cluster   - assembly cluster2 (global 2-means over overlap streams;
-    #                  ~= argmax on symmetric pairs, tests the fall-through win).
-    #   v2_runrelabel- run-level relabel (flips whole contiguous mis-clustered
-    #                  solo runs — the on-target class-A repair).
-    #   v2_continuity- continuity tie-break (local bracketing-solo anchors break
-    #                  near-tie overlap pairings; knobs ARE live, gated behind
-    #                  overlap_assignment=continuity_tiebreak + margin > 0).
-    #   v2_attr      - cluster2 + run_level + continuity (all attribution levers).
-    #   v2_full      - v2_attr + ngram3 (everything).
     #   v2_pad       - solo onset boundary pad (0.15 s; ear-pass repair for
     #                  shaved/split first phonemes at solo piece starts —
     #                  boundary recovery, not stream re-routing, so it is OFAT
@@ -1105,39 +984,6 @@ CONFIGS: dict[str, dict] = {
                   "relabel.enabled": True, "relabel.source": "global",
                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
                   "transcription.no_repeat_ngram_size": 3},
-    "v2_cluster": {"enhancement.observation_mix_ratio": 0.50,
-                   "diarization.embedding": "ecapa2",
-                   "relabel.enabled": True, "relabel.source": "global",
-                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                   "assembly.assignment_mode": "cluster2"},
-    "v2_runrelabel": {"enhancement.observation_mix_ratio": 0.50,
-                      "diarization.embedding": "ecapa2",
-                      "relabel.enabled": True, "relabel.source": "global",
-                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                      "relabel.run_level": True},
-    "v2_continuity": {"enhancement.observation_mix_ratio": 0.50,
-                      "diarization.embedding": "ecapa2",
-                      "relabel.enabled": True, "relabel.source": "global",
-                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                      "assembly.overlap_assignment": "continuity_tiebreak",
-                      "assembly.continuity_tiebreak_margin": 0.2},
-    "v2_attr": {"enhancement.observation_mix_ratio": 0.50,
-                "diarization.embedding": "ecapa2",
-                "relabel.enabled": True, "relabel.source": "global",
-                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                "assembly.assignment_mode": "cluster2",
-                "relabel.run_level": True,
-                "assembly.overlap_assignment": "continuity_tiebreak",
-                "assembly.continuity_tiebreak_margin": 0.2},
-    "v2_full": {"enhancement.observation_mix_ratio": 0.50,
-                "diarization.embedding": "ecapa2",
-                "relabel.enabled": True, "relabel.source": "global",
-                "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                "assembly.assignment_mode": "cluster2",
-                "relabel.run_level": True,
-                "assembly.overlap_assignment": "continuity_tiebreak",
-                "assembly.continuity_tiebreak_margin": 0.2,
-                "transcription.no_repeat_ngram_size": 3},
     "v2_pad": {"enhancement.observation_mix_ratio": 0.50,
                "diarization.embedding": "ecapa2",
                "relabel.enabled": True, "relabel.source": "global",
@@ -1241,24 +1087,7 @@ CONFIGS: dict[str, dict] = {
     # Base = v4_eend (its exact override set, copied per row); each arm turns on one
     # or more of the four config-gated, default-OFF levers:
     #   L1 merge-not-discard   (diarization.sortformer_head_policy=merge)
-    #   L2 hysteresis binarize (diarization.sortformer_binarization=hysteresis)
-    #   L3/L4 gated fallback   (diarization.sortformer_fallback=gated)
-    # v41_full = L1+L2+L3+L4 (the test candidate); the three decomposed diagnostics
-    # isolate each lever. Needs $SORTFORMER_VENV_PY. See GROUPS["v41"].
-    "v41_full": {"enhancement.observation_mix_ratio": 0.50,
-                 "diarization.backend": "sortformer",
-                 "diarization.sortformer_head_policy": "merge",
-                 "diarization.sortformer_binarization": "hysteresis",
-                 "diarization.sortformer_fallback": "gated",
-                 # no-op on the sortformer path; makes the L3/L4 fallback
-                 # reproduce the finalist diarizer (pyannote+ECAPA2, as in
-                 # v3_phraseloop) instead of stock resnet34-LM
-                 "diarization.embedding": "ecapa2",
-                 "relabel.enabled": True, "relabel.source": "global",
-                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                 "relabel.solo_clustering_init": "rescue",
-                 "transcription.loop_retry": True,
-                 "transcription.loop_retry_phrase": True},
+    # Needs $SORTFORMER_VENV_PY. See GROUPS["v41"].
     "v41_merge": {"enhancement.observation_mix_ratio": 0.50,
                   "diarization.backend": "sortformer",
                   "diarization.sortformer_head_policy": "merge",
@@ -1281,24 +1110,6 @@ CONFIGS: dict[str, dict] = {
                         "separation.enabled": False,
                         "transcription.loop_retry": True,
                         "transcription.loop_retry_phrase": True},
-    "v41_hyst": {"enhancement.observation_mix_ratio": 0.50,
-                 "diarization.backend": "sortformer",
-                 "diarization.sortformer_binarization": "hysteresis",
-                 "relabel.enabled": True, "relabel.source": "global",
-                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                 "relabel.solo_clustering_init": "rescue",
-                 "transcription.loop_retry": True,
-                 "transcription.loop_retry_phrase": True},
-    "v41_fallback": {"enhancement.observation_mix_ratio": 0.50,
-                     "diarization.backend": "sortformer",
-                     "diarization.sortformer_fallback": "gated",
-                     # see v41_full: fallback must reproduce pyannote+ECAPA2
-                     "diarization.embedding": "ecapa2",
-                     "relabel.enabled": True, "relabel.source": "global",
-                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
-                     "relabel.solo_clustering_init": "rescue",
-                     "transcription.loop_retry": True,
-                     "transcription.loop_retry_phrase": True},
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms
     # (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Base = v4_eend's exact
     # override set (OA 0.5 + sortformer + relabel B+/global/ecapa2/enhanced/rescue
@@ -1348,7 +1159,7 @@ CONFIGS: dict[str, dict] = {
 GROUPS: dict[str, list[str]] = {
     "asr":        ["asr_largev3"],
     "enhance":    ["enh_mossformer", "enh_frcrn", "enh_none"],
-    "bwe":        ["bwe_naive", "bwe_flowhigh"],
+    "bwe":        ["bwe_naive"],
     "separation": ["sep_seam_zc", "sep_seam_boundary", "sep_vad_strict", "sep_vol_none"],
     "assembly":   ["asm_perpiece_rms"],
     "ablation":   ["nosep", "nosep_noenh"],
@@ -1368,19 +1179,19 @@ GROUPS: dict[str, list[str]] = {
            "r1_vad_040", "r1_vad_050", "r1_vad_060", "r1_vad_ar0", "r1_vad_ar2",
            "r1_ctx_fixedpad", "r1_ctx_fixedpad15", "r1_ctx_none",
            "r1_seam_zc", "r1_seam_boundary", "r1_vol_none",
-           "r1_bwe_naive", "r1_bwe_flowhigh8", "r1_bwe_flowhigh16",
+           "r1_bwe_naive",
            "r1_merge_03", "r1_merge_08",
            "r1_no_rmsmatch", "r1_perpiece_rms",
            "r1_nosep", "r1_noenh", "r1_nosep_noenh"],
     # Round 2: combined winners + leave-one-out + the last enhancement backend.
     # r1_noenh kept in for a same-table reference point.
-    "r2": ["r2_best_naive", "r2_best_fh16", "r2_best_v3",
+    "r2": ["r2_best_naive", "r2_best_v3",
            "r2_loo_enhon", "r2_loo_v2", "r2_loo_apbwe", "r2_loo_rmson", "r2_loo_beam5",
            "r2_enh_mossformer_gan", "r1_noenh"],
     # Round 3: confirm the LOO-stacked prediction + re-validate each axis at that
     # operating point + separation ablation. Carry r2_loo_v2 (R2 best) as a ref.
     "r3": ["r3_best", "r3_best_turbo", "r3_best_v3", "r3_best_rmsoff",
-           "r3_best_beam10", "r3_best_flowhigh16", "r3_best_nosep",
+           "r3_best_beam10", "r3_best_nosep",
            "r2_loo_v2", "r1_noenh"],
     # Round 4: final ablation cell (enh ON at the best operating point).
     "r4": ["r4_enhon"],
@@ -1388,7 +1199,7 @@ GROUPS: dict[str, list[str]] = {
     # point) across all 23 dev. Refs (baseline/r3_best/r1_noenh/r3_best_flowhigh16)
     # rescored alongside. ah_nrng3/ah_nrng2 = baseline+nrng (already partial from gate).
     "ah_full": ["ah_nrng3", "ah_nrng2", "ah_finalist_nrng3", "ah_apbwe_nrng3",
-                "ah_flowhigh_nrng3", "r3_best", "r1_noenh", "r3_best_flowhigh16", "r4_enhon"],
+                "r3_best", "r1_noenh", "r4_enhon"],
     # Enhancement-model comparison (WER + SQUIM). r3_best = enh-off ref.
     "c_enh": ["c_frcrn_nrng3", "c_mossgan_nrng3", "r3_best"],
     # Observation Adding sweep (WER + SQUIM). c_frcrn_nrng3 = ratio-0 reference.
@@ -1402,11 +1213,11 @@ GROUPS: dict[str, list[str]] = {
     # default.yaml baseline + ablation corners + the two ship endpoints.
     "final": [
         # enhancement backend
-        "r1_noenh", "enh_mossformer", "f_enh_zip",
+        "r1_noenh", "enh_mossformer",
         # observation-adding (dry/wet on the frcrn baseline)
         "f_oa03", "f_oa05", "f_oa07",
         # bandwidth extension
-        "r1_bwe_naive", "r1_bwe_flowhigh8", "r1_bwe_flowhigh16",
+        "r1_bwe_naive",
         # transcription: collapse-retry, chunk_size, anti-hall, model, decode
         "f_noretry", "f_cs15", "ah_nrng3",
         "r1_asr_largev3", "r1_asr_largev3_turbo",
@@ -1435,14 +1246,12 @@ GROUPS: dict[str, list[str]] = {
     "t2": [
         "f_oa03",
         "t2_suppress_numerals", "t2_length_penalty11", "t2_vad_offset_lo",
-        "t2_attr_margin", "t2_bardsai_pl",
+        "t2_bardsai_pl",
     ],
     # Attribution: continuity tie-break tau grid, OFAT off f_oa03 (the no-op
     # anchor ref; baseline auto-included).
     "attr": [
         "f_oa03",
-        "ct_tau01", "ct_tau02", "ct_tau04",
-        "cm_consensus",
     ],
     # Phase 3 diarization front-end grid, OFAT off f_oa03 (the anchor ref).
     "diar": [
@@ -1453,16 +1262,15 @@ GROUPS: dict[str, list[str]] = {
     # to it). 293-non-LM + ERes2NetV2 appended once ids/wrapper are confirmed.
     "emb": [
         "f_oa03",
-        "dr_emb_r34", "dr_emb_r293lm", "dr_emb_ecapa2", "dr_emb_eres2",
+        "dr_emb_r34", "dr_emb_r293lm", "dr_emb_ecapa2",
     ],
-    # 2nd-pass identity re-clustering (SECOND_PASS_PLAN.md opts 4 / B / B+ / 3),
+    # 2nd-pass identity re-clustering (SECOND_PASS_PLAN.md opts 4 / B / B+),
     # OFAT off the adopted ECAPA2 diarization. f_oa03 = current no-op finalist;
     # dr_emb_ecapa2 = ECAPA2-on-raw diarization, the immediate anchor each option
-    # must beat in the rescore. dr_fuse = option 3 (disagreement-aware fusion).
+    # must beat in the rescore.
     "refine2": [
         "f_oa03", "dr_emb_ecapa2",
         "as_ecapa2anchor", "dr_refine", "dr_refine_raw", "dr_refineplus",
-        "dr_fuse",
     ],
     # ======================================================================
     # The DEFINITIVE SWEEP (SWEEP_DESIGN.md §3.2). Run with
@@ -1508,13 +1316,11 @@ GROUPS: dict[str, list[str]] = {
         "dr_oa010", "dr_oa015", "dr_oa045", "dr_oa060", "dr_oa070",   # OA-finer
         "dr_vad020", "dr_vad030", "dr_vad060",                        # VAD-finer
         "dr_vad_ar0", "dr_vad_ar3",                                   # VAD-a/r
-        "dr_bwe_flowhigh",                                           # BWE-flowhigh (@8k)
         "dr_seamsil02", "dr_seamsil04", "dr_seamsil06", "dr_seamsil08",  # seam-finer
         "dr_silfloor2e4", "dr_silfloor2e3",                          # silence_floor-finer
         "dr_ovmin015", "dr_ovmin03", "dr_ovmin05",                   # overlap_min-finer
         "dr_anchmin04", "dr_anchmin075", "dr_anchmin15",             # anchor_min-finer
         "dr_linkage_complete", "dr_linkage_ward",                    # linkage
-        "dr_enh_zip",                                                # enh-zip
         "dr_cohere",                                                 # Cohere ASR
         # re-confirm @ e46/B+ base
         "dr_ctx_fixedpad", "dr_ctx_fixedpad15", "dr_ctx_none",
@@ -1522,8 +1328,7 @@ GROUPS: dict[str, list[str]] = {
         "dr_align_xlsr1b", "dr_cs15", "dr_beam10",
         "dr_nospeech_hi", "dr_condprev",
         # interactions
-        "dr_oa04_naive", "dr_oa03_flowhigh", "dr_oa02_flowhigh", "dr_oa04_flowhigh",
-        "dr_enh_zip_oa040", "dr_vad050_flowhigh",
+        "dr_oa04_naive",
     ],
     # Phase 2 — OA × large-v3 stack + OA-peak bracket (2026-06-24). Rescore with
     # LOO refs: dr_refineplus / dr_refineplus_v3 / dr_oa045 / dr_oa050 / dr_oa070.
@@ -1535,8 +1340,7 @@ GROUPS: dict[str, list[str]] = {
     # finalist (the anchor reference; baseline auto-included by the runner).
     "v2dev": [
         "dr_oa050",
-        "v2_ngram3", "v2_cluster", "v2_runrelabel", "v2_continuity",
-        "v2_attr", "v2_full", "v2_pad",
+        "v2_ngram3", "v2_pad",
     ],
     # Campaign v2 round 2 — post-diagnosis levers (dr_oa050 already run, so it
     # is skipped on run and just anchors the rescore).
@@ -1553,7 +1357,7 @@ GROUPS: dict[str, list[str]] = {
     # v41_full = the test candidate (L1+L2+L3+L4); v41_merge/v41_hyst/v41_fallback
     # decompose the levers. All off the v4_eend base. Needs $SORTFORMER_VENV_PY;
     # rescore with --anchor v3_phraseloop (report vs v4_eend too).
-    "v41": ["v41_full", "v41_merge", "v41_hyst", "v41_fallback"],
+    "v41": ["v41_merge"],
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms off the v4_eend
     # base (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
     # $SORTFORMER_VENV_PY; rescore with --anchor v3_phraseloop (report vs v4_eend).

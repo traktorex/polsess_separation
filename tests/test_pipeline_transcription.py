@@ -18,7 +18,6 @@ from asr_pipeline.config import TranscriptionConfig
 from asr_pipeline.context import PipelineContext
 from asr_pipeline.stages.transcription import (
     TranscriptionStage,
-    _WhisperBackend,
     _WhisperXBackend,
     _CohereXBackend,
     _empty_result,
@@ -282,13 +281,6 @@ def test_run_before_load_raises():
         stage.run(PipelineContext())
 
 
-def test_load_dispatches_to_whisper_backend(monkeypatch):
-    monkeypatch.setattr(_WhisperBackend, "load", lambda self, device: None)
-    stage = TranscriptionStage(TranscriptionConfig(backend="whisper"))
-    stage.load(torch_cpu())
-    assert isinstance(stage._backend, _WhisperBackend)
-
-
 def test_load_dispatches_to_whisperx_backend(monkeypatch):
     monkeypatch.setattr(_WhisperXBackend, "load", lambda self, device: None)
     stage = TranscriptionStage(TranscriptionConfig(backend="whisperx"))
@@ -316,11 +308,6 @@ def test_load_unknown_backend_raises():
     stage = TranscriptionStage(TranscriptionConfig(backend="nonsense"))
     with pytest.raises(ValueError, match="Unknown transcription backend"):
         stage.load(torch_cpu())
-
-
-def test_load_signature_whisper_excludes_align_model():
-    stage = TranscriptionStage(TranscriptionConfig(backend="whisper", model_name="large-v2"))
-    assert stage.load_signature() == ("whisper", "large-v2")
 
 
 def test_load_signature_whisperx_includes_align_model():
@@ -406,161 +393,6 @@ def test_temperature_schedule_normalisation():
     assert _temperature_schedule(0.3) == [0.3]
     assert _temperature_schedule([0.0, 0.5]) == [0.0, 0.5]
     assert _temperature_schedule((0.0, 0.5)) == [0.0, 0.5]
-
-
-class _FakeWhisperModel:
-    """Captures the kwargs the whisper backend passes to transcribe()."""
-
-    def __init__(self) -> None:
-        self.kwargs: dict | None = None
-
-    def transcribe(self, audio, **kwargs):
-        self.kwargs = kwargs
-        return {"text": "x", "segments": [], "language": "pl"}
-
-
-def test_whisper_backend_passes_decode_knobs():
-    """openai-whisper backend forwards every decode knob to model.transcribe()
-    with the configured values."""
-    cfg = TranscriptionConfig(
-        backend="whisper", beam_size=3, temperature=[0.0, 0.4],
-        condition_on_previous_text=True, no_speech_threshold=0.5,
-        compression_ratio_threshold=2.0, patience=1.5,
-    )
-    backend = _WhisperBackend(cfg)
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))
-
-    kw = fake.kwargs
-    assert kw["beam_size"] == 3
-    assert kw["patience"] == 1.5
-    assert kw["temperature"] == (0.0, 0.4)        # scheduled as a tuple
-    assert kw["condition_on_previous_text"] is True
-    assert kw["no_speech_threshold"] == 0.5
-    assert kw["compression_ratio_threshold"] == 2.0
-
-
-def test_whisper_backend_default_knobs_reproduce_current_behaviour():
-    """With default config the whisper backend forwards the WhisperX-matched
-    defaults — the values that make a baseline run byte-identical."""
-    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))
-    kw = fake.kwargs
-    assert kw["beam_size"] == 5
-    assert kw["patience"] == 1.0
-    assert kw["temperature"] == (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
-    assert kw["condition_on_previous_text"] is False
-    assert kw["no_speech_threshold"] == 0.6
-    assert kw["compression_ratio_threshold"] == 2.4
-
-
-# ---------------------------------------------------------------------------
-# Anti-hallucination knobs: faster-whisper-only, guarded on the whisper backend
-# ---------------------------------------------------------------------------
-
-
-def test_whisper_backend_default_antihallucination_knobs_are_noop():
-    """Default config (0 / 1.0 / None) must NOT forward the faster-whisper-only
-    knobs to openai-whisper — they have no equivalent there, so passing them
-    would crash or silently substitute behaviour. Default = byte-identical."""
-    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
-    kw = fake.kwargs
-    assert "no_repeat_ngram_size" not in kw
-    assert "repetition_penalty" not in kw
-    assert "hallucination_silence_threshold" not in kw
-
-
-@pytest.mark.parametrize("field,value,token", [
-    ("no_repeat_ngram_size", 3, "no_repeat_ngram_size"),
-    ("repetition_penalty", 1.2, "repetition_penalty"),
-    ("hallucination_silence_threshold", 2.0, "hallucination_silence_threshold"),
-    ("chunk_size", 15, "chunk_size"),   # WhisperX-only VAD knob; no-op for whisper
-])
-def test_whisper_backend_rejects_nondefault_antihallucination_knob(field, value, token):
-    """A WhisperX-only knob set to a non-default value with the openai-whisper
-    backend fails loud (SCOPE §4.1: no silent substitution) — and the model's
-    transcribe() is never reached."""
-    cfg = TranscriptionConfig(backend="whisper", **{field: value})
-    backend = _WhisperBackend(cfg)
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    with pytest.raises(ValueError, match=token):
-        backend.transcribe(np.zeros(16_000, dtype=np.float32))
-    assert fake.kwargs is None       # never reached openai-whisper
-
-
-def test_whisper_backend_default_length_penalty_not_forwarded():
-    """length_penalty defaults to 1.0, but openai-whisper's own default is None
-    and 1.0 there is NOT equivalent (different ranker formula). So at the default
-    the backend must OMIT the kwarg entirely, leaving openai-whisper's None →
-    byte-identical baseline."""
-    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))
-    assert "length_penalty" not in fake.kwargs
-
-
-def test_whisper_backend_forwards_nondefault_length_penalty():
-    """A swept length_penalty (!= 1.0) IS forwarded to openai-whisper — it's a
-    shared knob (not WhisperX-only), so no reject, just a pass-through."""
-    cfg = TranscriptionConfig(backend="whisper", length_penalty=0.8)
-    backend = _WhisperBackend(cfg)
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
-    assert fake.kwargs["length_penalty"] == 0.8
-
-
-@pytest.mark.parametrize("field,value,token", [
-    ("suppress_numerals", True, "suppress_numerals"),
-    ("vad_onset", 0.4, "vad_onset"),
-    ("vad_offset", 0.2, "vad_offset"),
-])
-def test_whisper_backend_rejects_nondefault_tier2_whisperx_knob(field, value, token):
-    """suppress_numerals / vad_onset / vad_offset are WhisperX-only; a non-default
-    value with backend=whisper fails loud (SCOPE §4.1) before reaching the model."""
-    cfg = TranscriptionConfig(backend="whisper", **{field: value})
-    backend = _WhisperBackend(cfg)
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    with pytest.raises(ValueError, match=token):
-        backend.transcribe(np.zeros(16_000, dtype=np.float32))
-    assert fake.kwargs is None       # never reached openai-whisper
-
-
-def test_whisper_backend_default_tier2_whisperx_knobs_are_noop():
-    """At their defaults the WhisperX-only Tier-2 knobs neither raise nor reach
-    openai-whisper — byte-identical baseline on the whisper backend."""
-    backend = _WhisperBackend(TranscriptionConfig(backend="whisper"))
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
-    assert "suppress_numerals" not in fake.kwargs
-    assert "vad_onset" not in fake.kwargs
-    assert "vad_offset" not in fake.kwargs
-
-
-def test_whisper_backend_retry_knob_does_not_raise_and_is_ignored():
-    """Unlike chunk_size (a hard reject), retry_collapsed_chunk_size defaults to
-    8 (ON), so the openai-whisper backend must NOT reject it — it logs that the
-    knob is WhisperX-only and ignored, then transcribes normally (SCOPE §4.1: a
-    visible no-op, not a silent one). Contrast with chunk_size, which raises."""
-    cfg = TranscriptionConfig(backend="whisper")     # default retry=8
-    assert cfg.retry_collapsed_chunk_size == 8
-    backend = _WhisperBackend(cfg)
-    fake = _FakeWhisperModel()
-    backend._model = fake
-    backend.transcribe(np.zeros(16_000, dtype=np.float32))   # must not raise
-    assert fake.kwargs is not None                    # reached openai-whisper
-    # The retry knob is never forwarded to openai-whisper (no equivalent).
-    assert "retry_collapsed_chunk_size" not in fake.kwargs
 
 
 def test_whisperx_backend_passes_chunk_size_to_transcribe(monkeypatch):
@@ -1061,7 +893,7 @@ def test_loop_retry_restores_live_global_ngram(monkeypatch):
     assert backend._asr.options.no_repeat_ngram_size == 2  # global restored, not 4
 
 
-@pytest.mark.parametrize("backend_name", ["whisper", "coherex"])
+@pytest.mark.parametrize("backend_name", ["coherex"])
 def test_loop_retry_rejected_on_non_whisperx_backend(backend_name):
     """loop_retry re-decodes via faster-whisper's TranscriptionOptions, which only
     the whisperx backend carries; loop_retry=True on any other backend fails loud
@@ -1311,7 +1143,7 @@ def test_phrase_loop_long_gap_prevents_cross_segment_join(monkeypatch):
     assert [s["text"] for s in out["segments"]] == [seg_text] * 6
 
 
-@pytest.mark.parametrize("backend_name", ["whisper", "coherex"])
+@pytest.mark.parametrize("backend_name", ["coherex"])
 def test_phrase_loop_rejected_on_non_whisperx_backend(backend_name):
     """loop_retry_phrase=True on a non-whisperx backend fails loud at stage load —
     before any model loads — never a silent no-op (SCOPE §4.1)."""

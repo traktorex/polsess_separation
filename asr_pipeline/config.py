@@ -153,27 +153,6 @@ class DiarizationConfig:
     # (SORTFORMER_FAILURE_ANATOMY.md): true miscount-head margins were 0.15-0.57,
     # so 0.10 splits cleanly. Finite, >= 0.
     sortformer_merge_margin: float = 0.10
-    # L2 — binarization mode. "flat" (default) = the v4 single-threshold rule
-    # (prob >= sortformer_threshold). "hysteresis" = NeMo-style dual threshold: a
-    # head OPENS at `sortformer_onset`, stays open until `sortformer_offset`, each
-    # segment is then padded by `sortformer_pad_s`; the existing gap-fill /
-    # min-duration post-steps apply exactly as in flat mode. Recovers quiet-speaker
-    # speech at lower collateral without inflating head-3/4 leak (V41_PREREG.md L2).
-    sortformer_binarization: str = "flat"         # "flat" | "hysteresis"
-    sortformer_onset: float = 0.70                # hysteresis open threshold, (0, 1)
-    sortformer_offset: float = 0.30               # hysteresis close threshold, (0, 1), <= onset
-    sortformer_pad_s: float = 0.06                # symmetric segment pad (s), >= 0
-    # L3 / L4 — fallback policy. "none" (default) = never fall back; always emit the
-    # sortformer result. "gated" = fall back to the pyannote backend END-TO-END for
-    # THIS recording when either (L3) the pyannote segmentation-3.0 speech NOT
-    # covered by the sortformer output exceeds `sortformer_coverage_budget_s`, or
-    # (L4) the head-miscount warning fires AND the post-L1 unresolved leak still
-    # exceeds the leak-warning fraction. Loud + logged + recorded in metadata.json
-    # (SCOPE §4 — an explicit designed policy, never a silent substitution).
-    sortformer_fallback: str = "none"             # "none" | "gated"
-    # L3 coverage budget (s): uncovered reference speech above this triggers the
-    # pyannote fallback. Only used when fallback == "gated". Finite, > 0.
-    sortformer_coverage_budget_s: float = 5.0
 
 
 @dataclass
@@ -211,9 +190,6 @@ class EnhancementConfig:
     # Backend selector:
     #   - "frcrn_se_16k": FRCRN, DNS-2020 winner, native 16k (ClearerVoice)
     #   - "mossformer_gan_se_16k": MossFormer + GAN losses, 16k (ClearerVoice)
-    #   - "zipenhancer_16k": ZipEnhancer, native 16k (ModelScope
-    #     iic/speech_zipenhancer_ans_multiloss_16k_base; needs `modelscope`).
-    #     DNS-2020 PESQ leader; run via ModelScope ANS pipeline.
     # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is
     # the evidence leader). The *final* default ruling is deferred until there
     # is substantive testing data.
@@ -372,12 +348,6 @@ class PostSeparationProcessingConfig:
     #     convolutional, ~18× real-time on CPU, native 8→16 kHz.
     #     Requires the user to download the pretrained checkpoint from
     #     Google Drive (see asr_pipeline/vendor/ap_bwe/README.md).
-    #   - "flowhigh": FlowHigh (Yun et al., ICASSP 2025, 2501.04926).
-    #     Single-step flow-matching SR model from Resemble AI's pip
-    #     fork. Native output 48 kHz → downsampled internally to the
-    #     pipeline rate. Reports beating AP-BWE on VCTK LSD/ViSQOL.
-    #     Install: pip install git+https://github.com/resemble-ai/flowhigh.git@dev
-    #     Checkpoint auto-downloads on first FlowHighSR.from_pretrained().
     backend: str = "naive"
     # Path to the AP-BWE generator checkpoint (PyTorch state dict
     # containing the 'generator' key). Ignored by non-AP-BWE backends.
@@ -387,14 +357,6 @@ class PostSeparationProcessingConfig:
             "/home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k",
         )
     )
-    # FlowHigh's input sample rate. The README explicitly lists 12 kHz
-    # and 16 kHz examples and states "any rate < 48 kHz". 8 kHz isn't
-    # confirmed in the docs but isn't excluded either — set this knob to
-    # 8000 to A/B-test the narrower input (which matches the separator's
-    # 0-4 kHz spectral content more honestly). Default 16000 matches the
-    # pipeline rate so the in-path has no resample (only the 48→16
-    # downsample on the way out). Ignored by non-FlowHigh backends.
-    flowhigh_input_sr: int = 16_000
 
 
 @dataclass
@@ -462,71 +424,6 @@ class AssemblyConfig:
     # Applied after `overlap_rms_match_solo`; if both are on, this dominates.
     per_piece_rms_norm: bool = False
     target_rms: Optional[float] = None
-    # Margin-gated carry-forward prior for per-overlap ECAPA pairing
-    # (`_assign_overlaps`). The per-overlap pairing picks argmax(straight,
-    # swapped) summed cosine independently per overlap, but ~a third of overlaps
-    # are sub-0.5 s where ECAPA is unreliable and the two cosines sit near a tie.
-    # When this knob is > 0 and `abs(straight - swapped) < overlap_assign_min_margin`,
-    # the overlap is treated as ambiguous: instead of the noisy argmax it inherits
-    # the *carry-forward prior* — the pairing of the last confident (above-margin)
-    # ECAPA decision. 0.0 = off → every ECAPA decision clears the (zero) margin,
-    # so the prior never fires and behaviour is the pure-argmax current pipeline
-    # (byte-identical baseline). A hypothesis to sweep, not a behaviour change.
-    # Must lie in [0, 1) — the summed-cosine gap spans [0, 2], but a margin >= 1
-    # would gate even decisive decisions, so the useful range is small.
-    overlap_assign_min_margin: float = 0.0
-    # Per-overlap speaker-assignment strategy (`_assign_overlaps`):
-    #   "ecapa_argmax"        -> the POC default: argmax(straight, swapped) summed
-    #                            cosine to the *global* solo anchors, with the
-    #                            optional `overlap_assign_min_margin` carry-forward.
-    #   "continuity_tiebreak" -> argmax as above, but a near-tie (gap <
-    #                            `continuity_tiebreak_margin`) is broken by
-    #                            *local* anchors built from each speaker's solo
-    #                            audio within `continuity_window_s` of the overlap
-    #                            — the temporally-adjacent ("speech continuity")
-    #                            voice, more reliable than the global anchor on a
-    #                            short ambiguous overlap. Stateless (no
-    #                            carry-forward chain). Ignores
-    #                            `overlap_assign_min_margin`.
-    #   "consensus_2means"    -> a global pre-pass decides every overlap jointly
-    #                            via constrained 2-means over all overlap
-    #                            embeddings + the solo anchors, so the consensus
-    #                            of the majority can overrule a lone confident-
-    #                            but-wrong per-overlap decision (the lever the two
-    #                            per-overlap modes above cannot reach).
-    overlap_assignment: str = "ecapa_argmax"   # ecapa_argmax | continuity_tiebreak | consensus_2means
-    # Near-tie threshold (τ) for "continuity_tiebreak": when the global-anchor
-    # straight/swapped summed-cosine gap is < this, re-decide with local anchors.
-    # 0.0 = off (no overlap is ever a near-tie) → byte-identical to ecapa_argmax,
-    # so this is the swept hypothesis knob. Same [0, 1) range rationale as
-    # `overlap_assign_min_margin`.
-    continuity_tiebreak_margin: float = 0.0
-    # Half-window (seconds) each side of an overlap from which the local
-    # continuity anchor is built. A speaker with no solo audio in the window
-    # yields no local anchor → that overlap falls back to the global argmax.
-    continuity_window_s: float = 10.0
-    # Overlap-stream routing MODE — orthogonal to `overlap_assignment` above,
-    # which selects the per-overlap strategy:
-    #   "anchor_argmax" (default) -> current behaviour: each overlap's
-    #     straight/swapped is decided independently, governed by
-    #     `overlap_assignment`. Byte-identical to the pre-knob pipeline.
-    #   "cluster2" -> a global pre-pass (`_cluster2_pairings`) collects EVERY
-    #     separated overlap-stream embedding in the fragment, runs cosine 2-means
-    #     seeded from the two solo anchors (deterministic, no RNG), maps the two
-    #     clusters back onto stream A/B by centroid-to-anchor similarity, and
-    #     emits a per-overlap pairing. All streams are clustered jointly, so a run
-    #     can no longer defect one overlap at a time to a weak anchor; and an
-    #     overlap whose two streams land in the SAME cluster (a separation
-    #     failure) is left undecided and falls through to the `overlap_assignment`
-    #     ladder rather than being forced into a guessed pairing. NOTE (measured
-    #     in-code): with the anchors used as BOTH the 2-means seeds and the
-    #     cluster→stream mapping, cluster2 is algebraically ~= per-overlap argmax
-    #     on symmetric (A,B) overlap pairs — its only distinct behaviour is the
-    #     same-cluster fall-through — so like `consensus_2means` it is expected to
-    #     be a near-no-op; it exists as a documentable sweep lever. Overlaps the
-    #     B+ relabel handoff (`ctx.overlap_speaker_assignment`) already covers
-    #     still win (a strictly stronger global decision); cluster2 fills the rest.
-    assignment_mode: str = "anchor_argmax"   # "anchor_argmax" | "cluster2"
     # Onset boundary pad for SOLO pieces (seconds). pyannote turn starts lag true
     # speech onsets slightly, and assembly slices exactly at the diarization
     # boundary — so first phonemes get shaved ("szefie" audible as "efie") or
@@ -545,19 +442,16 @@ class AssemblyConfig:
 
 @dataclass
 class TranscriptionConfig:
-    """Stage 5: Whisper ASR per assembled stream.
+    """Stage 5: ASR per assembled stream.
 
     Two backends, same surface contract::
 
-      - ``whisper`` (default): the original OpenAI Whisper package
-        (``whisper.load_model``). Supports the canonical OpenAI checkpoints
-        (``large-v3``, ``large-v2``, ``medium``, …). Fast to set up but no
-        wav2vec2 word-level alignment — Whisper's own word timestamps are
-        token-aligned and drift by 200–500 ms.
-      - ``whisperx``: WhisperX = faster-whisper + wav2vec2 forced alignment.
-        Word-level timestamps to ±50 ms. Also the only backend that supports
-        non-OpenAI Whisper checkpoints via HF model id (e.g. a
-        language-specific Whisper finetune).
+      - ``whisperx`` (default): WhisperX = faster-whisper + wav2vec2 forced
+        alignment. Word-level timestamps to ±50 ms. Accepts OpenAI short names
+        (``large-v3``, ``large-v2``, …) and non-OpenAI Whisper checkpoints via
+        HF model id (e.g. a language-specific Whisper finetune).
+      - ``coherex``: Cohere ASR (Diffio-AI/CohereX), run in an isolated-venv
+        subprocess (``$COHEREX_VENV_PY``). Kept for choosability / re-testing.
 
     Both backends emit the same output shape per speaker::
 
@@ -568,11 +462,10 @@ class TranscriptionConfig:
 
     enabled: bool = True
     # Selector. See class docstring for trade-offs.
-    backend: str = "whisper"           # whisper | whisperx
+    backend: str = "whisperx"          # whisperx | coherex
     # OpenAI short names (``large-v3``, ``large-v2``) or any HF Whisper model id
-    # parseable by faster-whisper — the latter only when backend == ``whisperx``.
-    # The ``whisper`` backend accepts canonical OpenAI names only.
-    model_name: str = "large-v3"
+    # parseable by faster-whisper (the whisperx backend).
+    model_name: str = "large-v2"
     language: str = "pl"
     initial_prompt: str = "Rozmowa po polsku."
     word_timestamps: bool = True
@@ -624,18 +517,10 @@ class TranscriptionConfig:
     # (asr.py ``patience``); stored as float here, numerically identical.
     # Must be > 0.
     patience: float = 1.0
-    # Exponential length penalty (Google NMT, alpha). Both backends accept it,
-    # so unlike the WhisperX-only knobs below it routes to ``_WhisperBackend``
-    # too — but the no-op value differs per backend, so it is forwarded only
-    # when non-default (see below). faster-whisper / WhisperX default = 1
-    # (asr.py ``default_asr_options["length_penalty"]`` = the
+    # Exponential length penalty (Google NMT, alpha). faster-whisper / WhisperX
+    # default = 1 (asr.py ``default_asr_options["length_penalty"]`` = the
     # ``WhisperModel.transcribe`` signature default), threaded into the WhisperX
-    # ``asr_options`` at 1.0 = no-op. openai-whisper's default is ``None`` (plain
-    # length normalisation), and a value of 1.0 there is NOT identical to None
-    # (``((5+len)/6)`` vs ``len`` in MaximumLikelihoodRanker), so the
-    # ``whisper`` backend forwards this only when it differs from 1.0 — keeping
-    # the baseline byte-identical for both backends. openai-whisper additionally
-    # requires the value in [0, 1]; faster-whisper has no such cap. Must be > 0.
+    # ``asr_options`` at 1.0 = no-op (byte-identical baseline). Must be > 0.
     length_penalty: float = 1.0
 
     # --- Anti-hallucination decode knobs (faster-whisper / WhisperX only) ----
@@ -648,17 +533,6 @@ class TranscriptionConfig:
     # ``repetition_penalty`` 1.0 / 1, ``hallucination_silence_threshold``
     # None / None. All three agree, so unlike the six knobs above there is no
     # WhisperX-vs-faster-whisper override to reconcile.
-    #
-    # openai-whisper (the ``whisper`` backend) does NOT support these as
-    # faster-whisper does: ``no_repeat_ngram_size`` / ``repetition_penalty``
-    # are absent from its decode surface entirely, and while its ``transcribe``
-    # has a param literally named ``hallucination_silence_threshold`` it is a
-    # different feature (a different silence-skip algorithm). Forwarding any of
-    # them to openai-whisper would either crash or silently substitute a
-    # different behaviour — SCOPE §4.1 forbids the latter. So the defaults below
-    # (0 / 1.0 / None) are a no-op for the ``whisper`` backend (never passed),
-    # and a non-default value with ``backend == "whisper"`` is a loud error
-    # (see ``_WhisperBackend.transcribe``).
     #
     # Block any N-gram of this size from repeating in the decode. WhisperX /
     # faster-whisper default = 0 (disabled). Must be an int >= 0.
@@ -680,9 +554,6 @@ class TranscriptionConfig:
     # ``TranscriptionOptions`` field, so it is wired into the ``asr_options``
     # dict like the other decode knobs. WhisperX default = False (asr.py
     # ``default_asr_options["suppress_numerals"]``) = current behaviour.
-    # openai-whisper has no equivalent on its decode surface, so a non-default
-    # value with ``backend == "whisper"`` is a loud error (see
-    # ``_WhisperBackend._reject_unsupported_knobs``).
     suppress_numerals: bool = False
     # WhisperX internal-VAD onset / offset probabilities (Schmitt-trigger style:
     # a frame enters speech above ``vad_onset`` and leaves below ``vad_offset``).
@@ -691,9 +562,7 @@ class TranscriptionConfig:
     # pipeline currently passes no ``vad_options``, so the defaults below
     # reproduce WhisperX's exactly — ``vad_onset=0.500``, ``vad_offset=0.363``
     # = byte-identical baseline. Lowering ``vad_offset`` keeps trailing speech
-    # the VAD would otherwise clip; both must lie in (0, 1). openai-whisper does
-    # its own internal windowing with no such VAD, so a non-default value with
-    # ``backend == "whisper"`` is a loud error.
+    # the VAD would otherwise clip; both must lie in (0, 1).
     vad_onset: float = 0.500
     vad_offset: float = 0.363
 
@@ -712,9 +581,7 @@ class TranscriptionConfig:
     # clear speech (observed on db15fc57: 39-68 s dropped). A smaller value
     # forces WhisperX to split such segments, recovering the dropped speech, at
     # the cost of slightly less decode context. Must be an int >= 1. 30 = current
-    # behaviour (byte-identical baseline). Ignored by the ``whisper`` backend
-    # (openai-whisper has no VAD chunking) — a non-default value there is a loud
-    # error, like the anti-hallucination knobs above.
+    # behaviour (byte-identical baseline).
     chunk_size: int = 30
 
     # --- Detect-and-retry for collapsed WhisperX windows (WhisperX only) ------
@@ -765,9 +632,9 @@ class TranscriptionConfig:
     # path (loop_retry runs after retry_collapsed, before wav2vec2 alignment).
     #
     # OFF by default → byte-identical to the shipped pipeline (nothing new runs).
-    # WhisperX-only: openai-whisper / coherex have no faster-whisper
-    # TranscriptionOptions to override, so loop_retry=True with backend != whisperx
-    # is a loud config error (SCOPE §4.1: no silent no-op).
+    # WhisperX-only: coherex has no faster-whisper TranscriptionOptions to
+    # override, so loop_retry=True with backend != whisperx is a loud config
+    # error (SCOPE §4.1: no silent no-op).
     loop_retry: bool = False
     # no_repeat_ngram_size applied ONLY on the loop-retry pass (the global
     # `no_repeat_ngram_size` knob above stays independent and untouched). Must be
@@ -846,26 +713,6 @@ class RelabelConfig:
     # (SECOND_PASS_PLAN.md §3.2). Kept as an A/B knob only; duration weighting is
     # used in ALIGNMENT regardless (where long anchors SHOULD pin identity).
     duration_weighted: bool = False
-    # Run-level (contiguous-run) relabel pass, applied AFTER the global solo
-    # relabel above. OFF by default → byte-identical no-op. When True, the usable
-    # solo segments are ordered by time and grouped into maximal contiguous
-    # SAME-stream runs; a whole run flips to the other stream when its mean
-    # embedding is closer to the other stream's centroid than to its own by more
-    # than `run_margin` (cosine). This targets the class-A chunk swap the GLOBAL
-    # relabel provably cannot repair — a single global A<->B flip is cpWER-free,
-    # so it never fixes a stream that is only PARTIALLY mixed. Deterministic:
-    # centroids are computed ONCE from the post-global-relabel assignment and runs
-    # are processed in a fixed time order (no centroid drift, no RNG). Never flips
-    # a run that IS its entire stream (a whole-stream flip is just a free global
-    # swap, and this guards the degenerate flip-everything case). Solo-only: like
-    # the global relabel it never touches the overlap streams / the B+ overlap
-    # handoff (consistent with `exclude_overlap`).
-    run_level: bool = False
-    # Cosine margin the other-stream centroid must beat the own-stream centroid by
-    # before a whole run is flipped (only consulted when `run_level=True`). Cosine
-    # on unit ECAPA2 embeddings lies in [-1, 1], so the gap is in [-2, 2]; 0.05
-    # requires a clear (not marginal) pull to the other speaker. >= 0.
-    run_margin: float = 0.05
     # Solo 2-means initialisation strategy (the "degeneracy rescue"). The
     # pass-1-seeded Lloyd's in `_cluster_two` cannot escape a corrupt pass-1
     # partition: on a handful of fragments pyannote pass-1 labels are near-random,
@@ -959,14 +806,14 @@ class PipelineConfig:
         _one_of(self.assembly.output_mode, "output_mode",
                 ("shortened", "full_length"))
         _one_of(self.enhancement.backend, "enhancement.backend",
-                ("frcrn_se_16k", "mossformer_gan_se_16k", "zipenhancer_16k"))
+                ("frcrn_se_16k", "mossformer_gan_se_16k"))
         _one_of(self.enhancement.resample_quality, "enhancement.resample_quality",
                 ("soxr_hq", "soxr_vhq", "kaiser_best"))
         _one_of(self.post_separation_processing.backend,
                 "post_separation_processing.backend",
-                ("naive", "ap_bwe", "flowhigh"))
+                ("naive", "ap_bwe"))
         _one_of(self.transcription.backend, "transcription.backend",
-                ("whisper", "whisperx", "coherex"))
+                ("whisperx", "coherex"))
         _one_of(self.assembly.anchor_embedding, "assembly.anchor_embedding",
                 ("ecapa1", "ecapa2"))
         _one_of(self.diarization.clustering_method, "diarization.clustering_method",
@@ -974,20 +821,11 @@ class PipelineConfig:
                  "ward", "weighted"))
         _one_of(self.diarization.backend, "diarization.backend",
                 ("pyannote", "sortformer"))
-        _one_of(self.assembly.assignment_mode, "assembly.assignment_mode",
-                ("anchor_argmax", "cluster2"))
         _one_of(self.relabel.source, "relabel.source", ("solos", "global"))
         _one_of(self.relabel.audio_source, "relabel.audio_source",
                 ("enhanced", "raw"))
         _one_of(self.relabel.solo_clustering_init, "relabel.solo_clustering_init",
                 ("pass1", "rescue"))
-        # run_margin is a cosine gap floor (only used when run_level=True); a
-        # negative value would flip every run. 0 = flip on any improvement.
-        if not math.isfinite(self.relabel.run_margin) or self.relabel.run_margin < 0:
-            raise ValueError(
-                f"relabel.run_margin must be a finite value >= 0 (cosine margin; "
-                f"only used when run_level=True), got {self.relabel.run_margin}"
-            )
         # Degeneracy-rescue balance thresholds are duration shares → finite, [0, 1]
         # (only consulted when solo_clustering_init="rescue").
         for _knob in ("rescue_trigger_bal", "rescue_candidate_bal"):
@@ -1037,12 +875,6 @@ class PipelineConfig:
                 f"got {sst}"
             )
 
-        if self.post_separation_processing.flowhigh_input_sr <= 0:
-            raise ValueError(
-                f"flowhigh_input_sr must be positive, got "
-                f"{self.post_separation_processing.flowhigh_input_sr}"
-            )
-
         # --- Assembly numeric knobs ---
         # A negative value here crashes deep in Stage 6 (`np.zeros(negative)` /
         # broadcast errors), not at config load — so fail loud and early,
@@ -1068,35 +900,6 @@ class PipelineConfig:
             raise ValueError(
                 f"assembly.anchor_max_duration_s must be None (no cap) or "
                 f"positive, got {acfg.anchor_max_duration_s}"
-            )
-        # overlap_assign_min_margin gates the carry-forward prior. The summed
-        # cosine gap spans [0, 2]; 0 = off (current behaviour), and a margin
-        # >= 1 would gate decisive decisions, so the valid range is [0, 1).
-        if not math.isfinite(acfg.overlap_assign_min_margin) or not (
-            0.0 <= acfg.overlap_assign_min_margin < 1.0
-        ):
-            raise ValueError(
-                f"assembly.overlap_assign_min_margin must be in [0, 1) "
-                f"(0 = off), got {acfg.overlap_assign_min_margin}"
-            )
-        # Per-overlap assignment strategy + the continuity tie-break knobs.
-        valid_assign = {"ecapa_argmax", "continuity_tiebreak", "consensus_2means"}
-        if acfg.overlap_assignment not in valid_assign:
-            raise ValueError(
-                f"assembly.overlap_assignment must be one of {sorted(valid_assign)}, "
-                f"got {acfg.overlap_assignment!r}"
-            )
-        if not math.isfinite(acfg.continuity_tiebreak_margin) or not (
-            0.0 <= acfg.continuity_tiebreak_margin < 1.0
-        ):
-            raise ValueError(
-                f"assembly.continuity_tiebreak_margin must be in [0, 1) "
-                f"(0 = off), got {acfg.continuity_tiebreak_margin}"
-            )
-        if not math.isfinite(acfg.continuity_window_s) or acfg.continuity_window_s <= 0:
-            raise ValueError(
-                f"assembly.continuity_window_s must be a positive finite number, "
-                f"got {acfg.continuity_window_s}"
             )
         # solo_onset_pad_s needs its own guard (not the >= 0 loop above): NaN
         # passes a bare `< 0` check and would silently disable every clamp
@@ -1144,48 +947,17 @@ class PipelineConfig:
                 f"diarization.sortformer_threshold must be a probability in "
                 f"(0, 1) (0.5 = probe default), got {dcfg.sortformer_threshold}"
             )
-        # Sortformer v4.1 levers (V41_PREREG.md L1-L4). Validated unconditionally
-        # (like sortformer_threshold) so a YAML typo fails loud on any backend; the
-        # defaults preserve v4 behaviour. onset >= offset is the NeMo hysteresis
-        # invariant (offset closes what onset opened).
+        # Sortformer levers. Validated unconditionally (like sortformer_threshold)
+        # so a YAML typo fails loud on any backend; the defaults preserve the
+        # stock top-2 behaviour.
         _one_of(dcfg.sortformer_head_policy, "diarization.sortformer_head_policy",
                 ("top2", "merge"))
-        _one_of(dcfg.sortformer_binarization, "diarization.sortformer_binarization",
-                ("flat", "hysteresis"))
-        _one_of(dcfg.sortformer_fallback, "diarization.sortformer_fallback",
-                ("none", "gated"))
         if not math.isfinite(dcfg.sortformer_merge_margin) or \
                 dcfg.sortformer_merge_margin < 0:
             raise ValueError(
                 f"diarization.sortformer_merge_margin must be a finite value >= 0 "
                 f"(cosine margin; only used when sortformer_head_policy='merge'), "
                 f"got {dcfg.sortformer_merge_margin}"
-            )
-        for _knob in ("sortformer_onset", "sortformer_offset"):
-            _val = getattr(dcfg, _knob)
-            if not math.isfinite(_val) or not (0.0 < _val < 1.0):
-                raise ValueError(
-                    f"diarization.{_knob} must be a probability in (0, 1) "
-                    f"(hysteresis binarization threshold), got {_val}"
-                )
-        if dcfg.sortformer_offset > dcfg.sortformer_onset:
-            raise ValueError(
-                f"diarization.sortformer_offset ({dcfg.sortformer_offset}) must be "
-                f"<= sortformer_onset ({dcfg.sortformer_onset}) — the offset closes "
-                f"a segment the onset opened (NeMo-style hysteresis)."
-            )
-        if not math.isfinite(dcfg.sortformer_pad_s) or dcfg.sortformer_pad_s < 0:
-            raise ValueError(
-                f"diarization.sortformer_pad_s must be a finite value >= 0 "
-                f"(hysteresis segment pad, seconds), got {dcfg.sortformer_pad_s}"
-            )
-        if not math.isfinite(dcfg.sortformer_coverage_budget_s) or \
-                dcfg.sortformer_coverage_budget_s <= 0:
-            raise ValueError(
-                f"diarization.sortformer_coverage_budget_s must be a positive "
-                f"finite number of seconds (L3 fallback budget; only used when "
-                f"sortformer_fallback='gated'), got "
-                f"{dcfg.sortformer_coverage_budget_s}"
             )
 
         omr = self.enhancement.observation_mix_ratio

@@ -45,9 +45,8 @@ separation:
   vad_attack_frames: 1
   vad_release_frames: 1
 post_separation_processing:
-  backend: flowhigh
+  backend: ap_bwe
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
-  flowhigh_input_sr: 8000
 assembly:
   enabled: true
   min_solo_for_anchor_s: 3.0
