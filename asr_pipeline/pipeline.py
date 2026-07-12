@@ -18,8 +18,9 @@ Two usage modes:
 from __future__ import annotations
 
 import gc
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import torch
 
@@ -52,10 +53,33 @@ def _log(msg: str) -> None:
 
 
 class Pipeline:
-    """Top-level orchestrator. Construct once per recording (or reuse)."""
+    """Top-level orchestrator. Construct once per recording (or reuse).
 
-    def __init__(self, config: PipelineConfig) -> None:
+    ``on_event`` is an optional callback that receives a small dict per stage
+    boundary so a CLI can print progress and the outputs can record trustworthy
+    per-stage timings. Two event kinds fire per stage:
+
+      - ``{"event": "stage_start", "stage": <name>}`` — just before the stage's
+        model is (re)loaded.
+      - ``{"event": "stage_end", "stage": <name>, "load_s": float,
+        "run_s": float, "wall_s": float}`` — after ``run()`` returns. ``load_s``
+        is the wall time spent in ``stage.load()`` alone (``0.0`` when the stage
+        was already resident — the reload-skip no-op); ``run_s`` is the wall
+        time in ``stage.run()`` (inference). Measuring around the *actual* load
+        and run calls — not the whole stage wrapper — is what makes the split
+        trustworthy (it retires the stale-``run_meta`` timing-mirage class).
+
+    Default ``on_event=None`` → nothing is emitted and behaviour is byte-identical
+    to before the instrumentation existed.
+    """
+
+    def __init__(
+        self,
+        config: PipelineConfig,
+        on_event: Optional[Callable[[dict], None]] = None,
+    ) -> None:
         self.config = config
+        self._on_event = on_event
         self.device = torch.device(config.device)
         if config.deterministic:
             # The enhancement conv stack is the pipeline's only nondeterministic
@@ -135,6 +159,14 @@ class Pipeline:
         _log(f"load_audio: loaded {len(ctx.audio)/ctx.sample_rate:.2f}s audio")
         return ctx
 
+    def _emit(self, event: str, stage: str, **fields) -> None:
+        """Fire an ``on_event`` callback, if one was wired. No-op otherwise."""
+        if self._on_event is None:
+            return
+        payload = {"event": event, "stage": stage}
+        payload.update(fields)
+        self._on_event(payload)
+
     def run_stage(self, stage_name: str, ctx: PipelineContext) -> None:
         """Run one stage by name on `ctx`. Loads the stage's model only if it
         isn't the currently-loaded one; unloads the previously-loaded stage
@@ -145,10 +177,15 @@ class Pipeline:
             raise RuntimeError(
                 f"Stage {stage_name!r} is disabled (config.{stage_name}.enabled = False)."
             )
-        self._ensure_loaded(stage_name)
+        self._emit("stage_start", stage_name)
+        # `_ensure_loaded` returns the wall time spent in `stage.load()` alone
+        # (0.0 on a reload-skip no-op) — the load half of the load/run split.
+        load_seconds = self._ensure_loaded(stage_name)
         try:
             _log(f"run_stage({stage_name!r}): calling stage.run()")
+            t_run = time.perf_counter()
             stage.run(ctx)
+            run_seconds = time.perf_counter() - t_run
             _log(f"run_stage({stage_name!r}): stage.run() returned")
             if self.artifact_dir is not None:
                 stage.spill(ctx, self.artifact_dir)
@@ -160,6 +197,11 @@ class Pipeline:
             _log(f"run_stage({stage_name!r}): FAILED — releasing model")
             self._release_current()
             raise
+        self._emit(
+            "stage_end", stage_name,
+            load_s=load_seconds, run_s=run_seconds,
+            wall_s=load_seconds + run_seconds,
+        )
         _log(f"run_stage({stage_name!r}): complete")
 
     def unload(self) -> None:
@@ -194,16 +236,21 @@ class Pipeline:
         gc.collect()
         _log("_release_current: released")
 
-    def _ensure_loaded(self, stage_name: str) -> None:
-        """Make `stage_name` the currently-loaded stage.
+    def _ensure_loaded(self, stage_name: str) -> float:
+        """Make `stage_name` the currently-loaded stage; return load wall seconds.
 
         - Same stage, same load signature → no-op (this is what makes
           within-stage iteration fast — the user can re-run the same
           stage with unchanged model-defining config without paying the
-          load cost again).
+          load cost again). Returns ``0.0`` (nothing loaded).
         - Same stage, different signature → unload + reload (the user
           changed a checkpoint-determining knob between runs).
         - Different stage → unload current + load new.
+
+        The returned float times ``stage.load()`` *alone* — not the preceding
+        ``_release_current()`` of the outgoing stage (that is the previous
+        stage's teardown, not this stage's load). This keeps the load/run split
+        in the emitted timing events honest.
         """
         stage = self.get_stage(stage_name)
         new_sig = stage.load_signature()
@@ -211,7 +258,7 @@ class Pipeline:
         if self._current_stage_name == stage_name:
             if new_sig == self._loaded_signature:
                 _log(f"_ensure_loaded({stage_name!r}): already loaded, no-op")
-                return
+                return 0.0
             _log(
                 f"_ensure_loaded({stage_name!r}): signature changed "
                 f"{self._loaded_signature!r} -> {new_sig!r}, reloading"
@@ -225,7 +272,10 @@ class Pipeline:
             self._release_current()
 
         _log(f"_ensure_loaded({stage_name!r}): calling stage.load()...")
+        t_load = time.perf_counter()
         stage.load(self.device)
+        load_seconds = time.perf_counter() - t_load
         self._current_stage_name = stage_name
         self._loaded_signature = new_sig
         _log(f"_ensure_loaded({stage_name!r}): stage.load() returned (sig={new_sig!r})")
+        return load_seconds

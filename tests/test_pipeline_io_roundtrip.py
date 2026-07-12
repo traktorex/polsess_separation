@@ -226,6 +226,38 @@ def test_writer_subdir_name_routes_output(eval_recording, tmp_path):
     assert (rec_dir / "pipeline").exists()
 
 
+def test_writer_embeds_stage_timings_when_given(tmp_path):
+    # write_pipeline_outputs(stage_timings=...) folds per-stage timings (the
+    # on_event stage_end rows) into metadata.json under "stage_timings" (A6).
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    timings = [
+        {"stage": "diarization", "load_s": 1.0, "run_s": 2.0},
+        {"stage": "transcription", "load_s": 3.0, "run_s": 4.0},
+    ]
+    write_pipeline_outputs(
+        ctx, rec_dir, subdir_name="pipeline", stage_timings=timings
+    )
+    meta = json.loads(
+        (rec_dir / "pipeline" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert meta["stage_timings"] == timings
+
+
+def test_writer_omits_stage_timings_when_none(tmp_path):
+    # Default stage_timings=None → the key is absent (byte-identical to a run
+    # without the A6 instrumentation).
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    write_pipeline_outputs(ctx, rec_dir, subdir_name="pipeline")
+    meta = json.loads(
+        (rec_dir / "pipeline" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert "stage_timings" not in meta
+
+
 def test_writer_falls_back_to_speaker_id_without_label(tmp_path):
     # spk_to_label.get(spk, spk): a speaker missing from the label map writes
     # under its raw id rather than crashing — the documented fallback.

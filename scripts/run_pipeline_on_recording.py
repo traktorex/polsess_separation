@@ -1,6 +1,7 @@
 """Run the ASR pipeline against one recording in its ablation modes.
 
-Drives the WER-ablation table the eval module's Layer 3 reads:
+Thin wrapper over `asr_pipeline.batch.run_batch` (the shared batch runner). Drives
+the WER-ablation table the eval module's Layer 3 reads:
 
     pipeline/          full pipeline (default config + transcribe_mixture)
     pipeline_nosep/    separation.enabled = false
@@ -8,10 +9,10 @@ Drives the WER-ablation table the eval module's Layer 3 reads:
     pipeline_minimal/  both off — diarize + slice + transcribe only
 
 (plus the GT-bootstrap-only ``pipeline_nosep_mossformer``, which L3 does
-not score). Phase-major: each mode runs as a fresh ``Pipeline``; the
-previous pipeline is dropped before the next mode starts so GPU memory is
-fully released between modes. Modes write their outputs to per-mode
-subdirs under ``<eval_root>/<dataset>/<recording_id>/``.
+not score). Phase-major: each mode is a fresh ``Pipeline`` built inside
+``run_batch``; the previous pipeline's GPU memory is fully released between
+modes by the shared teardown. Modes write their outputs to per-mode subdirs
+under ``<eval_root>/<dataset>/<recording_id>/``.
 
 Usage::
 
@@ -26,22 +27,17 @@ the writer places outputs beside it. The driver doesn't touch the ``reference/``
 from __future__ import annotations
 
 import argparse
-import gc
 import sys
 import time
-from dataclasses import asdict
 from pathlib import Path
-
-import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from asr_pipeline import Pipeline                                # noqa: E402
-from asr_pipeline.config import PipelineConfig                   # noqa: E402
-from asr_pipeline.eval.config_presets import fresh_eval_cfg      # noqa: E402
-from asr_pipeline.io import write_pipeline_outputs               # noqa: E402
+from asr_pipeline.batch import run_batch                          # noqa: E402
+from asr_pipeline.config import PipelineConfig                    # noqa: E402
+from asr_pipeline.eval.config_presets import fresh_eval_cfg       # noqa: E402
 
 # Back-compat alias: the shared eval-config preset used to live here as
 # `_fresh_cfg`. It now lives in `asr_pipeline.eval.config_presets` so the
@@ -73,6 +69,12 @@ def _nosep_with_mossformer(cfg: "PipelineConfig") -> None:
 #                      content sliced by diarization. Also doubles as
 #                      the strictest ablation baseline ("what if we
 #                      only diarize?").
+#
+# The full/no_sep/no_enh/minimal override sets are the same ones
+# `asr_pipeline.batch.MODE_PRESETS` encodes as dotted dicts (a test cross-checks
+# the two agree); the extra ``pipeline_nosep_mossformer`` GT-bootstrap mode is
+# script-local. Kept as (name, applier) so the applier-state test keeps pinning
+# each mode's (sep, enh) effect.
 MODES: list[tuple[str, callable]] = [
     ("pipeline",                    lambda cfg: None),
     ("pipeline_nosep",              lambda cfg: setattr(cfg.separation,  "enabled", False)),
@@ -86,45 +88,33 @@ MODES: list[tuple[str, callable]] = [
 ]
 
 
-def _drop_pipeline(p: Pipeline) -> None:
-    """Free GPU references held by the pipeline + its stages."""
-    p.unload()
-    del p
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
 def run_one_mode(
     mixture_path: Path, recording_dir: Path, subdir: str,
-    apply_overrides, yaml_path: Path, skip_existing: bool,
-) -> tuple[bool, float]:
-    """Run one mode. Returns (ran, elapsed_seconds). ``ran=False`` when
-    skipped because the target dir already exists."""
-    target_dir = recording_dir / subdir
-    if skip_existing and target_dir.exists() and any(target_dir.iterdir()):
-        print(f"  [{subdir}] skip — {target_dir} already populated")
-        return False, 0.0
+    apply_mode, yaml_path: Path, skip_existing: bool,
+) -> bool:
+    """Run one mode via ``run_batch``. Returns ``ran`` (False when skipped).
 
-    print(f"  [{subdir}] starting...")
-    t0 = time.perf_counter()
+    Writes into ``<recording_dir>/<subdir>/`` — the recording id is pinned to
+    ``recording_dir.name`` (independent of the mixture filename, so a legacy
+    ``mixture.wav`` still lands under the right dir). The mixture is the input
+    already present in the dir, so it is not copied.
+    """
     cfg = _fresh_cfg(yaml_path)
-    apply_overrides(cfg)
+    apply_mode(cfg)
     cfg.__post_init__()
-
-    p = Pipeline(cfg)
-    try:
-        ctx = p.run(str(mixture_path))
-        write_pipeline_outputs(
-            ctx, recording_dir,
-            config_snapshot=asdict(cfg),
-            subdir_name=subdir,
-        )
-    finally:
-        _drop_pipeline(p)
-    elapsed = time.perf_counter() - t0
-    print(f"  [{subdir}] done in {elapsed:.1f}s")
-    return True, elapsed
+    report = run_batch(
+        cfg,
+        [(recording_dir.name, mixture_path)],
+        out_root=recording_dir.parent,
+        subdir_name=subdir,
+        skip_existing=skip_existing,
+        # Preserve the script's historical sentinel: a non-empty target dir means
+        # done (metadata.json is a superset of that, so this never re-runs a tree
+        # the newer runner would consider complete).
+        is_complete=lambda d: d.exists() and any(d.iterdir()),
+        copy_mixture=False,
+    )
+    return bool(report.succeeded)
 
 
 def main() -> int:
@@ -170,22 +160,22 @@ def main() -> int:
     print(f"modes:     {args.modes}")
     print()
 
-    requested = {m: o for m, o in MODES if m in args.modes}
+    requested = {m for m in args.modes}
     if not requested:
         print("no modes selected", file=sys.stderr)
         return 1
 
-    total_t = 0.0
-    for subdir, apply_overrides in MODES:
+    t_total = time.perf_counter()
+    for subdir, apply_mode in MODES:
         if subdir not in requested:
             continue
-        ran, elapsed = run_one_mode(
-            mixture, recording_dir, subdir, apply_overrides,
+        print(f"[{subdir}]")
+        run_one_mode(
+            mixture, recording_dir, subdir, apply_mode,
             args.config, args.skip_existing,
         )
-        total_t += elapsed
 
-    print(f"\ntotal pipeline runtime: {total_t:.1f}s")
+    print(f"\ntotal pipeline runtime: {time.perf_counter() - t_total:.1f}s")
     return 0
 
 

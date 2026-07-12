@@ -253,3 +253,93 @@ def test_run_oneshot_failure_halts_loop_and_unloads(monkeypatch):
     assert ("run", "c") not in log          # loop halted at the failure
     assert ("unload", "b") in log           # failed stage's model freed
     assert p._current_stage_name is None
+
+
+# ---------------------------------------------------------------------------
+# on_event stage progress / timing instrumentation (A6)
+# ---------------------------------------------------------------------------
+
+
+def _events_pipeline(monkeypatch):
+    """CPU pipeline with an on_event collector + two dummy stages 'a' and 'b'.
+
+    Returns (pipeline, events, logbook): `events` accumulates the emitted event
+    dicts, `logbook` the (load/run/unload, stage) tuples from the dummy stages.
+    """
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    events: list = []
+    p = Pipeline(cfg, on_event=lambda e: events.append(e))
+    log: list = []
+    p.stages = [_DummyStage("a", log), _DummyStage("b", log)]
+    return p, events, log
+
+
+def test_on_event_fires_start_end_in_order(monkeypatch):
+    p, events, _ = _events_pipeline(monkeypatch)
+    monkeypatch.setattr(p, "load_audio", lambda path: _ctx())
+    p.run("dummy.wav")
+    assert [(e["event"], e["stage"]) for e in events] == [
+        ("stage_start", "a"), ("stage_end", "a"),
+        ("stage_start", "b"), ("stage_end", "b"),
+    ]
+
+
+def test_on_event_end_carries_load_run_split(monkeypatch):
+    p, events, _ = _events_pipeline(monkeypatch)
+    p.run_stage("a", _ctx())
+    end = next(e for e in events if e["event"] == "stage_end")
+    assert {"load_s", "run_s", "wall_s"} <= set(end)
+    assert isinstance(end["load_s"], float) and end["load_s"] >= 0.0
+    assert isinstance(end["run_s"], float) and end["run_s"] >= 0.0
+    # wall_s is exactly the two halves summed (the split is not a re-measure).
+    assert end["wall_s"] == pytest.approx(end["load_s"] + end["run_s"])
+
+
+def test_on_event_rerun_same_stage_reports_zero_load(monkeypatch):
+    # The reload-skip no-op: re-running the same stage with an unchanged
+    # signature loads nothing, so its stage_end reports load_s == 0.0 — the
+    # boundary that makes the load/run split trustworthy.
+    p, events, _ = _events_pipeline(monkeypatch)
+    p.run_stage("a", _ctx())
+    p.run_stage("a", _ctx())
+    ends = [e for e in events if e["event"] == "stage_end"]
+    assert len(ends) == 2
+    assert ends[1]["load_s"] == 0.0
+
+
+def test_on_event_switching_stage_counts_load(monkeypatch):
+    # Switching a → b actually loads b, so b's load_s is measured (>= 0.0 and a
+    # real float, not the 0.0 no-op sentinel path).
+    p, events, _ = _events_pipeline(monkeypatch)
+    p.run_stage("a", _ctx())
+    p.run_stage("b", _ctx())
+    b_end = next(e for e in events if e["event"] == "stage_end" and e["stage"] == "b")
+    assert isinstance(b_end["load_s"], float)
+
+
+def test_on_event_failure_emits_start_not_end(monkeypatch):
+    # A stage that raises fires stage_start but never stage_end (the emit sits
+    # after a successful run()).
+    p, events, log = _events_pipeline(monkeypatch)
+    p.stages = [_FailingStage("a", log)]
+    with pytest.raises(RuntimeError, match="boom"):
+        p.run_stage("a", _ctx())
+    kinds = [e["event"] for e in events]
+    assert "stage_start" in kinds
+    assert "stage_end" not in kinds
+
+
+def test_on_event_none_is_a_noop(monkeypatch):
+    # Default on_event=None: nothing emitted, behaviour unchanged (no crash,
+    # same stage lifecycle as the un-instrumented pipeline).
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    p = Pipeline(cfg)                 # no on_event
+    assert p._on_event is None
+    log: list = []
+    p.stages = [_DummyStage("a", log)]
+    p.run_stage("a", _ctx())         # must not raise
+    assert log == [("load", "a"), ("run", "a")]

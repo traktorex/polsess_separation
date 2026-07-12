@@ -1163,3 +1163,62 @@ def save_pipeline_config_to_yaml(config: PipelineConfig, yaml_path: str) -> None
     data = redact_config_snapshot(asdict(config))
     with open(yaml_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+# ---------------------------------------------------------------------------
+# Dotted-path overrides (shared by the CLI `--set` flag and the sweep registry)
+# ---------------------------------------------------------------------------
+
+
+def apply_overrides(config: PipelineConfig, overrides: dict) -> PipelineConfig:
+    """Apply ``{"stage.knob": value}`` dotted-path overrides in place, re-validate.
+
+    One override mechanism for the whole package: the CLI ``--set`` flag and
+    ``scripts/sweep_pipeline.py``'s config registry both route through here, so
+    there is a single fail-loud policy. A typo'd path must fail loud
+    (SCOPE §4.1): a bare ``setattr`` would create a junk attribute, leave the
+    intended knob at its default, and silently run the baseline under the typo'd
+    name — a fabricated run with no signal. An unknown *leaf* raises
+    ``AttributeError`` explicitly; an unknown *parent* stage raises
+    ``AttributeError`` from ``getattr`` while walking the path.
+
+    Values are used as given (already typed) — the CLI turns its ``--set``
+    strings into typed values via `parse_cli_overrides` first. Re-runs
+    ``__post_init__`` so every override is validated exactly as a YAML or
+    programmatic config would be (an out-of-range value raises ``ValueError``
+    here, not silently downstream). Returns the same (mutated) ``config``.
+    """
+    for path, val in overrides.items():
+        obj = config
+        *parents, leaf = path.split(".")
+        for p in parents:
+            obj = getattr(obj, p)
+        if not hasattr(obj, leaf):
+            raise AttributeError(f"unknown override path: {path!r}")
+        setattr(obj, leaf, val)
+    config.__post_init__()
+    return config
+
+
+def parse_cli_overrides(items: list) -> dict:
+    """Parse ``["stage.knob=value", ...]`` CLI tokens into a typed override dict.
+
+    Each token's value string is YAML-parsed for typing, so ``true``/``false``
+    become bools, ``0.5`` a float, ``5`` an int, ``[0.0, 0.2]`` a list, and bare
+    or quoted text a str (``large-v2`` -> ``"large-v2"``,
+    ``nvidia/model-v1`` -> the string). The resulting dict feeds
+    `apply_overrides`, which fails loud on any unknown path. A token without an
+    ``=`` (or with an empty key) is a hard error — never silently ignored.
+    """
+    overrides: dict = {}
+    for item in items:
+        key, sep, raw = item.partition("=")
+        if not sep:
+            raise ValueError(
+                f"--set expects 'stage.knob=value', got {item!r} (no '=')."
+            )
+        key = key.strip()
+        if not key:
+            raise ValueError(f"--set has an empty knob path: {item!r}.")
+        overrides[key] = yaml.safe_load(raw)
+    return overrides

@@ -8,8 +8,10 @@ seam to `utils.model_utils.load_model_for_inference` in `stages/separation.py`).
 
 from asr_pipeline.config import (
     PipelineConfig,
+    apply_overrides,
     load_pipeline_config_from_yaml,
     load_pipeline_config_from_dict,
+    parse_cli_overrides,
     save_pipeline_config_to_yaml,
 )
 from asr_pipeline.context import PipelineContext
@@ -19,6 +21,8 @@ __all__ = [
     "Pipeline",
     "PipelineConfig",
     "PipelineContext",
+    "apply_overrides",
+    "parse_cli_overrides",
     "load_pipeline_config_from_yaml",
     "load_pipeline_config_from_dict",
     "save_pipeline_config_to_yaml",

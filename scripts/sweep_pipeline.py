@@ -28,25 +28,24 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import gc
 import hashlib
 import json
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
-from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import torch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from asr_pipeline import Pipeline                                   # noqa: E402
-from asr_pipeline.io import write_pipeline_outputs                 # noqa: E402
+# The per-recording run loop (Pipeline construction, GPU teardown, per-run
+# outputs + run_meta) now lives in `asr_pipeline.batch.run_batch`; run_config
+# only wires the sweep's registry + legacy sentinel into it.
+from asr_pipeline.batch import run_batch                            # noqa: E402
+from asr_pipeline.config import apply_overrides                     # noqa: E402
 from asr_pipeline.eval.metrics import per_fragment_metrics          # noqa: E402
 from asr_pipeline.eval.config_presets import fresh_eval_cfg         # noqa: E402
 from asr_pipeline.eval.layer3 import read_mixture, read_per_speaker  # noqa: E402
@@ -1359,23 +1358,12 @@ GROUPS: dict[str, list[str]] = {
 }
 
 
-def _apply(cfg, overrides: dict):
-    """Apply dotted-path overrides onto a config, then re-validate.
-
-    A typo'd path must fail loud (SCOPE §4.2): bare ``setattr`` would create a
-    junk attribute, leave the intended knob at its default, and silently run
-    the baseline under the typo'd name — a fabricated sweep row with no signal.
-    """
-    for path, val in overrides.items():
-        obj = cfg
-        *parents, leaf = path.split(".")
-        for p in parents:
-            obj = getattr(obj, p)
-        if not hasattr(obj, leaf):
-            raise AttributeError(f"unknown override path: {path!r}")
-        setattr(obj, leaf, val)
-    cfg.__post_init__()
-    return cfg
+# Dotted-path overrides now live in the package (asr_pipeline.config.apply_overrides,
+# A1) so the CLI `--set` flag and this registry share ONE fail-loud policy: a
+# typo'd path raises AttributeError instead of silently running the baseline under
+# the typo'd name. Kept under the local name `_apply` for the sweep's callers +
+# tests; behaviour is byte-identical to the former in-script version.
+_apply = apply_overrides
 
 
 def _build_cfg(overrides: dict):
@@ -1510,38 +1498,28 @@ def bootstrap_paired_diff_ci(
 
 
 def run_config(name, overrides, force, eval_root, recordings) -> None:
-    """Run one config over the given recordings → ``<id>/sweep/<name>/``."""
+    """Run one config over the given recordings → ``<id>/sweep/<name>/``.
+
+    Delegates to the shared ``asr_pipeline.batch.run_batch`` — the one home for
+    the per-recording loop, SCOPE §4.2 failure isolation, and the GPU teardown
+    (unload → gc → empty_cache) this loop used to inline. The sweep pins its
+    LEGACY skip sentinel (``transcript_A.txt`` present, not the new default
+    ``metadata.json``) so every completed sweep tree already on disk is still
+    recognised as done and NEVER recomputed — the campaign ledger + provenance
+    hashes depend on those exact outputs staying put. ``run_meta.json`` still
+    carries ``seconds`` (now alongside per-stage ``stages``, a superset
+    ``score_configs._read_run_seconds`` reads transparently). The mixture already
+    lives at ``<id>/<id>.wav`` (the input), so it is not copied back onto itself.
+    """
     subdir = f"sweep/{name}"
-    for fid in recordings:
-        rec_dir = eval_root / fid
-        audio = rec_dir / f"{fid}.wav"
-        target = rec_dir / subdir / "transcript_A.txt"
-        if not audio.exists():
-            print(f"    {fid}: MISSING audio {audio}")
-            continue
-        if target.exists() and not force:
-            print(f"    {fid}: skip (done)")
-            continue
-        t0 = time.perf_counter()
-        cfg = _build_cfg(overrides)
-        p = Pipeline(cfg)
-        try:
-            ctx = p.run(str(audio))
-            out = write_pipeline_outputs(ctx, rec_dir, config_snapshot=asdict(cfg),
-                                         subdir_name=subdir)
-            secs = time.perf_counter() - t0
-            # Per-run wall-clock for the secs_per_frag column. Written into the
-            # same run dir as the outputs; absent run_meta degrades to blank in
-            # score_configs (older runs predate this), never a crash.
-            (out / "run_meta.json").write_text(
-                json.dumps({"seconds": secs}), encoding="utf-8")
-            print(f"    {fid}: done in {secs:.1f}s")
-        except Exception as e:
-            print(f"    {fid}: ERROR {type(e).__name__}: {e}")
-        finally:
-            p.unload(); del p; gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+    cfg = _build_cfg(overrides)
+    audio_paths = [Path(eval_root) / fid / f"{fid}.wav" for fid in recordings]
+    run_batch(
+        cfg, audio_paths, out_root=Path(eval_root), subdir_name=subdir,
+        skip_existing=not force,
+        is_complete=lambda d: (d / "transcript_A.txt").exists(),
+        copy_mixture=False,
+    )
 
 
 # --- Score ----------------------------------------------------------------

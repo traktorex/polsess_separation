@@ -9,8 +9,10 @@ import yaml
 from asr_pipeline.config import (
     DiarizationConfig,
     PipelineConfig,
+    apply_overrides,
     load_pipeline_config_from_dict,
     load_pipeline_config_from_yaml,
+    parse_cli_overrides,
     redact_config_snapshot,
     save_pipeline_config_to_yaml,
 )
@@ -1290,3 +1292,97 @@ def test_sortformer_long_audio_fields_yaml_round_trip(tmp_path):
 # apply_overrides / parse_cli_overrides — the shared `--set` / sweep mechanism
 # (A1). One dotted-path walker, one fail-loud policy (SCOPE §4.1).
 # ---------------------------------------------------------------------------
+
+
+def test_apply_overrides_sets_nested_knob():
+    cfg = PipelineConfig()
+    out = apply_overrides(cfg, {"separation.vad_threshold": 0.42})
+    assert out is cfg                              # mutates + returns the same object
+    assert cfg.separation.vad_threshold == 0.42
+
+
+def test_apply_overrides_multiple_paths_across_stages():
+    cfg = PipelineConfig()
+    apply_overrides(cfg, {
+        "enhancement.observation_mix_ratio": 0.3,
+        "transcription.model_name": "large-v3",
+        "separation.vad_soft_threshold": 0.2,
+    })
+    assert cfg.enhancement.observation_mix_ratio == 0.3
+    assert cfg.transcription.model_name == "large-v3"
+    assert cfg.separation.vad_soft_threshold == 0.2
+
+
+def test_apply_overrides_unknown_leaf_fails_loud():
+    # A typo'd leaf must raise (not silently create a junk attribute and run the
+    # baseline). Message names the offending path.
+    with pytest.raises(AttributeError, match="vad_treshold"):
+        apply_overrides(PipelineConfig(), {"separation.vad_treshold": 0.5})
+
+
+def test_apply_overrides_unknown_parent_stage_fails_loud():
+    with pytest.raises(AttributeError):
+        apply_overrides(PipelineConfig(), {"nonsense.field": 1})
+
+
+def test_apply_overrides_reruns_validation():
+    # __post_init__ re-runs, so an out-of-range override is rejected at apply
+    # time — not silently downstream. observation_mix_ratio must be in [0, 1].
+    with pytest.raises(ValueError, match="observation_mix_ratio"):
+        apply_overrides(PipelineConfig(), {"enhancement.observation_mix_ratio": 2.0})
+
+
+def test_apply_overrides_bad_enum_rejected():
+    with pytest.raises(ValueError, match="seam_mode"):
+        apply_overrides(PipelineConfig(), {"separation.seam_mode": "not_a_mode"})
+
+
+def test_parse_cli_overrides_yaml_typing():
+    d = parse_cli_overrides([
+        "enhancement.enabled=false",
+        "separation.vad_threshold=0.5",
+        "transcription.beam_size=10",
+        "transcription.model_name=large-v2",
+        "diarization.model_id=nvidia/diar_sortformer_4spk-v1",
+    ])
+    assert d["enhancement.enabled"] is False        # bool
+    assert d["separation.vad_threshold"] == 0.5 and isinstance(
+        d["separation.vad_threshold"], float)
+    assert d["transcription.beam_size"] == 10 and isinstance(
+        d["transcription.beam_size"], int)
+    assert d["transcription.model_name"] == "large-v2"          # bare str stays str
+    assert d["diarization.model_id"] == "nvidia/diar_sortformer_4spk-v1"
+
+
+def test_parse_cli_overrides_quoted_string_stays_str():
+    # A quoted numeric stays a string (YAML rule), so a model id that looks
+    # numeric isn't coerced.
+    d = parse_cli_overrides(['transcription.model_name="123"'])
+    assert d["transcription.model_name"] == "123"
+
+
+def test_parse_cli_overrides_list_value():
+    d = parse_cli_overrides(["transcription.temperature=[0.0, 0.2, 0.4]"])
+    assert d["transcription.temperature"] == [0.0, 0.2, 0.4]
+
+
+@pytest.mark.parametrize("bad", ["separation.vad_threshold", "noequalshere"])
+def test_parse_cli_overrides_missing_equals_rejected(bad):
+    with pytest.raises(ValueError, match="stage.knob=value"):
+        parse_cli_overrides([bad])
+
+
+def test_parse_cli_overrides_empty_key_rejected():
+    with pytest.raises(ValueError, match="empty knob path"):
+        parse_cli_overrides(["=0.5"])
+
+
+def test_parse_then_apply_end_to_end():
+    # The CLI flow: string tokens -> typed dict -> applied + validated on a cfg.
+    cfg = PipelineConfig()
+    apply_overrides(cfg, parse_cli_overrides([
+        "enhancement.observation_mix_ratio=0.5",
+        "transcription.condition_on_previous_text=true",
+    ]))
+    assert cfg.enhancement.observation_mix_ratio == 0.5
+    assert cfg.transcription.condition_on_previous_text is True

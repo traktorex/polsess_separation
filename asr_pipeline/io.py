@@ -96,6 +96,7 @@ def write_pipeline_outputs(
     out_dir: str | Path,
     config_snapshot: Optional[dict] = None,
     subdir_name: str = "pipeline",
+    stage_timings: Optional[list] = None,
 ) -> Path:
     """Materialise the pipeline outputs as a stable per-recording layout.
 
@@ -126,6 +127,12 @@ def write_pipeline_outputs(
 
     ``config_snapshot`` is an optional dict (typically ``dataclasses.asdict(cfg)``)
     embedded in ``metadata.json`` for reproducibility.
+
+    ``stage_timings`` is an optional list of per-stage timing dicts (the
+    ``stage_end`` events from `Pipeline`'s ``on_event`` callback, e.g.
+    ``{"stage": ..., "load_s": ..., "run_s": ...}``) embedded under
+    ``metadata.json``'s ``"stage_timings"`` key. ``None`` (default) omits the
+    key → byte-identical to a run without instrumentation.
 
     Returns the path of the ``pipeline/`` subdirectory.
     """
@@ -240,6 +247,8 @@ def write_pipeline_outputs(
     # L3-L4-fallback census fields, so a later census can count v4.1 lever firings.
     if ctx.diarization_diag is not None:
         meta["diarization_diag"] = ctx.diarization_diag
+    if stage_timings is not None:
+        meta["stage_timings"] = stage_timings
     if config_snapshot is not None:
         meta["config"] = redact_config_snapshot(config_snapshot)
     with open(pipeline_dir / "metadata.json", "w") as f:
