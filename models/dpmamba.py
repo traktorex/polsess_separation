@@ -67,6 +67,14 @@ class DPMamba(nn.Module):
         skip_around_intra: bool = False,
         residual_in_fp32: bool = False,
     ):
+        assert stride == kernel_size // 2, (
+            f"stride={stride} must equal kernel_size // 2 ({kernel_size // 2}). "
+            "SpeechBrain's Encoder (speechbrain.lobes.models.dual_path.Encoder) "
+            "hardcodes stride=kernel_size//2 internally and ignores any stride "
+            "argument, while this stride is passed to the Decoder only — a "
+            "mismatch here silently desyncs encoder/decoder frame rates. Change "
+            "kernel_size instead if a different stride is desired."
+        )
         super().__init__()
         self.C = C
         self.N = N

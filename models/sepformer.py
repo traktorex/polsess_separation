@@ -45,9 +45,19 @@ class SepFormer(nn.Module):
         d_ffn: int = 1024,
         dropout: float = 0.0,
         chunk_size: int = 250,
-        hop_size: int = 125,
+        hop_size: int = 125,  # Unused: SpeechBrain's Dual_Path_Model always uses
+        # hop = chunk_size // 2 internally and takes no hop argument. Accepted
+        # here only so existing configs/checkpoints that set it still load.
         use_positional_encoding: bool = True,
     ):
+        assert stride == kernel_size // 2, (
+            f"stride={stride} must equal kernel_size // 2 ({kernel_size // 2}). "
+            "SpeechBrain's Encoder (speechbrain.lobes.models.dual_path.Encoder) "
+            "hardcodes stride=kernel_size//2 internally and ignores any stride "
+            "argument, while this stride is passed to the Decoder only — a "
+            "mismatch here silently desyncs encoder/decoder frame rates. Change "
+            "kernel_size instead if a different stride is desired."
+        )
         super().__init__()
 
         # Encoder

@@ -176,7 +176,8 @@ class GridNetBlock(nn.Module):
         emb_ks: Embedding kernel size for unfolding
         emb_hs: Embedding hop size for unfolding
         n_freqs: Number of frequency bins
-        hidden_channels: Mamba hidden dimension
+        hidden_channels: Unused; kept for API symmetry (never consumed in this
+            block — see SPMamba's lstm_hidden_units docstring below)
         n_head: Number of attention heads
         approx_qk_dim: Approximate Q/K dimension for attention
         activation: Activation function (default: prelu)
@@ -343,9 +344,13 @@ class SPMamba(nn.Module):
         n_srcs: Number of output sources (1 for enhancement, 2 for separation)
         n_fft: FFT size (default: 256)
         stride: STFT hop length (default: 64)
-        window: Window function (default: hann)
+        window: Window function. Only "hann" is supported — the forward pass
+            hardcodes torch.hann_window regardless of this value; kept as a
+            constructor param for config/checkpoint compatibility.
         n_layers: Number of GridNet blocks (default: 6)
-        lstm_hidden_units: Hidden dimension (misleading name, for Mamba blocks)
+        lstm_hidden_units: Unused; kept for API symmetry (GridNetBlock never
+            wires its hidden_channels parameter into the Mamba blocks — the
+            actual Mamba hidden dim tracks emb_dim/emb_ks instead).
         attn_n_head: Number of attention heads (default: 4)
         attn_approx_qk_dim: Approximate Q/K dimension for attention
         emb_dim: Embedding dimension (default: 16)
@@ -372,6 +377,11 @@ class SPMamba(nn.Module):
         activation="prelu",
         eps=1.0e-5,
     ):
+        assert window == "hann", (
+            f"window={window!r} is not supported: the forward pass hardcodes "
+            "torch.hann_window() regardless of this parameter (see SPMamba.forward). "
+            "Pass window='hann' (the default) or change the forward implementation."
+        )
         super().__init__()
 
         if not MAMBA_AVAILABLE:
