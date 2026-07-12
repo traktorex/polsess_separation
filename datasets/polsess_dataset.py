@@ -127,8 +127,9 @@ class PolSESSDataset(Dataset):
     def _choose_variant(self, has_reverb, idx):
         """Choose MM-IPC variant, respecting reverb compatibility.
 
-        For validation subset, selection is deterministic (seeded by idx) so each
-        sample gets the same variant across epochs.
+        For the val and test subsets, selection is deterministic (seeded by idx)
+        so each sample gets the same variant across epochs and across runs
+        (reproducible evaluation, survey gap 6). Only training draws randomly.
         """
         # Get compatible variants
         if self.allowed_variants:
@@ -144,8 +145,8 @@ class PolSESSDataset(Dataset):
         else:
             compatible = self.INDOOR_VARIANTS if has_reverb else self.OUTDOOR_VARIANTS
 
-        # For validation, use deterministic selection (seeded by sample index)
-        if self.subset == "val":
+        # For val/test, use deterministic selection (seeded by sample index)
+        if self.subset in ("val", "test"):
             rng = random.Random(idx)
             return rng.choice(compatible)
 
@@ -197,8 +198,66 @@ class PolSESSDataset(Dataset):
             tensor = tensor.squeeze(0)
         return tensor
 
+    # ------------------------------------------------------------------
+    # MM-IPC variant algebra (executable proof: scripts/audit_mmipc.py)
+    # ------------------------------------------------------------------
+    # Every mixture is rendered from an additive layer decomposition
+    # (Klec et al., Eq. 1; docs/MMIPC_PAPER_VERIFICATION.md):
+    #
+    #   indoor  (has_reverb):
+    #     mix = sp1_dry + sp1_reverb + sp2_dry + sp2_reverb
+    #           + scene + event_dry + event_reverb
+    #   outdoor (no reverb):
+    #     mix = sp1_dry + sp2_dry + scene + event_dry
+    #
+    # The scene layer carries no separate reverb tail (it is ambient
+    # background rendered directly into the room). Layer -> stored file:
+    #     sp1_dry      = clean/speaker1File          sp2_dry      = clean/speaker2File
+    #     scene        = scene/sceneFile             event_dry    = event/eventFile
+    #     sp1_reverb   = sp1_reverb/reverbForSpeaker1  (indoor only)
+    #     sp2_reverb   = sp2_reverb/reverbForSpeaker2  (indoor only)
+    #     event_reverb = ev_reverb/reverbForEvent      (indoor only)
+    #
+    # MM-IPC removes a layer by subtracting its stored file (subtraction ==
+    # adding the phase-inverted signal). Variant letters name what is KEPT
+    # (S=scene, E=event, R=speaker reverb tail; C=clean, keep none).
+    #
+    #   Background layers REMOVED per variant (task-independent):
+    #     indoor   SER -> (none)
+    #              SR  -> event_dry + event_reverb
+    #              ER  -> scene
+    #              R   -> scene + event_dry + event_reverb
+    #              C   -> scene + event_dry + event_reverb + sp1_reverb + sp2_reverb
+    #     outdoor  SE  -> (none)
+    #              S   -> event_dry
+    #              E   -> scene
+    #              C   -> scene + event_dry
+    #
+    #   Speaker layers removed by TASK, on top of the variant removal:
+    #     ES      -> also remove sp2_dry (speaker2) and, indoor, sp2_reverb
+    #                (speaker 2 is cancelled tail-and-all — never a half-removal)
+    #     EB / SB -> keep both speakers (no speaker removal)
+    #
+    #   Target (_compute_clean):
+    #     ES -> sp1_dry     EB -> sp1_dry + sp2_dry     SB -> [sp1_dry, sp2_dry]
+    #
+    # Key identity: under ES, the C variant cancels every non-sp1 layer, so the
+    # mix collapses to exactly sp1_dry (the dry speaker-1 target). That the
+    # augmentation is thus numerically lossless — and that every OTHER variant's
+    # retained-layer reconstruction is exact too — is verified end-to-end on real
+    # data by scripts/audit_mmipc.py (residual vs. the 16-bit PCM floor, ~1e-4 RMS).
+    #
+    # Not a double subtraction: for ES indoor non-C variants, speaker 2 is removed
+    # via BOTH sp2_dry (task rule) and sp2_reverb (task rule) — correct additive
+    # algebra, because reverberated speaker 2 = sp2_dry + sp2_reverb.
     def _apply_mmipc(self, audio, has_reverb):
-        """Apply MM-IPC by removing components from mix."""
+        """Apply MM-IPC by removing components from mix.
+
+        See the variant-algebra comment block directly above this method for the
+        full mix decomposition and per-variant removed-layers truth table;
+        scripts/audit_mmipc.py is the executable proof that this reconstruction
+        is lossless to the 16-bit PCM quantization floor.
+        """
         mix = audio["mix"]
         if has_reverb and "sp1_reverb" in audio:
             mix = mix - audio["sp1_reverb"]
@@ -227,6 +286,25 @@ class PolSESSDataset(Dataset):
             return torch.stack([audio["speaker1"], audio["speaker2"]])
         else:
             raise ValueError(f"Invalid task: {self.task}")
+
+    def condition_labels(self):
+        """Return per-sample acoustic-condition labels for stratified analysis.
+
+        Surfaces the corpus columns describing each mixture's acoustic condition
+        — ``sceneClass`` (background scene category), ``eventClass`` (foreground
+        event category) and ``SSR`` (speaker-to-speaker ratio in dB) — aligned
+        row-for-row with this dataset's active ``metadata`` (i.e. after
+        allowed_variants / max_samples filtering), so row *i* here corresponds to
+        ``self[i]``. Standalone accessor for per-condition SI-SDRi breakdowns in
+        the analysis chapter; deliberately NOT wired into training or evaluation.
+
+        Returns:
+            pandas.DataFrame with whichever of ['sceneClass', 'eventClass', 'SSR']
+            exist in the corpus, indexed 0..len(self)-1.
+        """
+        wanted = ["sceneClass", "eventClass", "SSR"]
+        present = [c for c in wanted if c in self.metadata.columns]
+        return self.metadata[present].reset_index(drop=True)
 
 
 def polsess_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -189,6 +189,43 @@ class TestVariantSelection:
         assert len(variants) == 1
 
     @patch("pandas.read_csv")
+    def test_test_subset_variant_selection_deterministic_per_index(self, mock_read_csv):
+        """Eval reproducibility (gap 6): the 'test' subset now shares the val
+        deterministic branch — same index -> same variant across runs/instances."""
+        import pandas as pd
+
+        mock_df = pd.DataFrame(
+            {
+                "mixFile": ["mix1.wav"],
+                "speaker1File": ["s1.wav"],
+                "speaker2File": ["s2.wav"],
+                "sceneFile": ["scene1.wav"],
+                "eventFile": ["event1.wav"],
+                "reverbForSpeaker1": ["s1_reverb.wav"],
+                "reverbForSpeaker2": ["s2_reverb.wav"],
+                "reverbForEvent": ["ev_reverb.wav"],
+            }
+        )
+        mock_read_csv.return_value = mock_df
+
+        dataset_a = PolSESSDataset(data_root="/fake/path", subset="test", task="ES")
+        dataset_b = PolSESSDataset(data_root="/fake/path", subset="test", task="ES")
+
+        chosen = {}
+        for idx in range(50):
+            first = dataset_a._choose_variant(True, idx)
+            for _ in range(5):
+                assert dataset_a._choose_variant(True, idx) == first
+            assert dataset_b._choose_variant(True, idx) == first
+            chosen[idx] = first
+
+        # Deterministic, not constant: still covers multiple variants.
+        assert len(set(chosen.values())) > 1
+        # Matches the val seeding contract exactly (same rng seed = same choice).
+        dataset_val = PolSESSDataset(data_root="/fake/path", subset="val", task="ES")
+        assert dataset_a._choose_variant(True, 3) == dataset_val._choose_variant(True, 3)
+
+    @patch("pandas.read_csv")
     def test_train_variant_selection_varies(self, mock_read_csv):
         """Training variant choice is not index-frozen: repeated draws for the
         same index sample across the compatible set."""

@@ -22,7 +22,12 @@ from pathlib import Path
 
 import torch
 
-from utils import load_model_for_inference, count_parameters
+from utils import load_model_for_inference, count_parameters, git_provenance
+
+# Default tracked eval manifest (survey gap 17): the single answer to "which
+# checkpoints constitute the thesis comparison". Consolidates the legacy
+# checkpoints_for_eval{,2,3}.csv lists.
+DEFAULT_MANIFEST = "experiments/thesis_eval_manifest.csv"
 
 
 class _Tee:
@@ -85,13 +90,34 @@ def find_all_checkpoints(checkpoints_dir: str):
 
 
 def load_checkpoints_from_csv(csv_path: str):
-    """Read checkpoint paths from a semicolon-separated CSV with a `path` column."""
+    """Read checkpoint paths from a semicolon-separated CSV with a `path` column.
+
+    Legacy format used by checkpoints_for_eval{,2,3}.csv (kept for --csv-list).
+    """
     csv_path = Path(csv_path)
     paths = []
     with open(csv_path, "r") as f:
         reader = csv.DictReader(f, delimiter=";")
         for row in reader:
             path_str = (row.get("path") or "").strip()
+            if not path_str:
+                continue
+            paths.append(Path(path_str))
+    return paths
+
+
+def load_checkpoints_from_manifest(manifest_path: str):
+    """Read checkpoint paths from the tracked eval manifest.
+
+    Comma-delimited, columns: display_name, checkpoint_path, dataset, notes.
+    Only checkpoint_path is used here; the other columns document the run.
+    """
+    manifest_path = Path(manifest_path)
+    paths = []
+    with open(manifest_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            path_str = (row.get("checkpoint_path") or "").strip()
             if not path_str:
                 continue
             paths.append(Path(path_str))
@@ -145,7 +171,7 @@ def run_evaluation(checkpoint_path: str, device: str,
     if task:
         config.data.task = task
 
-    # Run evaluation by variant
+    # Run evaluation by variant (evaluate_by_variant forces batch_size=1)
     results = evaluate_by_variant(
         model=model,
         config=config,
@@ -155,13 +181,50 @@ def run_evaluation(checkpoint_path: str, device: str,
         max_samples=max_samples,
     )
 
-    return info, num_params, results
+    # Eval-run provenance context for flatten_results (git_sha/git_dirty are
+    # merged in by the caller, computed once per invocation).
+    eval_context = {
+        "eval_data_root": config.data.polsess.data_root,
+        "eval_subset": "test",
+        "eval_batch_size": 1,
+    }
+
+    return info, num_params, results, eval_context
 
 
-def flatten_results(info: dict, num_params: int, variant_results: dict):
+# Exact, ordered column schema of a flatten_results row. Pinned by a golden
+# test (tests/test_evaluate_all_flatten.py) — the guard that would have caught
+# the schema drift that corrupted evaluation_results.csv. Change this tuple and
+# the test in the same commit.
+_VARIANTS = ("SER", "SR", "ER", "R", "SE", "S", "E", "C")
+FLATTEN_COLUMNS = (
+    # Identity
+    "model_type", "task", "run_name",
+    # Checkpoint metadata
+    "epoch", "val_sisdr", "num_params", "checkpoint_path",
+    # Averages across all variants
+    "avg_sisdr", "avg_sisdri",
+    # Per-variant SI-SDR + SI-SDRi
+    *sum(([f"si_sdr_{v}", f"si_sdri_{v}"] for v in _VARIANTS), []),
+    # Training config (from the checkpoint's embedded config)
+    "lr", "batch_size", "epochs", "optimizer", "scheduler", "grad_clip",
+    # Data config the checkpoint was TRAINED on (renamed from segment_length /
+    # sample_rate so it is never confused with the eval dataset, survey gap 2)
+    "train_segment_length", "train_sample_rate",
+    "model_config", "evaluated_at",
+    # Eval-run provenance (survey gap 2)
+    "git_sha", "git_dirty", "torch_version",
+    "eval_dataset_name", "eval_data_root", "eval_subset", "eval_batch_size",
+)
+
+
+def flatten_results(info: dict, num_params: int, variant_results: dict, eval_context: dict):
     """Flatten evaluation results into a single CSV row per checkpoint.
 
-    Per-variant SI-SDR values are stored in columns like si_sdr_SER, si_sdr_SE, etc.
+    Per-variant SI-SDR/SI-SDRi values are stored in columns like si_sdr_SER,
+    si_sdri_SER, etc. `eval_context` supplies the eval-run provenance and must
+    carry: git_sha, git_dirty, eval_data_root, eval_subset, eval_batch_size.
+    The returned dict's keys are exactly FLATTEN_COLUMNS, in order.
     """
     model_config = info["model_config"]
     training_config = info["training_config"]
@@ -172,6 +235,9 @@ def flatten_results(info: dict, num_params: int, variant_results: dict):
     all_sisdris = [r.get("si_sdri", 0.0) for r in variant_results.values()]
     avg_sisdr = sum(all_sisdrs) / len(all_sisdrs) if all_sisdrs else 0.0
     avg_sisdri = sum(all_sisdris) / len(all_sisdris) if all_sisdris else 0.0
+
+    eval_data_root = eval_context.get("eval_data_root", "")
+    eval_dataset_name = Path(eval_data_root).name if eval_data_root else ""
 
     row = {
         # Identity
@@ -189,31 +255,64 @@ def flatten_results(info: dict, num_params: int, variant_results: dict):
     }
 
     # Per-variant SI-SDR + SI-SDRi columns
-    # (si_sdr_SER, si_sdri_SER, si_sdr_SE, si_sdri_SE, ...)
-    all_variants = ["SER", "SR", "ER", "R", "SE", "S", "E", "C"]
-    for variant in all_variants:
+    for variant in _VARIANTS:
         v = variant_results.get(variant, {})
         row[f"si_sdr_{variant}"] = v.get("si_sdr", "")
         row[f"si_sdri_{variant}"] = v.get("si_sdri", "")
 
-    # Training config
     row.update({
+        # Training config
         "lr": training_config.get("lr", ""),
         "batch_size": training_config.get("batch_size", ""),
         "epochs": training_config.get("epochs", ""),
         "optimizer": training_config.get("optimizer", ""),
         "scheduler": training_config.get("scheduler", ""),
         "grad_clip": training_config.get("grad_clip", ""),
-        # Data config
-        "segment_length": data_config.get("segment_length", ""),
-        "sample_rate": data_config.get("sample_rate", ""),
+        # Data config the checkpoint was TRAINED on (NOT the eval dataset)
+        "train_segment_length": data_config.get("segment_length", ""),
+        "train_sample_rate": data_config.get("sample_rate", ""),
         # Model config (flattened)
         "model_config": str(model_config),
-        # Metadata
         "evaluated_at": datetime.now().isoformat(),
+        # Eval-run provenance
+        "git_sha": eval_context.get("git_sha", ""),
+        "git_dirty": eval_context.get("git_dirty", ""),
+        "torch_version": torch.__version__,
+        "eval_dataset_name": eval_dataset_name,
+        "eval_data_root": eval_data_root,
+        "eval_subset": eval_context.get("eval_subset", ""),
+        "eval_batch_size": eval_context.get("eval_batch_size", ""),
     })
 
     return row
+
+
+def resolve_output_target(output_path: Path, fieldnames) -> Path:
+    """Return the path to append rows to, guarding against schema drift (gap 1).
+
+    If ``output_path`` exists and its header's field-set differs from
+    ``fieldnames`` (the current flatten_results schema), appending would produce
+    exactly the mixed-schema file that had to be split into eras. In that case
+    we refuse and return a new dated file beside it instead. If the schema
+    matches (or the file is absent), we return ``output_path`` unchanged.
+    """
+    if not output_path.exists():
+        return output_path
+    with open(output_path, newline="") as f:
+        try:
+            existing = next(csv.reader(f))
+        except StopIteration:
+            existing = []
+    if set(existing) == set(fieldnames):
+        return output_path
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dated = output_path.with_name(f"{output_path.stem}_{ts}{output_path.suffix}")
+    print(
+        f"WARNING: {output_path} has {len(existing)} columns but the current eval "
+        f"schema has {len(fieldnames)} — refusing to append (would corrupt it). "
+        f"Writing to {dated} instead. Pass --output {dated} to keep appending there."
+    )
+    return dated
 
 
 def main():
@@ -242,18 +341,25 @@ def main():
                         help="Skip checkpoints whose per-checkpoint log already exists in --log-dir")
     parser.add_argument("--min-val-sisdr", type=float, default=3.0,
                         help="Skip checkpoints with val SI-SDR below this threshold (default: 3.0 dB)")
+    parser.add_argument("--manifest", default=DEFAULT_MANIFEST,
+                        help="Tracked eval manifest (display_name,checkpoint_path,dataset,notes). "
+                             "Used by default when present; --csv-list overrides it.")
     parser.add_argument("--csv-list", default=None,
                         help="Evaluate only checkpoints listed in this semicolon-separated CSV "
-                             "(requires a `path` column); overrides --checkpoints-dir discovery")
+                             "(requires a `path` column); overrides the manifest and --checkpoints-dir discovery")
     parser.add_argument("--log-dir", default="evaluate",
                         help="Directory for per-checkpoint evaluation logs "
                              "(default: evaluate/). One <model_type>__<run_name>.txt per checkpoint.")
     args = parser.parse_args()
 
-    # Find checkpoints (either from CSV list or by globbing)
+    # Find checkpoints: explicit --csv-list wins, else the tracked manifest if it
+    # exists, else glob the checkpoints tree.
     if args.csv_list:
         checkpoint_files = load_checkpoints_from_csv(args.csv_list)
         print(f"Loaded {len(checkpoint_files)} checkpoints from {args.csv_list}")
+    elif Path(args.manifest).exists():
+        checkpoint_files = load_checkpoints_from_manifest(args.manifest)
+        print(f"Loaded {len(checkpoint_files)} checkpoints from manifest {args.manifest}")
     else:
         checkpoint_files = find_all_checkpoints(args.checkpoints_dir)
         print(f"Found {len(checkpoint_files)} checkpoints")
@@ -262,9 +368,19 @@ def main():
         print("No checkpoints found. Check --checkpoints-dir path.")
         return
 
-    # Load already-evaluated checkpoints if resuming
+    from evaluate import PER_SAMPLE_COLUMNS, per_sample_rows
+
+    # Schema guard (gap 1): never append rows with a different column set into an
+    # existing file — that is what produced the two-era corruption. On a schema
+    # mismatch we divert to a dated sibling file instead of appending.
+    output_path = resolve_output_target(Path(args.output), FLATTEN_COLUMNS)
+    per_sample_path = output_path.with_name(f"{output_path.stem}_per_sample{output_path.suffix}")
+
+    # Eval-run git provenance, computed once (identical for every checkpoint).
+    git_info = git_provenance()
+
+    # Load already-evaluated checkpoints if resuming (from the actual target).
     already_evaluated = set()
-    output_path = Path(args.output)
     if args.resume and output_path.exists():
         with open(output_path, "r") as f:
             reader = csv.DictReader(f)
@@ -272,8 +388,10 @@ def main():
                 already_evaluated.add(row["checkpoint_path"])
         print(f"Resuming: {len(already_evaluated)} checkpoints already evaluated")
 
-    # Determine if we need to write the header
-    write_header = not output_path.exists() or not args.resume
+    # Header is written only when the target file does not exist yet (the schema
+    # guard guarantees an existing target already has the matching header).
+    write_header = not output_path.exists()
+    per_sample_header = not per_sample_path.exists()
 
     # Evaluate each checkpoint, appending results incrementally
     evaluated = 0
@@ -313,23 +431,35 @@ def main():
             with capture_to_file(log_path):
                 print(f"Checkpoint: {ckpt_str}")
                 print(f"Model: {model_type} | Run: {run_name} | Val SI-SDR: {val_sisdr:.2f} dB")
-                info, num_params, results = run_evaluation(
+                info, num_params, results, eval_context = run_evaluation(
                     checkpoint_path=ckpt_str,
                     device=args.device,
                     max_samples=args.max_samples,
                     no_pesq=args.no_pesq,
                     no_stoi=args.no_stoi,
                 )
+                eval_context = {**eval_context, **git_info}
 
-                row = flatten_results(info, num_params, results)
+                row = flatten_results(info, num_params, results, eval_context)
 
-                # Append to CSV
+                # Append aggregate row to CSV (fieldnames pinned to FLATTEN_COLUMNS
+                # so the header order is stable across runs and matches the guard).
                 with open(output_path, "a", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=row.keys())
+                    writer = csv.DictWriter(f, fieldnames=FLATTEN_COLUMNS)
                     if write_header:
                         writer.writeheader()
                         write_header = False
                     writer.writerow(row)
+
+                # Append long-format per-sample rows for confidence intervals (gap 4).
+                sample_rows = per_sample_rows(results, info["run_name"])
+                if sample_rows:
+                    with open(per_sample_path, "a", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=PER_SAMPLE_COLUMNS)
+                        if per_sample_header:
+                            writer.writeheader()
+                            per_sample_header = False
+                        writer.writerows(sample_rows)
 
                 print(f"  -> avg SI-SDR: {row['avg_sisdr']:.2f} dB | avg SI-SDRi: {row['avg_sisdri']:.2f} dB")
                 print(f"  -> log saved: {log_path}")
@@ -347,6 +477,8 @@ def main():
           f"Skipped (log exists): {log_skipped}, "
           f"Filtered (val_sisdr < {args.min_val_sisdr} dB): {filtered}, Failed: {failed}")
     print(f"Results saved to: {output_path}")
+    if per_sample_path.exists():
+        print(f"Per-sample scores: {per_sample_path}")
 
 
 if __name__ == "__main__":

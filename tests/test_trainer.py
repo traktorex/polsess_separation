@@ -602,3 +602,200 @@ def test_consecutive_nan_counter_resets_on_good_batch(tmp_path, monkeypatch):
 
     trainer.train_epoch()  # must not raise
     assert trainer.consecutive_nan_batches == 0
+
+
+# ---------------------------------------------------------------------------
+# Resume / checkpoint-format robustness (Work Package B3)
+# ---------------------------------------------------------------------------
+
+class _FakeScaler:
+    """Stand-in for torch.amp.GradScaler.
+
+    A real GradScaler force-disables itself (empty state_dict, scale 1.0) when
+    CUDA is unavailable, so it can't exercise save/restore on the CPU-only test
+    runner. This fake carries a real, inspectable state_dict instead.
+    """
+
+    def __init__(self, scale=1.0):
+        self._scale = scale
+        self.loaded = None
+
+    def state_dict(self):
+        return {"scale": self._scale}
+
+    def load_state_dict(self, sd):
+        self.loaded = dict(sd)
+        self._scale = sd["scale"]
+
+
+def _make_trainer(tmp_path, task="ES", provenance=None):
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path, task=task)
+    train_loader = DataLoader(
+        SyntheticDataset(4, task=task), batch_size=2, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(2, task=task), batch_size=2, collate_fn=polsess_collate_fn
+    )
+    model = DummyModel(C=2 if task == "SB" else 1)
+    return Trainer(
+        model, train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None, provenance=provenance,
+    )
+
+
+def test_resume_scheduler_best_ordering_regression(tmp_path):
+    """Gap 7 regression: a legacy checkpoint (no scheduler_state_dict) must seed
+    scheduler.best from the checkpoint's best_val_sisdr, NOT the -inf placeholder.
+
+    Before the fix, load_checkpoint set scheduler.best = self.best_val_sisdr
+    while best_val_sisdr was still -inf, so the first post-resume epoch always
+    looked like an improvement.
+    """
+    src = _make_trainer(tmp_path)
+    legacy_ckpt = {
+        "epoch": 4,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 12.5,
+        "best_val_sisdr": 12.5,
+        # deliberately NO scheduler_state_dict -> legacy branch
+    }
+    path = tmp_path / "legacy.pt"
+    torch.save(legacy_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    assert tgt.scheduler.best == -float("inf")  # baseline before load
+
+    tgt.load_checkpoint(str(path))
+
+    assert tgt.best_val_sisdr == 12.5
+    assert tgt.current_epoch == 5
+    # The regression: scheduler.best must be the real best, not -inf.
+    assert tgt.scheduler.best == 12.5
+
+
+def test_old_format_checkpoint_resume_compat(tmp_path):
+    """A checkpoint written by the OLD code (none of the new keys present) must
+    still load and resume cleanly, with every new key defaulted tolerantly."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 7,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 9.0,
+        # no best_val_sisdr, no scheduler_state_dict, no scaler_state_dict,
+        # no epochs_without_improvement, no provenance, no wandb_run_id
+    }
+    path = tmp_path / "old.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))  # must not raise
+
+    assert tgt.current_epoch == 8
+    assert tgt.best_val_sisdr == 9.0  # falls back to val_sisdr
+    assert tgt.epochs_without_improvement == 0  # tolerant default
+    assert tgt.scheduler.best == 9.0  # legacy branch seeds from best
+
+
+def test_scaler_state_roundtrip(tmp_path):
+    """Gap 8a: GradScaler state is saved and restored across a resume."""
+    src = _make_trainer(tmp_path)
+    src.scaler = _FakeScaler(scale=512.0)
+
+    ckpt = src._serialize_checkpoint_data(epoch=2, val_sisdr=3.0)
+    assert ckpt["scaler_state_dict"] == {"scale": 512.0}
+
+    path = tmp_path / "scaler.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.scaler = _FakeScaler(scale=256.0)  # different starting scale
+    tgt.load_checkpoint(str(path))
+
+    assert tgt.scaler.loaded == {"scale": 512.0}
+    assert tgt.scaler._scale == 512.0
+
+
+def test_scaler_absent_in_old_checkpoint_is_tolerated(tmp_path):
+    """A trainer WITH a scaler resuming an OLD checkpoint (no scaler_state_dict)
+    must not raise — the scaler simply keeps its init scale."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 1,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 1.0,
+    }
+    path = tmp_path / "old_noscaler.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.scaler = _FakeScaler(scale=256.0)
+    tgt.load_checkpoint(str(path))  # must not raise
+
+    assert tgt.scaler.loaded is None  # never touched
+    assert tgt.scaler._scale == 256.0
+
+
+def test_patience_persist_roundtrip(tmp_path):
+    """Gap 8d: epochs_without_improvement survives a save/resume cycle."""
+    src = _make_trainer(tmp_path)
+    src.epochs_without_improvement = 3
+
+    ckpt = src._serialize_checkpoint_data(epoch=5, val_sisdr=1.0)
+    assert ckpt["epochs_without_improvement"] == 3
+
+    path = tmp_path / "patience.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    assert tgt.epochs_without_improvement == 0
+    tgt.load_checkpoint(str(path))
+    assert tgt.epochs_without_improvement == 3
+
+
+def test_provenance_embedded_and_manifest_written(tmp_path):
+    """Gap 5: provenance is embedded in the checkpoint and a human-readable
+    run_manifest.yaml is written next to config.yaml."""
+    import yaml
+    from pathlib import Path
+
+    manifest = {
+        "git_sha": "abc1234",
+        "git_dirty": True,
+        "torch_version": "2.8.0",
+        "gpu_name": None,
+        "seed": 42,
+        "argv": ["train.py", "--config", "x.yaml"],
+    }
+    trainer = _make_trainer(tmp_path, provenance=manifest)
+
+    save_dir = tmp_path / "ckpts"
+    trainer._save_checkpoint(epoch=0, val_sisdr=5.0, save_dir=save_dir)
+
+    ckpt_files = list(save_dir.rglob("*.pt"))
+    assert len(ckpt_files) == 1
+    loaded = torch.load(ckpt_files[0], weights_only=False)
+    assert loaded["provenance"] == manifest
+
+    manifest_files = list(save_dir.rglob("run_manifest.yaml"))
+    assert len(manifest_files) == 1
+    with open(manifest_files[0]) as f:
+        assert yaml.safe_load(f) == manifest
+
+
+def test_no_provenance_writes_no_manifest(tmp_path):
+    """With provenance=None (e.g. an old caller), no manifest file and no
+    provenance key appear — the addition is strictly opt-in."""
+    trainer = _make_trainer(tmp_path, provenance=None)
+
+    save_dir = tmp_path / "ckpts"
+    trainer._save_checkpoint(epoch=0, val_sisdr=5.0, save_dir=save_dir)
+
+    assert list(save_dir.rglob("run_manifest.yaml")) == []
+    ckpt_files = list(save_dir.rglob("*.pt"))
+    loaded = torch.load(ckpt_files[0], weights_only=False)
+    assert "provenance" not in loaded

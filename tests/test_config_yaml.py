@@ -327,6 +327,40 @@ class TestConfigValidation:
         )
         assert config_es.model.convtasnet.C == 1  # Auto-corrected
 
+    def test_c_forcing_prints_when_it_changes_value(self, capsys):
+        """C5: Config.__post_init__ must announce a silent C/n_srcs override."""
+        from config import ConvTasNetParams
+        Config(
+            data=DataConfig(task='SB'),
+            model=ModelConfig(convtasnet=ConvTasNetParams(C=1)),
+            training=TrainingConfig()
+        )
+        captured = capsys.readouterr()
+        assert "task=SB forces convtasnet.C 1->2" in captured.out
+
+    def test_c_forcing_silent_when_value_already_matches(self, capsys):
+        """No announcement when the YAML/default value already matches the task."""
+        from config import ConvTasNetParams
+        Config(
+            data=DataConfig(task='SB'),
+            model=ModelConfig(convtasnet=ConvTasNetParams(C=2)),
+            training=TrainingConfig()
+        )
+        captured = capsys.readouterr()
+        assert "forces convtasnet" not in captured.out
+
+    def test_c_forcing_uses_n_srcs_attr_for_spmamba(self, capsys):
+        """SPMamba's output-count field is named n_srcs, not C."""
+        from config import SPMambaParams
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(model_type='spmamba', spmamba=SPMambaParams(n_srcs=2)),
+            training=TrainingConfig()
+        )
+        assert config.model.spmamba.n_srcs == 1
+        captured = capsys.readouterr()
+        assert "task=ES forces spmamba.n_srcs 2->1" in captured.out
+
 
 class TestLoadConfigForRun:
     """Test load_config_for_run with sweep config overrides."""
@@ -364,7 +398,9 @@ training:
         return str(yaml_path)
 
     def _make_sweep_config(self, base_yaml, **overrides):
-        """Create a mock matching wandb.config behavior (supports 'in' and attr access)."""
+        """Create a mock matching wandb.config behavior (supports 'in', attr
+        access, and 'keys()' — the last one only matters for the unconsumed-key
+        warning check, which real wandb.config also supports)."""
         class MockSweepConfig:
             def __init__(self, **kwargs):
                 self.__dict__.update(kwargs)
@@ -372,6 +408,8 @@ training:
                 return key in self.__dict__
             def get(self, key, default=None):
                 return self.__dict__.get(key, default)
+            def keys(self):
+                return self.__dict__.keys()
         return MockSweepConfig(config=base_yaml, **overrides)
 
     def test_training_hp_overrides(self, base_yaml):
@@ -464,6 +502,33 @@ training:
         config = load_config_for_run(sweep)
 
         assert config.training.early_stopping_patience == 10
+
+    def test_unrecognized_sweep_key_warns(self, base_yaml):
+        """Gap 15: an unmapped sweep key (e.g. an SPMamba/Mamba architecture
+        knob) must warn instead of silently vanishing."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, lstm_hidden_units=128)
+
+        with pytest.warns(UserWarning, match="lstm_hidden_units"):
+            load_config_for_run(sweep)
+
+    def test_recognized_sweep_keys_do_not_warn(self, base_yaml, recwarn):
+        """Known override keys (including special-cased ones) must not warn."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(
+            base_yaml, lr=0.01, model_B=128, chunk_size=100, epochs=5,
+        )
+        load_config_for_run(sweep)
+
+        assert not any("load_config_for_run" in str(w.message) for w in recwarn.list)
+
+    def test_wandb_internal_key_does_not_warn(self, base_yaml, recwarn):
+        """Keys wandb itself injects (e.g. '_wandb') must not be flagged."""
+        from config import load_config_for_run
+        sweep = self._make_sweep_config(base_yaml, _wandb={"runtime": 0})
+        load_config_for_run(sweep)
+
+        assert not any("load_config_for_run" in str(w.message) for w in recwarn.list)
 
 
 class TestConfigSummary:

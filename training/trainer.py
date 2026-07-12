@@ -16,6 +16,7 @@ from utils import (
     dataclass_to_dict,
     ensure_dir,
     load_model_from_checkpoint,
+    compute_sisdr_and_sisdri,
 )
 
 DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
@@ -44,12 +45,16 @@ class Trainer:
         logger: Optional[logging.Logger] = None,
         wandb_logger: Optional[Any] = None,
         per_variant_val_loaders: Optional[dict] = None,
+        provenance: Optional[dict] = None,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.per_variant_val_loaders = per_variant_val_loaders
         self.per_variant_mode = per_variant_val_loaders is not None
+        # Run provenance manifest (survey gap 5): embedded in every checkpoint and
+        # written to run_manifest.yaml beside config.yaml. None → nothing added.
+        self.provenance = provenance
         assert (val_loader is None) != (per_variant_val_loaders is None), (
             "Trainer requires exactly one of val_loader or per_variant_val_loaders"
         )
@@ -96,6 +101,9 @@ class Trainer:
         # Consecutive NaN/Inf batch counter — persists across epoch boundaries,
         # reset by any finite-loss batch. See MAX_CONSECUTIVE_NAN_BATCHES.
         self.consecutive_nan_batches = 0
+        # Early-stopping patience counter. Persisted in checkpoints and restored
+        # on resume so patience survives a resume (survey gap 8d).
+        self.epochs_without_improvement = 0
         self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
 
         # Curriculum learning setup
@@ -166,7 +174,16 @@ class Trainer:
         return False
 
     def _update_training_variants(self, epoch):
-        """Update training dataset's allowed_variants based on curriculum schedule."""
+        """Update training dataset's allowed_variants based on curriculum schedule.
+
+        LANDMINE (survey gap 18): this mutates ``train_loader.dataset`` *in place*.
+        With the default ``persistent_workers=False`` the workers are re-forked
+        every epoch and pick up the new ``allowed_variants``; if anyone ever sets
+        ``persistent_workers=True`` (see the note at the DataLoader site in
+        training/setup.py) the workers keep their stage-0 fork and every epoch
+        silently trains on the stage-0 variant set. Keep persistent_workers off
+        whenever a curriculum is configured.
+        """
         if not self.curriculum_schedule:
             return  # No curriculum learning
 
@@ -183,25 +200,24 @@ class Trainer:
             self.lr_scheduler_enabled = True
             self.logger.info("Learning rate scheduler enabled")
 
-    def _compute_sisdri(self, sisdr_value: float, mix, clean) -> float:
-        """SI-SDRi = sisdr_value − mixture_baseline (per evaluate.py).
+    def _compute_sisdri(self, mix, clean, estimates) -> float:
+        """SI-SDRi for the batch, via the shared ``compute_sisdr_and_sisdri``.
 
-        For SB, the baseline is the per-speaker average SI-SDR(mix, clean[spk]);
-        for ES/EB it's SI-SDR(mix, clean).
+        Keeps this in lockstep with evaluate.py (survey gap 12): the SI-SDRi
+        mixture-baseline logic lives in one place. Only SI-SDRi is used here —
+        the batch SI-SDR the caller reports comes from the loss, which equals
+        the helper's SI-SDR in the fp32 validation path (validation runs without
+        autocast); under AMP training the two agree to within float noise.
         """
-        min_len = min(mix.shape[-1], clean.shape[-1])
-        mix_t = mix[..., :min_len]
-        clean_t = clean[..., :min_len]
-        if self.task == "SB":
-            mix_baseline = 0.0
-            for spk in range(clean_t.shape[1]):
-                mix_baseline += self.si_sdr_metric(mix_t, clean_t[:, spk]).item()
-            mix_baseline /= clean_t.shape[1]
-        else:
-            if clean_t.dim() == 3 and clean_t.shape[1] == 1:
-                clean_t = clean_t.squeeze(1)
-            mix_baseline = self.si_sdr_metric(mix_t, clean_t).item()
-        return sisdr_value - mix_baseline
+        _, sisdri, _ = compute_sisdr_and_sisdri(
+            estimates,
+            clean,
+            mix,
+            self.task,
+            self.si_sdr_metric,
+            pit_loss=self.pit_loss if self.task == "SB" else None,
+        )
+        return sisdri
 
     def _sisdr_loss_wrapper(self, estimates, targets):
         """Compute SI-SDR loss for ES/EB tasks."""
@@ -237,7 +253,17 @@ class Trainer:
                  param_group['lr'] = self.config.training.lr
         else:
              self.logger.info(f"Resuming from checkpoint LR {current_lr:.2e}")
-        
+
+        # Load best_val_sisdr BEFORE the scheduler block (survey gap 7): the
+        # legacy-checkpoint branch below seeds scheduler.best from it, so it must
+        # already hold the checkpoint's real best — not the -inf placeholder set
+        # in __init__ — or the first post-resume epoch always looks like an
+        # improvement (the exact bug the legacy branch's comment claims to fix).
+        self.current_epoch = checkpoint["epoch"] + 1  # Resume from next epoch
+        self.best_val_sisdr = checkpoint.get(
+            "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
+        )
+
         # Load scheduler state if available
         if self.scheduler is not None:
              if "scheduler_state_dict" in checkpoint:
@@ -248,11 +274,17 @@ class Trainer:
                 # This prevents it from thinking the first epoch after resume is the new best
                 self.logger.info("Legacy checkpoint detected: Manually initializing scheduler 'best'")
                 self.scheduler.best = self.best_val_sisdr
-            
-        self.current_epoch = checkpoint["epoch"] + 1  # Resume from next epoch
-        self.best_val_sisdr = checkpoint.get(
-            "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
-        )
+
+        # Restore GradScaler state for fp16 models (survey gap 8a). Tolerate its
+        # absence in old checkpoints — those resume at the default init_scale.
+        if self.scaler is not None and "scaler_state_dict" in checkpoint:
+            self.logger.info("Loading GradScaler state from checkpoint")
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        # Restore early-stopping patience (survey gap 8d); missing in old
+        # checkpoints → default 0 (as if resuming right after an improvement).
+        self.epochs_without_improvement = checkpoint.get("epochs_without_improvement", 0)
+
         self.logger.info(
             f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
             f"resuming at epoch {self.current_epoch}"
@@ -337,14 +369,43 @@ class Trainer:
             "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "val_sisdr": val_sisdr,
+            # Persist best + patience explicitly (survey gaps 7/8d). load_checkpoint
+            # prefers this key; old checkpoints (lacking it) fall back cleanly.
+            # max() keeps the invariant local: the train loop saves only on
+            # improvement (best == val_sisdr there), but a direct _save_checkpoint
+            # call must still record this checkpoint's own score as the best.
+            "best_val_sisdr": max(self.best_val_sisdr, val_sisdr),
+            "epochs_without_improvement": self.epochs_without_improvement,
             "config": config_dict,
         }
-        
+
         # Save scheduler state if available
         if self.scheduler is not None:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
-            
+
+        # Save GradScaler state so fp16 models resume at the right loss scale
+        # rather than the default init_scale (survey gap 8a).
+        if self.scaler is not None:
+            checkpoint["scaler_state_dict"] = self.scaler.state_dict()
+
+        # Run provenance (survey gap 5) — git/env/GPU that produced this run.
+        if self.provenance is not None:
+            checkpoint["provenance"] = self.provenance
+
+        # W&B run id so a later --resume can reconnect to the same run instead of
+        # orphaning a fresh one (survey gap 14).
+        wandb_run_id = self._wandb_run_id()
+        if wandb_run_id is not None:
+            checkpoint["wandb_run_id"] = wandb_run_id
+
         return checkpoint
+
+    def _wandb_run_id(self) -> Optional[str]:
+        """Return the active W&B run id, or None when W&B is disabled/unavailable."""
+        wl = self.wandb_logger
+        if wl and getattr(wl, "enabled", False) and getattr(wl, "run", None) is not None:
+            return getattr(wl.run, "id", None)
+        return None
 
     def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir: str):
         """Save model checkpoint with best validation SI-SDR."""
@@ -361,6 +422,12 @@ class Trainer:
         # Save config as YAML for easy viewing
         with open(config_path, 'w') as f:
             yaml.dump(checkpoint_data["config"], f, default_flow_style=False, sort_keys=False)
+
+        # Write a human-readable run manifest next to config.yaml (survey gap 5).
+        if self.provenance is not None:
+            manifest_path = config_path.parent / "run_manifest.yaml"
+            with open(manifest_path, "w") as f:
+                yaml.dump(self.provenance, f, default_flow_style=False, sort_keys=False)
 
         # Log checkpoint save
         metric_name = "avg SI-SDRi" if self.per_variant_mode else "SI-SDR"
@@ -385,6 +452,7 @@ class Trainer:
         
         # Gradient accumulation setup
         accum_steps = getattr(self.config.training, 'grad_accumulation_steps', 1)
+        num_batches = len(self.train_loader)
 
         pbar = tqdm(
             self.train_loader,
@@ -408,9 +476,16 @@ class Trainer:
                 estimates = self.model(mix_input)
                 loss, sisdr_value = self.loss_fn(estimates, clean)
 
-            # Scale loss for gradient accumulation
+            # Scale loss for gradient accumulation. Divide by the actual number
+            # of micro-batches in THIS window, not the nominal accum_steps, so the
+            # final short "tail" window isn't under-weighted (survey gap 8c). For
+            # full windows window_size == accum_steps; for accum_steps == 1 it is
+            # always 1, so default runs are unaffected. (Audit 2026-07-12: no
+            # shipped experiment/sweep config used accum_steps>1 — latent only.)
             if accum_steps > 1:
-                loss = loss / accum_steps
+                window_start = (batch_idx // accum_steps) * accum_steps
+                window_size = min(accum_steps, num_batches - window_start)
+                loss = loss / window_size
 
             if torch.isnan(loss) or torch.isinf(loss):
                 self.consecutive_nan_batches += 1
@@ -418,7 +493,13 @@ class Trainer:
                     f"NaN/Inf detected at batch {batch_idx}, skipping batch"
                 )
                 self.logger.warning(f"  Loss: {loss.item()}, SI-SDR: {sisdr_value}")
-                self.optimizer.zero_grad()
+                # Do NOT zero_grad here (survey gap 8b): the NaN is caught BEFORE
+                # backward(), so this batch contributed no gradient, while the
+                # current accumulation window may already hold valid gradients
+                # from earlier micro-batches. Zeroing would silently discard them.
+                # The window still steps normally at its boundary; any grads left
+                # un-stepped by a NaN on the final window are cleared at epoch end
+                # (see below) so nothing leaks into the next epoch.
                 # Free the computation graph and intermediate tensors before
                 # calling empty_cache — otherwise they keep GPU memory pinned
                 del loss, estimates, mix_input, mix, clean
@@ -461,7 +542,7 @@ class Trainer:
 
             # Weight by actual batch size for correct averaging
             batch_size = len(mix)
-            sisdri_value = self._compute_sisdri(sisdr_value, mix, clean)
+            sisdri_value = self._compute_sisdri(mix, clean, estimates)
             total_sisdr += sisdr_value * batch_size
             total_sisdri += sisdri_value * batch_size
             total_samples += batch_size
@@ -473,6 +554,13 @@ class Trainer:
                     "LR": f'{self.optimizer.param_groups[0]["lr"]:.2e}',
                 }
             )
+
+        # Clear any gradients left un-stepped by a NaN-skipped final window so
+        # they cannot leak into the next epoch (only reachable with
+        # grad_accumulation_steps>1 and a NaN on the window's boundary batch; see
+        # the NaN-skip branch above). No-op in the common case — the last good
+        # batch already stepped and zeroed.
+        self.optimizer.zero_grad()
 
         avg_sisdr = total_sisdr / total_samples
         avg_sisdri = total_sisdri / total_samples
@@ -507,7 +595,7 @@ class Trainer:
                 _, sisdr_value = self.loss_fn(estimates, clean)
                 # Weight by actual batch size for correct averaging
                 batch_size = len(mix)
-                sisdri_value = self._compute_sisdri(sisdr_value, mix, clean)
+                sisdri_value = self._compute_sisdri(mix, clean, estimates)
                 total_sisdr += sisdr_value * batch_size
                 total_sisdri += sisdri_value * batch_size
                 total_samples += batch_size
@@ -632,9 +720,10 @@ class Trainer:
         save_dir = Path(save_dir)
         save_dir.mkdir(exist_ok=True)
         val_sisdr_history = []
-        
-        # Early stopping tracking (only if enabled)
-        epochs_without_improvement = 0 if early_stopping_patience else None
+
+        # Early-stopping patience lives on self.epochs_without_improvement so it
+        # survives a resume (survey gap 8d) — load_checkpoint restores it, __init__
+        # seeds it to 0. All uses below are gated on early_stopping_patience.
 
         try:
             final_epoch = self.current_epoch + num_epochs
@@ -700,7 +789,7 @@ class Trainer:
 
                 # Add early stopping metric if enabled
                 if early_stopping_patience:
-                    metrics["epochs_no_improvement"] = epochs_without_improvement
+                    metrics["epochs_no_improvement"] = self.epochs_without_improvement
 
                 if self.wandb_logger:
                     self.wandb_logger.log_metrics(metrics, step=self.current_epoch)
@@ -709,15 +798,15 @@ class Trainer:
                 if monitor_value > self.best_val_sisdr:
                     self.best_val_sisdr = monitor_value
                     if early_stopping_patience:
-                        epochs_without_improvement = 0  # Reset counter
+                        self.epochs_without_improvement = 0  # Reset counter
                     self._save_checkpoint(epoch, monitor_value, save_dir)
                 else:
                     if early_stopping_patience:
-                        epochs_without_improvement += 1
-                        self.logger.info(f"No improvement for {epochs_without_improvement} epoch(s)")
-                    
+                        self.epochs_without_improvement += 1
+                        self.logger.info(f"No improvement for {self.epochs_without_improvement} epoch(s)")
+
                 # Early stopping check (only if enabled)
-                if early_stopping_patience and epochs_without_improvement >= early_stopping_patience:
+                if early_stopping_patience and self.epochs_without_improvement >= early_stopping_patience:
                     self.logger.warning("=" * 80)
                     self.logger.warning("EARLY STOPPING")
                     self.logger.warning("=" * 80)

@@ -1,10 +1,12 @@
 """Tests for evaluation module (loading, metrics, formatting)."""
 
+import math
+
 import pytest
 import torch
 from pathlib import Path
 from unittest.mock import Mock, patch
-from evaluate import print_summary, save_results_csv
+from evaluate import evaluate_model, print_summary, save_results_csv
 from utils.model_utils import load_model_for_inference
 
 
@@ -120,37 +122,38 @@ class TestEvaluationLoading:
 
         assert not loaded_model.training
 
-    # NOTE: This test is commented out as it creates an artificial scenario where
-    # checkpoint params don't match config params, causing state_dict load errors.
-    # In real usage, checkpoints either contain embedde config or users provide
-    # matching config.
-    # def test_load_model_with_provided_config(self, tmp_path):
-    #     """Test loading model with user-provided config."""
-    #     from config import Config
-    #     
-    #     checkpoint_path = tmp_path / "model.pt"
-    #     
-    #     # Create checkpoint without config
-    #     from models import ConvTasNet
-    #     
-    #     model = ConvTasNet(N=64, B=64, H=128, P=3, X=4, R=2, C=1)
-    #     
-    #     torch.save({"model_state_dict": model.state_dict()}, checkpoint_path)
-    #     
-    #     # Provide config manually
-    #     config = Config()
-    #     config.model.model_type = "convtasnet"
-    #     config.model.convtasnet.N = 64
-    #     config.model.convtasnet.B = 64
-    #     config.model.convtasnet.H = 128
-    #     config.model.convtasnet.P = 3  # Must be odd
-    #     
-    #     loaded_model = load_model_from_checkpoint(
-    #         str(checkpoint_path), config=config, device="cpu"
-    #     )
-    #     
-    #     assert loaded_model is not None
-    #     assert loaded_model.N == 64
+    def test_load_model_with_config_override(self, tmp_path):
+        """User-provided config_override is used when the checkpoint has no
+        embedded config (the real `load_model_for_inference(..., config_override=)`
+        API). Replaces a stale commented-out test that called
+        `load_model_from_checkpoint(..., config=...)` — a signature that
+        function has never had; `config_override` belongs to
+        `load_model_for_inference`, not `load_model_from_checkpoint`."""
+        from models import ConvTasNet
+
+        checkpoint_path = tmp_path / "model.pt"
+        model = ConvTasNet(N=64, B=64, H=128, P=3, X=4, R=2, C=1)
+
+        # Checkpoint saved WITHOUT an embedded config.
+        torch.save({"model_state_dict": model.state_dict()}, checkpoint_path)
+
+        config_override = {
+            "model": {
+                "model_type": "convtasnet",
+                "convtasnet": {
+                    "N": 64, "B": 64, "H": 128, "P": 3, "X": 4, "R": 2, "C": 1,
+                },
+            }
+        }
+
+        loaded_model, checkpoint = load_model_for_inference(
+            str(checkpoint_path), device="cpu", config_override=config_override
+        )
+
+        assert loaded_model is not None
+        assert loaded_model.N == 64
+        assert not loaded_model.training
+        assert checkpoint.get("config") is None  # confirms the override path, not an embedded config
 
     def test_load_model_nonexistent_file_raises_error(self):
         """Test loading from nonexistent file raises error."""
@@ -432,3 +435,118 @@ class TestSBTaskPESQSTOI:
         }
         # Should not raise
         print_summary(results)
+
+
+class TestEvaluateModelEndToEnd:
+    """End-to-end `evaluate_model` test on a 2-sample synthetic SB dataset with
+    hand-computed SI-SDRi (survey gap 4/E4 item 9): pins the mixture-baseline
+    computation, PIT reordering, and per-sample aggregation all in one place —
+    no such test existed before this. `evaluate.py` now forces batch_size=1
+    (gap 3) so every accumulated scalar is already a per-sample score; this
+    test's aggregation check confirms the reported mean really is the exact
+    mean of the two per-sample values, not a mean-of-batch-means.
+
+    Construction: A and B are orthogonal, zero-mean, equal-energy (||.||^2=4)
+    4-sample vectors used as the two "clean" speaker signals. `mix = A + B`.
+    Each fake-model estimate pair is built as
+        estimate0 = B + c*A,  estimate1 = A + c*B   (0 < c < 1)
+    so estimate0 best matches clean channel 1 (B) and estimate1 best matches
+    clean channel 0 (A) — PIT's optimal permutation is therefore the *swap*,
+    not the identity. Standard SI-SDR projection algebra gives, for both
+    channels under the swap permutation, SI-SDR = -20*log10(c) exactly (both
+    channels symmetric ⇒ this is also the batch-mean SI-SDR PITLossWrapper
+    returns), and SI-SDR(mix, A) == SI-SDR(mix, B) == 0 dB exactly (mix is an
+    equal-energy orthogonal sum). Hence si_sdri == si_sdr for every sample
+    here. These hand-derived numbers were cross-checked against the actual
+    `ScaleInvariantSignalDistortionRatio` + `PITLossWrapper(pairwise_neg_sisdr,
+    pit_from="pw_mtx")` implementations before being hardcoded as the
+    expectation (not merely a textbook derivation).
+    """
+
+    @staticmethod
+    def _build_samples(cs):
+        A = torch.tensor([1., -1., 1., -1.])
+        B = torch.tensor([1., 1., -1., -1.])
+        assert torch.dot(A, B).item() == 0.0  # orthogonality precondition
+
+        samples, expected = [], []
+        for c in cs:
+            est0 = B + c * A
+            est1 = A + c * B
+            mix = A + B
+            samples.append(
+                {
+                    "mix": mix,
+                    "clean": torch.stack([A, B]),
+                    "estimates": torch.stack([est0, est1]),
+                }
+            )
+            hand_si_sdr = -20.0 * math.log10(c)
+            expected.append({"si_sdr": hand_si_sdr, "si_sdri": hand_si_sdr})  # baseline = 0 dB
+        return samples, expected
+
+    def test_evaluate_model_sb_pins_baseline_pit_and_aggregation(self):
+        samples, expected = self._build_samples([0.5, 0.25])
+
+        class _SyntheticSBDataset(torch.utils.data.Dataset):
+            def __len__(self):
+                return len(samples)
+
+            def __getitem__(self, idx):
+                return {"mix": samples[idx]["mix"], "clean": samples[idx]["clean"]}
+
+        class _FakeSeparator(torch.nn.Module):
+            """Ignores its input; returns the precomputed estimate pair for
+            whichever sample index evaluate_model is currently on. Valid only
+            because the dataloader below is shuffle=False, batch_size=1, one
+            pass — the same sequential-order assumption evaluate_model's own
+            per-sample loop relies on."""
+
+            def __init__(self):
+                super().__init__()
+                self._unused_param = torch.nn.Parameter(torch.zeros(1))
+                self._call_idx = 0
+
+            def forward(self, mix_input):
+                est = samples[self._call_idx]["estimates"].unsqueeze(0)
+                self._call_idx += 1
+                return est
+
+        dataloader = torch.utils.data.DataLoader(
+            _SyntheticSBDataset(), batch_size=1, shuffle=False
+        )
+        model = _FakeSeparator()
+
+        results = evaluate_model(
+            model,
+            dataloader,
+            device="cpu",
+            compute_pesq=False,
+            compute_stoi=False,
+            use_amp=False,
+            task="SB",
+        )
+
+        assert results["num_samples"] == 2
+        assert results["pesq_failures"] == 0
+        assert len(results["per_sample"]) == 2
+
+        for i, exp in enumerate(expected):
+            rec = results["per_sample"][i]
+            assert rec["sample_idx"] == i
+            assert rec["si_sdr"] == pytest.approx(exp["si_sdr"], abs=1e-3)
+            assert rec["si_sdri"] == pytest.approx(exp["si_sdri"], abs=1e-3)
+
+        # Aggregation: the reported mean is the exact arithmetic mean of the
+        # per-sample values — batch_size=1 throughout, so there is no
+        # mean-of-batch-means bias (gap 3) to reproduce.
+        hand_mean_si_sdr = sum(e["si_sdr"] for e in expected) / len(expected)
+        hand_mean_si_sdri = sum(e["si_sdri"] for e in expected) / len(expected)
+        assert results["si_sdr"] == pytest.approx(hand_mean_si_sdr, abs=1e-3)
+        assert results["si_sdri"] == pytest.approx(hand_mean_si_sdri, abs=1e-3)
+        assert results["si_sdr"] == pytest.approx(
+            sum(r["si_sdr"] for r in results["per_sample"]) / 2, abs=1e-9
+        )
+        assert results["si_sdri"] == pytest.approx(
+            sum(r["si_sdri"] for r in results["per_sample"]) / 2, abs=1e-9
+        )

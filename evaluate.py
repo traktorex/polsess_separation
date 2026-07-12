@@ -23,12 +23,21 @@ from datasets import (
     libri2mix_collate_fn,
 )
 from config import Config, load_config_from_yaml
-from utils import apply_eps_patch, load_model_for_inference, count_parameters
+from utils import (
+    apply_eps_patch,
+    load_model_for_inference,
+    count_parameters,
+    compute_sisdr_and_sisdri,
+    set_seed,
+)
 
 logger = logging.getLogger("polsess")
 
 # PolSESS dataset sample rate
 SAMPLE_RATE = 8000
+
+# Long-format per-sample CSV schema (one row per evaluated sample).
+PER_SAMPLE_COLUMNS = ("run", "variant", "sample_idx", "si_sdr", "si_sdri", "pesq", "stoi")
 
 
 def evaluate_model(
@@ -40,10 +49,18 @@ def evaluate_model(
     use_amp: bool = False,
     task: str = "ES",
 ) -> dict:
-    """Evaluate model on a dataset and compute metrics."""
+    """Evaluate model on a dataset and compute metrics.
+
+    Scores are accumulated per batch and averaged; callers use ``batch_size=1``
+    (see ``evaluate_by_variant`` and the Libri2Mix path) so every accumulated
+    scalar is a single-sample score and the mean is an exact per-sample mean
+    (no mean-of-batch-means bias, survey gap 3). The returned ``per_sample``
+    list carries the individual scores for downstream confidence intervals.
+    """
     si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
 
     # For SB task, use PIT-based SI-SDR
+    pit_sisdr = None
     if task == "SB":
         pit_sisdr = PITLossWrapper(pairwise_neg_sisdr, pit_from="pw_mtx").to(device)
 
@@ -60,10 +77,12 @@ def evaluate_model(
     stoi_scores = []
     pesqi_scores = []
     stoii_scores = []
+    per_sample = []
+    pesq_failures = 0
 
     model.eval()
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Evaluating", leave=False):
+        for sample_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating", leave=False)):
             mix = batch["mix"].to(device)
             clean = batch["clean"].to(device)
 
@@ -81,29 +100,26 @@ def evaluate_model(
             clean = clean[..., :min_len]
             mix_trimmed = mix[..., :min_len]
 
-            # Compute SI-SDR based on task
+            # SI-SDR / SI-SDRi via the shared helper (same code the trainer uses).
+            # For SB, `aligned` is the PIT-reordered estimates matched to `clean`;
+            # for enhancement it is the (channel-squeezed) estimates.
+            si_sdr, si_sdri, aligned = compute_sisdr_and_sisdri(
+                estimates, clean, mix_trimmed, task, si_sdr_metric, pit_loss=pit_sisdr
+            )
+            si_sdr_scores.append(si_sdr)
+            si_sdri_scores.append(si_sdri)
+
+            sample_pesq = None
+            sample_stoi = None
+
             if task == "SB":
-                # Speaker separation: use PIT to find best permutation
-                # return_est=True gives us reordered estimates aligned with clean
-                loss, reordered = pit_sisdr(estimates, clean, return_est=True)
-                si_sdr = -loss
-                si_sdr_scores.append(si_sdr.item())
-
-                # Mixture baseline: SI-SDR(mix, clean) averaged over speakers
-                # mix is [B, T], clean is [B, C, T]
-                mix_baseline = 0.0
-                for spk in range(clean.shape[1]):
-                    mix_baseline += si_sdr_metric(mix_trimmed, clean[:, spk]).item()
-                mix_baseline /= clean.shape[1]
-                si_sdri_scores.append(si_sdr.item() - mix_baseline)
-
                 # PESQ and STOI on PIT-reordered estimates
                 if pesq_metric:
                     pesq_sum = 0.0
                     pesq_mix_sum = 0.0
                     pesq_count = 0
                     for spk in range(clean.shape[1]):
-                        for est, ref, mx in zip(reordered[:, spk], clean[:, spk], mix_trimmed):
+                        for est, ref, mx in zip(aligned[:, spk], clean[:, spk], mix_trimmed):
                             try:
                                 p = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
                                 p_mix = pesq_metric(mx.unsqueeze(0), ref.unsqueeze(0))
@@ -112,53 +128,65 @@ def evaluate_model(
                                     pesq_sum += p.item()
                                     pesq_mix_sum += p_mix.item()
                                     pesq_count += 1
+                                else:
+                                    pesq_failures += 1
                             except Exception as e:
+                                pesq_failures += 1
                                 logger.debug(f"PESQ computation failed for sample: {e}")
                     if pesq_count > 0:
                         avg_pesq = pesq_sum / pesq_count
                         avg_pesq_mix = pesq_mix_sum / pesq_count
                         pesq_scores.append(avg_pesq)
                         pesqi_scores.append(avg_pesq - avg_pesq_mix)
+                        sample_pesq = avg_pesq
 
                 if stoi_metric:
                     stoi_sum = 0.0
                     stoi_mix_sum = 0.0
                     for spk in range(clean.shape[1]):
-                        stoi_sum += stoi_metric(reordered[:, spk], clean[:, spk]).item()
+                        stoi_sum += stoi_metric(aligned[:, spk], clean[:, spk]).item()
                         stoi_mix_sum += stoi_metric(mix_trimmed, clean[:, spk]).item()
                     avg_stoi = stoi_sum / clean.shape[1]
                     avg_stoi_mix = stoi_mix_sum / clean.shape[1]
                     stoi_scores.append(avg_stoi)
                     stoii_scores.append(avg_stoi - avg_stoi_mix)
+                    sample_stoi = avg_stoi
             else:
-                # Enhancement: standard SI-SDR
-                if clean.dim() == 3 and clean.shape[1] == 1:
-                    clean = clean.squeeze(1)
-                if estimates.dim() == 3 and estimates.shape[1] == 1:
-                    estimates = estimates.squeeze(1)
-
-                si_sdr = si_sdr_metric(estimates, clean)
-                si_sdr_mix = si_sdr_metric(mix_trimmed, clean)
-                si_sdr_scores.append(si_sdr.item())
-                si_sdri_scores.append(si_sdr.item() - si_sdr_mix.item())
+                # Enhancement: `aligned` is the squeezed estimates; squeeze clean to match.
+                clean_sq = clean.squeeze(1) if (clean.dim() == 3 and clean.shape[1] == 1) else clean
 
                 if pesq_metric:
-                    for est, ref in zip(estimates, clean):
+                    for est, ref in zip(aligned, clean_sq):
                         try:
                             pesq = pesq_metric(est.unsqueeze(0), ref.unsqueeze(0))
                             if not torch.isnan(pesq) and not torch.isinf(pesq):
                                 pesq_scores.append(pesq.item())
+                                sample_pesq = pesq.item()
+                            else:
+                                pesq_failures += 1
                         except Exception as e:
+                            pesq_failures += 1
                             logger.debug(f"PESQ computation failed for sample: {e}")
 
                 if stoi_metric:
-                    stoi = stoi_metric(estimates, clean)
+                    stoi = stoi_metric(aligned, clean_sq)
                     stoi_scores.append(stoi.item())
+                    sample_stoi = stoi.item()
+
+            per_sample.append({
+                "sample_idx": sample_idx,
+                "si_sdr": si_sdr,
+                "si_sdri": si_sdri,
+                "pesq": sample_pesq,
+                "stoi": sample_stoi,
+            })
 
     results = {
         "si_sdr": sum(si_sdr_scores) / len(si_sdr_scores) if si_sdr_scores else 0,
         "si_sdri": sum(si_sdri_scores) / len(si_sdri_scores) if si_sdri_scores else 0,
         "num_samples": len(dataloader.dataset),
+        "pesq_failures": pesq_failures,
+        "per_sample": per_sample,
     }
 
     if pesq_scores:
@@ -173,17 +201,93 @@ def evaluate_model(
     return results
 
 
+def bootstrap_ci(values, ci: float = 0.95, n_resamples: int = 10000, seed: int = 0):
+    """Mean and percentile bootstrap CI for a 1-D sample (thesis-table helper).
+
+    ``None`` entries are dropped first. Returns ``(mean, lo, hi)``:
+    ``(nan, nan, nan)`` for an empty sample, ``(mean, mean, mean)`` for n == 1.
+    """
+    import numpy as np
+
+    vals = np.asarray([v for v in values if v is not None], dtype=float)
+    if vals.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    mean = float(vals.mean())
+    if vals.size == 1:
+        return mean, mean, mean
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, vals.size, size=(n_resamples, vals.size))
+    boot_means = vals[idx].mean(axis=1)
+    lo = float(np.percentile(boot_means, (1 - ci) / 2 * 100))
+    hi = float(np.percentile(boot_means, (1 + ci) / 2 * 100))
+    return mean, lo, hi
+
+
+def per_sample_rows(results_by_variant: dict, run: str):
+    """Flatten ``{variant: eval-result-dict}`` into long-format per-sample rows.
+
+    Each row has the ``PER_SAMPLE_COLUMNS`` fields. Variants whose result dict
+    carries no ``per_sample`` list (e.g. older callers) contribute nothing.
+    """
+    rows = []
+    for variant, res in results_by_variant.items():
+        for rec in res.get("per_sample", []):
+            rows.append({
+                "run": run,
+                "variant": variant,
+                "sample_idx": rec["sample_idx"],
+                "si_sdr": rec["si_sdr"],
+                "si_sdri": rec["si_sdri"],
+                "pesq": rec.get("pesq"),
+                "stoi": rec.get("stoi"),
+            })
+    return rows
+
+
+def summarize_per_sample(csv_path, metrics=("si_sdr", "si_sdri", "pesq", "stoi"), ci: float = 0.95):
+    """Mean ± bootstrap-CI table per (run, variant, metric) from a per-sample CSV.
+
+    Reads the long-format CSV written during evaluation and returns a DataFrame
+    with columns ``run, variant, metric, n, mean, ci_lo, ci_hi`` for the thesis
+    architecture-comparison tables.
+    """
+    df = pd.read_csv(csv_path)
+    rows = []
+    for (run, variant), group in df.groupby(["run", "variant"]):
+        for metric in metrics:
+            if metric not in group.columns:
+                continue
+            vals = group[metric].dropna().tolist()
+            if not vals:
+                continue
+            mean, lo, hi = bootstrap_ci(vals, ci=ci)
+            rows.append({
+                "run": run,
+                "variant": variant,
+                "metric": metric,
+                "n": len(vals),
+                "mean": mean,
+                "ci_lo": lo,
+                "ci_hi": hi,
+            })
+    return pd.DataFrame(rows)
+
+
 def evaluate_by_variant(
     model,
     config: Config,
     device: str = "cuda",
-    batch_size: int = 4,
     compute_pesq: bool = True,
     compute_stoi: bool = True,
     specific_variant: str = None,
     max_samples: int = None,
 ) -> dict:
-    """Evaluate model on each MM-IPC variant separately."""
+    """Evaluate model on each MM-IPC variant separately.
+
+    Evaluation always runs at ``batch_size=1`` so every metric is a per-sample
+    score: this removes the mean-of-batch-means bias (survey gap 3) and yields
+    the ``per_sample`` records used for confidence intervals.
+    """
     indoor_variants = ["SER", "SR", "ER", "R"]
     outdoor_variants = ["SE", "S", "E", "C"]
     all_variants = indoor_variants + outdoor_variants
@@ -218,7 +322,7 @@ def evaluate_by_variant(
 
         dataloader = DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=1,  # per-sample scoring (gap 3); see docstring
             shuffle=False,
             num_workers=config.data.num_workers,
             collate_fn=polsess_collate_fn,
@@ -239,6 +343,11 @@ def evaluate_by_variant(
         logger.info(f"{variant} Results:")
         logger.info(f"  SI-SDR: {variant_results['si_sdr']:.2f} dB")
         logger.info(f"  SI-SDRi: {variant_results['si_sdri']:.2f} dB")
+        if variant_results.get("pesq_failures"):
+            logger.warning(
+                f"  PESQ failed on {variant_results['pesq_failures']} sample(s) "
+                f"in variant {variant} (excluded from the PESQ mean)"
+            )
         if "pesq" in variant_results:
             pesq_str = f"  PESQ: {variant_results['pesq']:.2f}"
             if "pesqi" in variant_results:
@@ -362,7 +471,8 @@ def main():
     parser.add_argument("--mix-type", choices=["mix_clean", "mix_both"],
                         help="Libri2Mix variant (default: evaluate both)")
     parser.add_argument("--max-samples", type=int, help="Limit number of samples per variant")
-    parser.add_argument("--batch-size", type=int, help="Batch size")
+    parser.add_argument("--batch-size", type=int,
+                        help="(ignored) evaluation always runs at batch_size=1 for per-sample scoring")
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--no-pesq", action="store_true", help="Skip PESQ")
     parser.add_argument("--no-stoi", action="store_true", help="Skip STOI")
@@ -377,6 +487,12 @@ def main():
         datefmt="%H:%M:%S",
     )
 
+    # Deterministic evaluation: seed all RNGs before any dataset/model work so
+    # variant selection and any stochastic op are reproducible across runs
+    # (survey gap 6). Eval always forces a single variant per pass, but this
+    # also pins the deterministic cuDNN path via set_seed.
+    set_seed()
+
     # Load config
     if args.config:
         logger.info(f"Loading config from: {args.config}")
@@ -389,8 +505,8 @@ def main():
         config.data.polsess.data_root = args.data_root
     if args.task:
         config.data.task = args.task
-    if args.batch_size:
-        config.data.batch_size = args.batch_size
+    # --batch-size is intentionally not applied: evaluation forces batch_size=1
+    # for per-sample scoring (see evaluate_by_variant / the Libri2Mix path).
 
     # Apply EPS patch if using AMP
     if config.training.use_amp:
@@ -422,7 +538,6 @@ def main():
             model,
             config,
             device,
-            batch_size=config.data.batch_size,
             compute_pesq=not args.no_pesq,
             compute_stoi=not args.no_stoi,
             specific_variant=args.variant,

@@ -1,6 +1,7 @@
 """Configuration management for PolSESS speech enhancement training."""
 
 import os
+import warnings
 import yaml
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -54,7 +55,10 @@ class SepFormerParams:
     d_ffn: int = 1024  # Feed-forward network dimension
     dropout: float = 0.0  # Dropout rate
     chunk_size: int = 250  # Chunk size for dual-path processing
-    hop_size: int = 125  # Hop size between chunks
+    hop_size: int = 125  # Unused — SpeechBrain's Dual_Path_Model always derives hop = K // 2
+    # internally and takes no hop argument (see models/sepformer.py). Kept as a
+    # loadable field (not removed) because many saved checkpoint config.yamls
+    # carry it; load_config_for_run no longer writes to it (nothing reads it).
     use_positional_encoding: bool = True  # Sinusoidal PE (paper default; False for pre-2026-03 checkpoints)
 
 
@@ -103,9 +107,9 @@ class SPMambaParams:
     n_srcs: int = 1  # Number of output sources (1 for enhancement, 2 for separation)
     n_fft: int = 256  # FFT size (paper uses 256)
     stride: int = 64  # STFT hop length (paper uses 64)
-    window: str = "hann"  # Window function
+    window: str = "hann"  # Only "hann" is honored; forward() hardcodes it (asserted in SPMamba.__init__)
     n_layers: int = 6  # Number of GridNet blocks (paper uses 6)
-    lstm_hidden_units: int = 256  # Hidden dimension (misleading name, for Mamba blocks)
+    lstm_hidden_units: int = 256  # Unused; kept for API symmetry (see models/spmamba.py docstring)
     attn_n_head: int = 4  # Number of attention heads
     attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
     emb_dim: int = 16  # Embedding dimension
@@ -232,6 +236,15 @@ class TrainingConfig:
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
     grad_accumulation_steps: int = 1  # Accumulate gradients over N steps (effective batch = batch_size * N)
+    # Determinism policy applied by utils.configure_determinism (survey gaps 6/18).
+    # None (default) = today's behavior EXACTLY: cuDNN deterministic, no benchmark
+    # autotuning, TF32 on — the setting every past run used, so the SPMamba
+    # full-ks8 / scaling runs stay comparable. True = also
+    # torch.use_deterministic_algorithms(warn_only) + CUBLAS_WORKSPACE_CONFIG
+    # (strict, opt-in). False = cudnn.benchmark=True for conv-autotune speed
+    # (non-deterministic, opt-in). Tri-state because none of {None,True,False}
+    # collapses onto another while keeping the default byte-identical to today.
+    deterministic: Optional[bool] = None
 
 
 @dataclass
@@ -265,37 +278,34 @@ class Config:
                 f"Invalid task: {self.data.task}. Must be 'ES', 'EB' or 'SB'."
             )
 
-        # Adjust model output sources based on task
-        if self.data.task in ["ES", "EB"]:
-            if self.model.model_type == "convtasnet":
-                self.model.convtasnet.C = 1
-            elif self.model.model_type == "sepformer":
-                self.model.sepformer.C = 1
-            elif self.model.model_type == "mossformer2":
-                self.model.mossformer2.C = 1
-            elif self.model.model_type == "dprnn":
-                self.model.dprnn.C = 1
-            elif self.model.model_type == "spmamba":
-                self.model.spmamba.n_srcs = 1
-            elif self.model.model_type == "mamba_tasnet":
-                self.model.mamba_tasnet.C = 1
-            elif self.model.model_type == "dpmamba":
-                self.model.dpmamba.C = 1
-        elif self.data.task == "SB":
-            if self.model.model_type == "convtasnet":
-                self.model.convtasnet.C = 2
-            elif self.model.model_type == "sepformer":
-                self.model.sepformer.C = 2
-            elif self.model.model_type == "mossformer2":
-                self.model.mossformer2.C = 2
-            elif self.model.model_type == "dprnn":
-                self.model.dprnn.C = 2
-            elif self.model.model_type == "spmamba":
-                self.model.spmamba.n_srcs = 2
-            elif self.model.model_type == "mamba_tasnet":
-                self.model.mamba_tasnet.C = 2
-            elif self.model.model_type == "dpmamba":
-                self.model.dpmamba.C = 2
+        # Adjust model output sources based on task (CLAUDE.md "Common Pitfalls" #3):
+        # ES/EB target a single source, SB targets both — this silently
+        # overrides whatever the YAML/CLI set for the model's output-source
+        # field. "Silently" is the operative word: log a line whenever this
+        # actually changes something, since otherwise a YAML author who set
+        # e.g. sepformer.C=2 under task=ES would never learn it was overridden.
+        target_c = 1 if self.data.task in ("ES", "EB") else 2
+        # model_type -> name of that model's output-source-count field.
+        # Every model calls it "C" except SPMamba, which calls it "n_srcs".
+        C_ATTR_BY_MODEL_TYPE = {
+            "convtasnet": "C",
+            "sepformer": "C",
+            "mossformer2": "C",
+            "dprnn": "C",
+            "spmamba": "n_srcs",
+            "mamba_tasnet": "C",
+            "dpmamba": "C",
+        }
+        attr_name = C_ATTR_BY_MODEL_TYPE.get(self.model.model_type)
+        if attr_name is not None:
+            params_obj = getattr(self.model, self.model.model_type)
+            current_value = getattr(params_obj, attr_name)
+            if current_value != target_c:
+                print(
+                    f"task={self.data.task} forces {self.model.model_type}.{attr_name} "
+                    f"{current_value}->{target_c}"
+                )
+            setattr(params_obj, attr_name, target_c)
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -436,6 +446,16 @@ class Config:
 
         if self.training.per_variant_validation:
             lines.append("  Per-variant validation: enabled (monitored metric = avg SI-SDRi)")
+
+        # Only surface determinism when it is non-default, so the default summary
+        # output stays byte-identical to before this flag existed.
+        if self.training.deterministic is not None:
+            mode = (
+                "strict (use_deterministic_algorithms + CUBLAS_WORKSPACE_CONFIG)"
+                if self.training.deterministic
+                else "relaxed (cudnn.benchmark=True)"
+            )
+            lines.append(f"  Determinism: {mode}")
 
         if self.training.use_wandb:
             lines.extend(["", "Logging (W&B):"])
@@ -752,8 +772,9 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     validation_variants, dropout, chunk_size, rnn_type.
     Note: dropout and chunk_size are routed to the active model's params
     (DPRNN, SepFormer, or MossFormer2 — where dropout maps to attn_dropout).
-    For SepFormer, chunk_size also sets hop_size to chunk_size // 2
-    automatically.
+    Any sweep key that isn't consumed by one of the mappings above (e.g. an
+    architecture knob for SPMamba/Mamba-family models, which aren't covered
+    here) is reported via a warning rather than silently dropped.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -779,6 +800,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         "curriculum_learning":      (config.training, "curriculum_learning"),
         "validation_variants":      (config.training, "validation_variants"),
         "per_variant_validation":   (config.training, "per_variant_validation"),
+        "deterministic":            (config.training, "deterministic"),
         # Data
         "task":                     (config.data, "task"),
         "batch_size":               (config.data, "batch_size"),
@@ -807,17 +829,44 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
             setattr(config.model.dprnn, key, getattr(sweep_config, key))
 
     # Special cases: SepFormer architecture overrides (nested)
+    # Note: hop_size is NOT set here even when chunk_size changes — it's an
+    # inert field (SpeechBrain's Dual_Path_Model derives hop = K // 2
+    # internally and never reads hop_size; see SepFormerParams).
     SEPFORMER_OVERRIDES = ["dropout", "chunk_size"]
     for key in SEPFORMER_OVERRIDES:
         if key in sweep_config and config.model.sepformer is not None:
             setattr(config.model.sepformer, key, getattr(sweep_config, key))
-            # Keep hop_size = chunk_size // 2 (standard dual-path convention)
-            if key == "chunk_size":
-                config.model.sepformer.hop_size = getattr(sweep_config, key) // 2
 
     # Special cases: MossFormer2 architecture overrides (nested)
     if "dropout" in sweep_config and config.model.mossformer2 is not None:
         config.model.mossformer2.attn_dropout = sweep_config.dropout
+
+    # Gap 15: warn on unconsumed sweep keys instead of silently dropping them
+    # (this is how an SPMamba/Mamba-family architecture knob in a sweep YAML
+    # would previously vanish with no error — those models have no override
+    # mapping above). "_"-prefixed keys are treated as W&B-internal bookkeeping
+    # (e.g. "_wandb") and are not flagged.
+    KNOWN_SWEEP_KEYS = (
+        set(OVERRIDE_MAP)
+        | {"config", "epochs", "model_B", "model_H"}
+        | set(DPRNN_OVERRIDES)
+        | set(SEPFORMER_OVERRIDES)
+    )
+    try:
+        sweep_keys = set(sweep_config.keys())
+    except (AttributeError, TypeError):
+        sweep_keys = set()  # sweep_config doesn't support key iteration; nothing to check
+    unconsumed = {k for k in sweep_keys if k not in KNOWN_SWEEP_KEYS and not k.startswith("_")}
+    if unconsumed:
+        warnings.warn(
+            f"load_config_for_run: sweep config key(s) {sorted(unconsumed)} were not "
+            "recognized by any override mapping and were silently ignored. If this is "
+            "an architecture knob (e.g. for SPMamba/Mamba-family models, which have no "
+            "override mapping above), add it to OVERRIDE_MAP or a model-specific "
+            "overrides list in config.py.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Validate and return
     config.__post_init__()

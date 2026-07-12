@@ -11,6 +11,7 @@ from utils.model_utils import (
     format_parameter_count,
     load_checkpoint_file,
     load_model_from_checkpoint,
+    load_model_for_inference,
 )
 
 
@@ -196,3 +197,57 @@ class TestCheckpointLoading:
             load_model_from_checkpoint(
                 str(checkpoint_path), load_model, device="cpu", strict=True
             )
+
+
+class TestLoadModelForInferenceOrigModStrip:
+    """load_model_for_inference: defensive `_orig_mod.` prefix strip (survey
+    gap 17 / CLAUDE.md AMP section). The save side (train.py) already unwraps
+    torch.compile's wrapper before saving, so our own checkpoints never carry
+    the prefix — this covers externally-produced checkpoints that skip that
+    unwrap step."""
+
+    def _make_checkpoint(self, tmp_path, prefix_orig_mod: bool):
+        from models import ConvTasNet
+
+        model = ConvTasNet(N=64, B=64, H=128, P=3, X=4, R=2, C=1)
+        state_dict = model.state_dict()
+        if prefix_orig_mod:
+            state_dict = {f"_orig_mod.{k}": v for k, v in state_dict.items()}
+
+        checkpoint_path = tmp_path / "model.pt"
+        config_dict = {
+            "model": {
+                "model_type": "convtasnet",
+                "convtasnet": {
+                    "N": 64, "B": 64, "H": 128, "P": 3, "X": 4, "R": 2, "C": 1,
+                },
+            }
+        }
+        torch.save(
+            {"model_state_dict": state_dict, "config": config_dict},
+            checkpoint_path,
+        )
+        return checkpoint_path, model
+
+    def test_loads_checkpoint_with_orig_mod_prefix(self, tmp_path):
+        """A checkpoint whose keys carry the torch.compile `_orig_mod.` prefix
+        still loads (prefix is stripped defensively)."""
+        checkpoint_path, reference_model = self._make_checkpoint(
+            tmp_path, prefix_orig_mod=True
+        )
+
+        loaded_model, _ = load_model_for_inference(str(checkpoint_path), device="cpu")
+
+        for p1, p2 in zip(reference_model.parameters(), loaded_model.parameters()):
+            assert torch.allclose(p1, p2)
+
+    def test_loads_checkpoint_without_orig_mod_prefix_unaffected(self, tmp_path):
+        """Normal (unprefixed) checkpoints are unaffected by the defensive strip."""
+        checkpoint_path, reference_model = self._make_checkpoint(
+            tmp_path, prefix_orig_mod=False
+        )
+
+        loaded_model, _ = load_model_for_inference(str(checkpoint_path), device="cpu")
+
+        for p1, p2 in zip(reference_model.parameters(), loaded_model.parameters()):
+            assert torch.allclose(p1, p2)

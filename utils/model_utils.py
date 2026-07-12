@@ -103,11 +103,34 @@ def format_parameter_count(num_params: int) -> str:
 def load_checkpoint_file(
     checkpoint_path: str, device: str = "cuda"
 ) -> Dict[str, Any]:
-    """Load checkpoint file from disk."""
+    """Load checkpoint file from disk.
+
+    ``weights_only=False`` is explicit (survey gap 13): our checkpoints carry a
+    pickled config dict (and now a provenance dict), and torch 2.6+ flipped the
+    default to True, which would refuse to unpickle them. This matches config.py.
+    """
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    return torch.load(checkpoint_path, map_location=device)
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+
+def read_wandb_run_id(checkpoint_path: str) -> Optional[str]:
+    """Peek a checkpoint for its saved W&B run id (survey gap 14).
+
+    Returns the id string written by newer checkpoints, or None for older
+    checkpoints and runs trained with W&B disabled. Loaded on CPU and discarded
+    immediately; only called on ``--resume``, so the extra read is negligible.
+    Never raises — a missing/unreadable checkpoint just yields None (caller falls
+    back to starting a fresh W&B run).
+    """
+    try:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+    run_id = ckpt.get("wandb_run_id") if isinstance(ckpt, dict) else None
+    del ckpt
+    return run_id
 
 
 def load_model_from_checkpoint(
@@ -190,6 +213,14 @@ def load_model_for_inference(
     state_dict = checkpoint["model_state_dict"]
     if model_type == "sepformer" and any(".transformer." in k for k in state_dict):
         state_dict = {k.replace(".transformer.", ".mdl."): v for k, v in state_dict.items()}
+
+    # Defensive torch.compile-artifact strip: the save side (train.py) already
+    # unwraps `_orig_mod` before saving, so our own checkpoints never carry the
+    # prefix. This guards externally-produced checkpoints (e.g. saved directly
+    # from a compiled model without unwrapping) so this generic loader doesn't
+    # silently 0-match every key and raise a confusing "missing keys" error.
+    if any(k.startswith("_orig_mod.") for k in state_dict):
+        state_dict = {k[len("_orig_mod."):]: v for k, v in state_dict.items()}
 
     model.load_state_dict(state_dict)
     model = model.to(device)
