@@ -1229,3 +1229,64 @@ def test_v41_fields_yaml_round_trip(tmp_path):
     back = load_pipeline_config_from_yaml(str(out_yaml)).diarization
     assert back.sortformer_head_policy == "merge"
     assert back.sortformer_merge_margin == 0.12
+
+
+# ---------------------------------------------------------------------------
+# Sortformer long-recording model routing (deployment/robustness)
+# ---------------------------------------------------------------------------
+
+
+def test_sortformer_long_audio_routing_defaults():
+    """Defaults: 240 s threshold, streaming-v2.1 long-audio model."""
+    d = PipelineConfig().diarization
+    assert d.sortformer_long_audio_threshold_s == 240.0
+    assert d.sortformer_long_audio_model_id == (
+        "nvidia/diar_streaming_sortformer_4spk-v2.1"
+    )
+
+
+@pytest.mark.parametrize("bad", [-0.1, -240.0, float("nan"), float("inf")])
+def test_sortformer_long_audio_threshold_invalid_rejected(bad):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_long_audio_threshold_s = bad
+    with pytest.raises(ValueError, match="sortformer_long_audio_threshold_s"):
+        cfg.__post_init__()
+
+
+@pytest.mark.parametrize("good", [0.0, 90.0, 240.0, 3600.0])
+def test_sortformer_long_audio_threshold_valid_accepted(good):
+    cfg = PipelineConfig()
+    cfg.diarization.sortformer_long_audio_threshold_s = good
+    cfg.__post_init__()   # must not raise (0 = routing disabled)
+
+
+def test_sortformer_long_audio_fields_reach_dataclass_from_dict():
+    cfg = load_pipeline_config_from_dict({
+        "diarization": {
+            "backend": "sortformer",
+            "sortformer_long_audio_threshold_s": 120.0,
+            "sortformer_long_audio_model_id": "nvidia/some-other-streaming-model",
+        }
+    })
+    d = cfg.diarization
+    assert d.sortformer_long_audio_threshold_s == 120.0
+    assert d.sortformer_long_audio_model_id == "nvidia/some-other-streaming-model"
+
+
+def test_sortformer_long_audio_fields_yaml_round_trip(tmp_path):
+    """The long-audio routing fields round-trip through YAML automatically."""
+    cfg = PipelineConfig()
+    cfg.diarization.backend = "sortformer"
+    cfg.diarization.sortformer_long_audio_threshold_s = 300.0
+    cfg.diarization.sortformer_long_audio_model_id = "nvidia/streaming-custom"
+    out_yaml = tmp_path / "long_audio.yaml"
+    save_pipeline_config_to_yaml(cfg, str(out_yaml))
+    back = load_pipeline_config_from_yaml(str(out_yaml)).diarization
+    assert back.sortformer_long_audio_threshold_s == 300.0
+    assert back.sortformer_long_audio_model_id == "nvidia/streaming-custom"
+
+
+# ---------------------------------------------------------------------------
+# apply_overrides / parse_cli_overrides — the shared `--set` / sweep mechanism
+# (A1). One dotted-path walker, one fail-loud policy (SCOPE §4.1).
+# ---------------------------------------------------------------------------

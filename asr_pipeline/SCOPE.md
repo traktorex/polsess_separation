@@ -189,9 +189,21 @@ deployment work starts:
   behavior; en → torchaudio `WAV2VEC2_ASR_BASE_960H`, author's choice);
   `configs/english.yaml` is the English preset.*
 - **Long recordings.** ~~60–90-minute recordings are untested~~ **Verified
-  2026-06-11**: end-to-end on a 1:35:29 recording (the longest available) via
-  `explore_pipeline.ipynb` — nothing broke, output looks fine. (Earlier:
-  ~15-minute 442dd69e, also good.) TODO closed.
+  2026-06-11** *(pyannote backend)*: end-to-end on a 1:35:29 recording (the
+  longest available) via `explore_pipeline.ipynb` — nothing broke, output looks
+  fine. (Earlier: ~15-minute 442dd69e, also good.) TODO closed.
+  **Sortformer backend (adopted 2026-07-04) reopened this** for its diarization
+  stage: the offline v1 model (`nvidia/diar_sortformer_4spk-v1`) runs the whole
+  file through two fully-global-attention encoders in one pass — O(T²) activation
+  memory, OOMs past ~5-6 min on a 12 GB GPU (observed on e14aa22f.wav, 32:47,
+  2026-07-06: `CUDA driver error: device not ready`). **Covered 2026-07-06** by
+  duration-threshold model routing in the diarization stage: recordings longer
+  than `diarization.sortformer_long_audio_threshold_s` (default 240 s) are routed
+  to the streaming model `diarization.sortformer_long_audio_model_id` (default
+  `nvidia/diar_streaming_sortformer_4spk-v2.1`), run offline via the same worker
+  with bounded windows + an Arrival-Order Speaker Cache (memory flat in duration,
+  identical output contract). The swap is announced with a loud warning, not
+  silent (SCOPE §4); set the threshold to 0 to disable routing.
 - **Adaptive stage application.** The platform pipeline must eventually treat
   its stages adaptively rather than as a fixed always-on chain — recordings
   where a stage has nothing legitimate to do should not be damaged by it.

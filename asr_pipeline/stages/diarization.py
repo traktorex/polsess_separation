@@ -612,13 +612,35 @@ class DiarizationStage(Stage):
             raise RuntimeError("PipelineContext.audio is None — no input loaded.")
         dcfg = self.config
 
+        total_dur = len(ctx.audio) / ctx.sample_rate
         _log(
-            f"run: diarizing {len(ctx.audio)/ctx.sample_rate:.1f}s via sortformer "
+            f"run: diarizing {total_dur:.1f}s via sortformer "
             f"(num_speakers={dcfg.num_speakers}, "
             f"head_policy={dcfg.sortformer_head_policy})..."
         )
+        # Long-recording model routing. The default offline v1 model is O(T^2)
+        # activation memory (whole file in one full-attention pass) and OOMs past
+        # ~5-6 min on 12 GB; recordings longer than the threshold are routed to the
+        # streaming model, which processes bounded windows (memory flat in duration,
+        # identical output contract). Deliberate, documented substitution — NOT
+        # silent: a knob gates it and this warning announces it (SCOPE §4). No-op
+        # when the configured model is already streaming, or when the threshold is 0.
+        model_id = dcfg.sortformer_model_id
+        thr = dcfg.sortformer_long_audio_threshold_s
+        already_streaming = "streaming" in model_id.lower()
+        if thr > 0 and not already_streaming and total_dur > thr:
+            model_id = dcfg.sortformer_long_audio_model_id
+            _log(
+                f"run: WARNING long-recording model swap — {total_dur:.1f}s exceeds "
+                f"sortformer_long_audio_threshold_s={thr:.1f}s; routing "
+                f"{dcfg.sortformer_model_id} (v1) -> {model_id} (v2.1) because "
+                f"offline v1 is O(T^2) memory and OOMs on long audio."
+            )
+        # The routed model runs per-call in the worker subprocess, so no reload is
+        # needed here (and load_signature stays config-only — it never sees this
+        # per-recording swap).
         probs, frame_rate_s = run_sortformer_worker(
-            self._venv_py, dcfg.sortformer_model_id, ctx.audio, ctx.sample_rate,
+            self._venv_py, model_id, ctx.audio, ctx.sample_rate,
         )
         # L2 — binarize (flat threshold) + top-2 selection.
         turns, diag = sortformer_turns_from_probs(
@@ -698,7 +720,6 @@ class DiarizationStage(Stage):
         seg_df = diar_to_segments_df(diar)
         ovl_df = _overlaps_df_from_annotation(diar)
 
-        total_dur = len(ctx.audio) / ctx.sample_rate
         ctx.diarization = DiarizationResult(
             segments_df=seg_df,
             overlaps_df=ovl_df,

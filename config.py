@@ -15,7 +15,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_final_128_v2",
+            "/home/user/datasets/PolSESS_C_new_64/PolSESS_C_new_64",
         )
     )
 
@@ -454,6 +454,13 @@ def load_config_from_dict(config_dict: dict) -> Config:
     data_dict = dict(config_dict.get("data", {}) or {})
     model_dict = dict(config_dict.get("model", {}) or {})
     training_dict = dict(config_dict.get("training", {}) or {})
+
+    # Backward compat: drop nested params for models removed from the registry so
+    # that checkpoints/YAMLs written before their removal still load. `resepformer`
+    # was removed 2026-06-17 (commit 0a27a28); its config block lingers in older
+    # checkpoints as `resepformer: None`.
+    for removed_model in ("resepformer",):
+        model_dict.pop(removed_model, None)
 
     # Handle nested dataset-specific params
     polsess_dict = data_dict.pop("polsess", None)

@@ -122,6 +122,99 @@ class TestVariantSelection:
         assert "mix" in sample1
         assert "clean" in sample1
 
+    @patch("pandas.read_csv")
+    def test_val_variant_selection_deterministic_per_index(self, mock_read_csv):
+        """Validation variant choice is seeded by sample index: stable across
+        epochs and across dataset instances (the property val curves rely on)."""
+        import pandas as pd
+
+        mock_df = pd.DataFrame(
+            {
+                "mixFile": ["mix1.wav"],
+                "speaker1File": ["s1.wav"],
+                "speaker2File": ["s2.wav"],
+                "sceneFile": ["scene1.wav"],
+                "eventFile": ["event1.wav"],
+                "reverbForSpeaker1": ["s1_reverb.wav"],
+                "reverbForSpeaker2": ["s2_reverb.wav"],
+                "reverbForEvent": ["ev_reverb.wav"],
+            }
+        )
+        mock_read_csv.return_value = mock_df
+
+        dataset_a = PolSESSDataset(data_root="/fake/path", subset="val", task="ES")
+        dataset_b = PolSESSDataset(data_root="/fake/path", subset="val", task="ES")
+
+        chosen = {}
+        for idx in range(50):
+            first = dataset_a._choose_variant(True, idx)
+            # Same index -> same variant on every call ("across epochs")...
+            for _ in range(5):
+                assert dataset_a._choose_variant(True, idx) == first
+            # ...and across independent dataset instances.
+            assert dataset_b._choose_variant(True, idx) == first
+            chosen[idx] = first
+
+        # Deterministic must not mean constant: per-index seeding still
+        # covers multiple variants over the index range.
+        assert len(set(chosen.values())) > 1
+        # Outdoor (no-reverb) path is deterministic too.
+        assert dataset_a._choose_variant(False, 7) == dataset_b._choose_variant(False, 7)
+
+    @patch("pandas.read_csv")
+    @patch("torchaudio.load")
+    def test_val_getitem_variant_stable_across_epochs(self, mock_load, mock_read_csv):
+        """__getitem__ on the val subset returns the same background_complexity
+        for the same index on every access."""
+        import pandas as pd
+
+        mock_df = pd.DataFrame(
+            {
+                "mixFile": ["mix1.wav"],
+                "speaker1File": ["s1.wav"],
+                "speaker2File": ["s2.wav"],
+                "sceneFile": ["scene1.wav"],
+                "eventFile": ["event1.wav"],
+                "reverbForSpeaker1": ["s1_reverb.wav"],
+                "reverbForSpeaker2": ["s2_reverb.wav"],
+                "reverbForEvent": ["ev_reverb.wav"],
+            }
+        )
+        mock_read_csv.return_value = mock_df
+        mock_load.return_value = (torch.zeros(16000), 16000)
+
+        dataset = PolSESSDataset(data_root="/fake/path", subset="val", task="ES")
+
+        variants = {dataset[0]["background_complexity"] for _ in range(10)}
+        assert len(variants) == 1
+
+    @patch("pandas.read_csv")
+    def test_train_variant_selection_varies(self, mock_read_csv):
+        """Training variant choice is not index-frozen: repeated draws for the
+        same index sample across the compatible set."""
+        import pandas as pd
+        import random
+
+        mock_df = pd.DataFrame(
+            {
+                "mixFile": ["mix1.wav"],
+                "speaker1File": ["s1.wav"],
+                "speaker2File": ["s2.wav"],
+                "sceneFile": ["scene1.wav"],
+                "eventFile": ["event1.wav"],
+                "reverbForSpeaker1": ["s1_reverb.wav"],
+                "reverbForSpeaker2": ["s2_reverb.wav"],
+                "reverbForEvent": ["ev_reverb.wav"],
+            }
+        )
+        mock_read_csv.return_value = mock_df
+
+        dataset = PolSESSDataset(data_root="/fake/path", subset="train", task="ES")
+
+        random.seed(0)
+        draws = {dataset._choose_variant(True, 0) for _ in range(50)}
+        assert len(draws) > 1
+
 
 class TestLazyLoading:
     """Test lazy loading implementation for MM-IPC variants."""

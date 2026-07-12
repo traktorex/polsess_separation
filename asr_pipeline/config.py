@@ -208,6 +208,20 @@ class DiarizationConfig:
     # (SORTFORMER_FAILURE_ANATOMY.md): true miscount-head margins were 0.15-0.57,
     # so 0.10 splits cleanly. Finite, >= 0.
     sortformer_merge_margin: float = 0.10
+    # --- Long-recording model routing (deployment/robustness, not a quality knob) ---
+    # The offline v1 model runs the WHOLE file through two 18-layer fully-global-
+    # attention encoders in one pass — O(T^2) activation memory (~5-6 min ceiling on
+    # a 12 GB GPU; observed OOM on e14aa22f.wav, 32:47, 2026-07-06). Recordings
+    # strictly LONGER than this threshold (s) are routed to the streaming model
+    # below, which processes bounded windows with an Arrival-Order Speaker Cache
+    # (memory flat in duration; identical (T, 4) @ 0.08 s output contract). 0
+    # disables routing (always use sortformer_model_id). 240 s keeps eval fragments
+    # (<= ~95 s) far below the threshold — byte-identical to v1 — while covering
+    # long recordings well before v1's OOM ceiling. No-op when sortformer_model_id
+    # already names a streaming model. Deliberate, documented substitution (a knob +
+    # a loud warning, not a silent swap — SCOPE §4). >= 0.
+    sortformer_long_audio_threshold_s: float = 240.0
+    sortformer_long_audio_model_id: str = "nvidia/diar_streaming_sortformer_4spk-v2.1"
 
 
 @dataclass
@@ -987,6 +1001,9 @@ class PipelineConfig:
         _require_range(dcfg.sortformer_merge_margin,
                        "diarization.sortformer_merge_margin", lo=0.0,
                        note="cosine margin; only used when sortformer_head_policy='merge'")
+        _require_range(dcfg.sortformer_long_audio_threshold_s,
+                       "diarization.sortformer_long_audio_threshold_s", lo=0.0,
+                       note="seconds; 0 = disable long-audio model routing")
 
         _require_range(self.enhancement.observation_mix_ratio,
                        "enhancement.observation_mix_ratio", lo=0.0, hi=1.0,

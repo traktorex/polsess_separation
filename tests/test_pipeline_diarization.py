@@ -405,6 +405,90 @@ def test_sortformer_worker_nonzero_exit_fails_loud(tmp_path, monkeypatch):
         stage.run(_ctx(np.zeros(16_000, dtype=np.float32)))
 
 
+# --- Long-recording model routing -------------------------------------------
+
+# A minimal 2-head active body so the turn-builder yields a clean 2-speaker set;
+# reused by every routing test (audio duration, not head activity, drives routing).
+_ROUTING_BODY = (
+    "T = 100\n"
+    "probs = [[0.0, 0.0, 0.0, 0.0] for _ in range(T)]\n"
+    "for t in range(0, 60):   probs[t][0] = 0.9\n"
+    "for t in range(40, 100): probs[t][1] = 0.9\n"
+)
+
+
+def _run_sortformer_stage(tmp_path, monkeypatch, config, audio_seconds, logged):
+    """Drive one sortformer stage run with the canned stub worker. Spies on
+    `run_sortformer_worker` (still invoking the real subprocess) so the test sees
+    exactly which model id the stage handed the worker as `--model`."""
+    stub = _stub_venv_py(tmp_path, _ROUTING_BODY)
+    monkeypatch.setenv("SORTFORMER_VENV_PY", str(stub))
+    monkeypatch.setattr(
+        "asr_pipeline.stages.diarization._log", lambda m: logged.append(m)
+    )
+    import asr_pipeline.stages.diarization as diar_mod
+    real_worker = diar_mod.run_sortformer_worker
+    seen = {}
+
+    def _spy(venv_py, model_id, audio, sample_rate):
+        seen["model_id"] = model_id     # = the argv --model (real worker uses it verbatim)
+        return real_worker(venv_py, model_id, audio, sample_rate)
+
+    monkeypatch.setattr(diar_mod, "run_sortformer_worker", _spy)
+
+    stage = DiarizationStage(config)
+    stage.load(torch.device("cpu"))
+    sr = 16_000
+    stage.run(_ctx(np.zeros(int(sr * audio_seconds), dtype=np.float32), sr=sr))
+    return seen["model_id"]
+
+
+def test_sortformer_short_audio_keeps_v1(tmp_path, monkeypatch):
+    # Below the (small test) threshold → the configured v1 model, no swap, no warning.
+    logged: list[str] = []
+    cfg = DiarizationConfig(
+        backend="sortformer", sortformer_long_audio_threshold_s=1.0
+    )
+    model_id = _run_sortformer_stage(tmp_path, monkeypatch, cfg, 0.5, logged)
+    assert model_id == "nvidia/diar_sortformer_4spk-v1"
+    assert not any("long-recording model swap" in m for m in logged)
+
+
+def test_sortformer_long_audio_routes_to_streaming(tmp_path, monkeypatch):
+    # Above the threshold → the streaming long-audio model + a loud warning.
+    logged: list[str] = []
+    cfg = DiarizationConfig(
+        backend="sortformer", sortformer_long_audio_threshold_s=1.0
+    )
+    model_id = _run_sortformer_stage(tmp_path, monkeypatch, cfg, 2.0, logged)
+    assert model_id == "nvidia/diar_streaming_sortformer_4spk-v2.1"
+    assert any("long-recording model swap" in m for m in logged)
+
+
+def test_sortformer_threshold_zero_disables_routing(tmp_path, monkeypatch):
+    # threshold == 0 → routing off, v1 even on long audio, no warning.
+    logged: list[str] = []
+    cfg = DiarizationConfig(
+        backend="sortformer", sortformer_long_audio_threshold_s=0.0
+    )
+    model_id = _run_sortformer_stage(tmp_path, monkeypatch, cfg, 5.0, logged)
+    assert model_id == "nvidia/diar_sortformer_4spk-v1"
+    assert not any("long-recording model swap" in m for m in logged)
+
+
+def test_sortformer_already_streaming_no_swap(tmp_path, monkeypatch):
+    # Configured model already streaming → no swap, no warning even past threshold.
+    logged: list[str] = []
+    cfg = DiarizationConfig(
+        backend="sortformer",
+        sortformer_model_id="nvidia/diar_streaming_sortformer_4spk-v2.1",
+        sortformer_long_audio_threshold_s=1.0,
+    )
+    model_id = _run_sortformer_stage(tmp_path, monkeypatch, cfg, 5.0, logged)
+    assert model_id == "nvidia/diar_streaming_sortformer_4spk-v2.1"
+    assert not any("long-recording model swap" in m for m in logged)
+
+
 # ===========================================================================
 # v4.1 rehabilitation levers (L1 merge / L2 hysteresis / L3 coverage / L4 gate)
 # V41_PREREG.md. Pure helpers unit-tested directly; stage wiring with the same
