@@ -1,3 +1,4 @@
+# Covers venv/ (main training/eval) only — see CLAUDE.md's "Virtual Environments" section for the asr_pipeline/ isolated venvs (Sortformer, CohereX, Brouhaha) and the SPMamba3-only venv_mamba3/.
 speechbrain>=1.0.3
 torch>=2.8.0
 torchaudio>=2.8.0

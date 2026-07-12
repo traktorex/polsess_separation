@@ -57,6 +57,9 @@ python evaluate.py --checkpoint path/to/model.pt --no-pesq --no-stoi
 python evaluate.py --checkpoint path/to/model.pt --dataset librimix --librimix-root /home/user/datasets/LibriMix/Libri2Mix
 # Save CSV
 python evaluate.py --checkpoint path/to/model.pt --output results.csv
+# Batch eval of the thesis checkpoint set (reads experiments/thesis_eval_manifest.csv by default;
+# bs=1 exact per-sample scoring → aggregate CSV + <stem>_per_sample.csv, provenance columns)
+python evaluate_all.py --resume
 ```
 
 **Testing:**
@@ -79,10 +82,25 @@ python scripts/benchmark_inference.py
 python scripts/benchmark_training.py
 ```
 
+**Thesis audit artifacts (citable, CPU-only):**
+```bash
+python scripts/audit_mmipc.py           # MM-IPC reconstruction lossless to the 16-bit PCM floor (exit≠0 on violation)
+python scripts/audit_split_leakage.py   # train↔{val,test} path disjointness (val∩test scene sharing reported informational)
+python scripts/model_manifest.py        # per-config param counts → docs/generated/model_manifest.{csv,md}
+```
+
 **Interactive:**
 ```bash
 jupyter notebook test_model_interactive.ipynb
 jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr_pipeline/ package (see ASR section)
+```
+
+**ASR pipeline (CLI front door — preflights env/checkpoints before any model load):**
+```bash
+python -m asr_pipeline run --config asr_pipeline/configs/sweep_best_e31_refineplus.yaml \
+    --input rec.wav --write-outputs <eval_root> --set diarization.backend=pyannote
+python -m asr_pipeline batch --split clarin_dev --mode no_enh        # or --manifest/--glob/--inputs + --out-root
+python -m asr_pipeline score --eval-root <eval_root> --out-dir <csv_dir>
 ```
 
 ## Architecture Overview
@@ -90,9 +108,9 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 **Configuration (`config.py`):** Dataclasses (`DataConfig`, `ModelConfig`, `TrainingConfig`) with nested model/dataset params. Priority: defaults < env vars < YAML < CLI args. Use `get_config_from_args()` for CLI, `load_config_for_run(wandb.config)` for sweeps.
 
 **Model Registry (`models/__init__.py`):** Dict-based. `get_model("name")` returns class. Mamba models auto-excluded without `mamba-ssm`.
-- `convtasnet` (~8M), `sepformer` (~26M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M) — cross-platform
+- `convtasnet` (~8.7M for SB/C=2; the oft-quoted 8.64M is the ES/C=1 build — see `docs/generated/model_manifest.md`), `sepformer` (~26M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M) — cross-platform
   - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched); `attn_dropout` (default 0.1, upstream hard-coded) covers attention-path dropout — FSMN-gate dropout stays fixed at 0.1. Sweep override key `dropout` routes to `attn_dropout`. Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
-- `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.6M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only
+- `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.0M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only (measured builds: `docs/generated/model_manifest.md`)
 
 **Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`.
 
@@ -112,9 +130,12 @@ jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr
 
 Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. `PipelineConfig.deterministic` (default `true`) forces deterministic cuDNN algorithms at `Pipeline.__init__` — the enhancement conv stage is otherwise the pipeline's *only* run-to-run nondeterminism source (≈1e-7 float noise in `enhanced_full` that WhisperX can amplify into a flipped token; every other stage is deterministic given fixed input). Costs a ~2× enhancement-stage slowdown (no conv autotuning); set `false` for non-reproducible-but-faster dev runs. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping. Config serializers (`save_pipeline_config_to_yaml`, the `metadata.json` snapshot in `io.write_pipeline_outputs`) mask `diarization.hf_token` as `REDACTED` so live tokens never land in output files.
 
+The package has a CLI front door: `python -m asr_pipeline run|batch|score`. `run`/`batch` call `asr_pipeline/preflight.py` (fail-loud env/checkpoint checks — missing `$SORTFORMER_VENV_PY` etc. fails in seconds, **before** any model load; `num2words` warn-only, SCOPE §10 q2) and accept repeatable `--set stage.knob=value` dotted overrides (`config.apply_overrides` — the one override mechanism; the sweep script imports it). `asr_pipeline/batch.py` `run_batch` owns the batch loop: per-recording failure isolation (`failures.csv`, batch continues — SCOPE §4.2), completion sentinel = `metadata.json` in the target subdir (`--force` re-runs), `--mode full|no_sep|no_enh|minimal` ablation presets, and the single home of the GPU-teardown block. `scripts/sweep_pipeline.py`'s run loop delegates to it while pinning its legacy `transcript_A.txt` sentinel, so completed sweep trees never recompute. `Pipeline(config, on_event=...)` emits per-stage timing events (load vs run seconds split, measured around the actual calls) that land in `metadata.json`/`run_meta.json` — the data that gates the Tier-2 stage-major batch rework.
+
 **`asr_pipeline/eval/`** — two-layer scoring (L2 + L3). `evaluate_recording(rec) → ScoreCard` runs both layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root. (L1/DER retired 2026-06-11, SCOPE §10 q8: no valid reference diarization exists — `eval/layer1.py` + the `compute_der`/`parse_rttm` plumbing deleted.)
 - **L2 audio quality** — intrusive SI-SDR / PESQ-WB / STOI (chunked, median-aggregated, speech-presence filtered) when oracle audio is available; non-intrusive TorchAudio-SQUIM (chunked, mean-aggregated) always.
-- **L3 ASR** — cpWER + tcpWER per ablation mode (full / no-sep / no-enh), ORC-WER on the mixture baseline. Backed by `meeteval`.
+- **L3 ASR** — cpWER + tcpWER **+ cpCER** (the campaign's primary metric) per ablation mode (full / no-sep / no-enh), ORC-WER on the mixture baseline. Backed by `meeteval`; `compute_layer3` routes through `eval/metrics.per_fragment_metrics`, which also owns the ORC/MIMO combinatorial blow-up guard (long recordings skip those metrics with a printed note instead of hanging — the guard formerly lived only in the explore notebook).
+- **Campaign statistics** — `eval/stats.py`: recording-clustered paired bootstrap, Holm-Bonferroni, Benjamini-Hochberg, micro-averages, strata assignment — extracted bit-identically (fixed-seed golden tests) from `scripts/rescore_stratified.py`, which is now a thin driver with unchanged CLI/output.
 
 Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_file`, `cpwer_meeteval`, `orc_wer_meeteval`.
 
@@ -123,7 +144,7 @@ Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_f
 - `~/datasets/clarin_all_2speakers/` — full CLARIN 2-speaker download (no oracle channels). `clarin_download/<id>.wav` raw inputs (+ `Korpus.csv`, `Korpus_with_filename.csv`); `diarization/<id>.json` pyannote outputs; `enhanced_mossformer/<id>.wav` MossFormerGAN-enhanced; `auto_transcription_raw/<id>.{txt,json}` and `auto_transcription_enhanced_mossformer/<id>.{txt,json}` WhisperX transcripts.
 
 **ASR helper scripts (`scripts/`)**
-- `run_pipeline_on_recording.py` — full pipeline on one recording in three ablation modes (`pipeline` / `pipeline_nosep` / `pipeline_noenh`); drives the L3 WER table.
+- `run_pipeline_on_recording.py` — full pipeline on one recording in three ablation modes (`pipeline` / `pipeline_nosep` / `pipeline_noenh`); drives the L3 WER table. Now a thin wrapper over `asr_pipeline.batch.run_batch` (same CLI). (`batch_pipeline_noenh.py` deleted 2026-07-12 — subsumed by `python -m asr_pipeline batch --mode no_enh`.)
 - `prepare_eval_references.py` — cache enhanced oracles + GT-style transcripts for the eval module.
 - `enhance_clarin_debleed.py` — batch MossFormerGAN_SE_16K on oracle debleed channels.
 - `diarize_clarin_2speakers.py` — pyannote over the full 2-speaker download → `diarization/<id>.json`.
@@ -131,7 +152,7 @@ Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_f
 - `score_fragment_acoustics.py` — objective acoustic-complexity scorer for the 128 CLARIN eval fragments (SQUIM, DNSMOS ONNX, Brouhaha SNR/C50, WADA-SNR, LUFS, clipping), calibrated vs the author's 16 by-ear grades; writes `acoustic_scores.csv` + `ACOUSTIC_SCORES_REPORT.md` beside the fragments. Brouhaha runs in an isolated venv (`/tmp/brouhaha_venv`, override `BROUHAHA_VENV_PY`/`BROUHAHA_CKPT`) because its pins (numpy 1.x, pyannote.audio ≤3.3.0) conflict with the main venv; if absent, the script falls back to WADA-SNR and says so in the report.
 - `compare_asr.py` — held-out WhisperX-vs-Cohere comparison via a **fixed-audio ASR-only swap** (holds the dr_refineplus per-speaker streams constant, varies only the transcriber). Prereq: `sweep_pipeline.py --configs dr_refineplus --recordings <ids>` to produce the streams + WhisperX transcripts; then `compare_asr.py --split test` (needs `$COHEREX_VENV_PY`) adds the Cohere pass (reuses the wired `_CohereXBackend`), dumps per-fragment bundles (`whisperx_/cohere_/gt_{A,B}.txt`) for the per-transcript eyeball pass, and scores cpWER/cpCER per-fragment + micro-avg under `<eval>/_forensics/asr_compare/`. `--gt2-root` adds a second, differently-seeded GT for the cross-seed read. Background: cross-arch WER is **reference-seed biased (~±4 pp)** — each hand-corrected GT mildly flatters the ASR it was seeded from (`_forensics/ANCHORING_EYEBALL_SYNTHESIS.md`); read numbers two ways + use the reference-free eyeball as tiebreak.
 
-**Training Flow:** `train.py` → config → dataloaders → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning).
+**Training Flow:** `train.py` → config → `training/setup.py` builders (`build_dataloaders` / `build_trainer`, shared with `train_sweep.py` — the two mains keep only their genuine differences) → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning). Every checkpoint embeds a provenance manifest (`utils.collect_run_manifest`: git SHA+dirty, torch/CUDA/cuDNN/mamba-ssm versions, GPU, hostname, seed, argv, W&B run id) and writes a human-readable `run_manifest.yaml` beside `config.yaml`; on `--resume` the saved W&B run id is reused (`resume="must"`). Old checkpoints without these keys load fine.
 
 **Checkpoints:** Saved to `checkpoints/{model_type}/{task}/{run_name}/`. Run name comes from W&B when available, otherwise timestamp. Each directory includes `config.yaml` for reproducibility. By default only the best checkpoint is kept; `save_all_checkpoints: true` keeps every improvement.
 
@@ -167,7 +188,8 @@ training:
 
 ## Key Technical Details
 
-- **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow. Most models use float16 + GradScaler; Mamba models **and MossFormer2** use bfloat16 without GradScaler (dispatch on `model_type` in `training/trainer.py:_setup_amp`). MossFormer2's squared-ReLU attention overflows fp16 once activations sharpen — first seen as NaN val SI-SDR (fixed by fp32 validation), then as training NaNs at low `attn_dropout` / higher LR in the 128k sweep.
+- **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow (`apply_eps_patch` — patches **ConvTasNet's SpeechBrain lobe only**; other architectures are unaffected by it). Most models use float16 + GradScaler; Mamba models **and MossFormer2** use bfloat16 without GradScaler (dispatch on `model_type` in `training/trainer.py:_setup_amp`). MossFormer2's squared-ReLU attention overflows fp16 once activations sharpen — first seen as NaN val SI-SDR (fixed by fp32 validation), then as training NaNs at low `attn_dropout` / higher LR in the 128k sweep.
+- **Training determinism (`training.deterministic`, tri-state):** unset/`null` (default) = legacy behavior — cuDNN deterministic + no benchmark, `use_deterministic_algorithms` NOT called; `true` = strict opt-in (`torch.use_deterministic_algorithms(warn_only=True)` + `CUBLAS_WORKSPACE_CONFIG`); `false` = `cudnn.benchmark` conv-autotune speedup, non-deterministic. Train DataLoaders use a seeded `torch.Generator` + `worker_init_fn`, so the MM-IPC variant stream is reproducible by contract. Gotcha: curriculum learning mutates the dataset's `allowed_variants` in place and only works because workers re-fork each epoch — never enable `persistent_workers` with a curriculum active.
 - **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix. Skipped for Mamba models. `mossformer2` is compiled with `dynamic=False` (per-shape static specialization): its vendored rotary block disables the seq-len cache (`cache_if_possible=False`) and its token-shift/group-rearrange can't be lowered under symbolic shapes — so fixed-length crops compile once, new lengths trigger a one-time static recompile. Per-architecture dispatch lives in `compile_for_model_type` (`utils/model_utils.py`), shared by `train.py` and `train_sweep.py`.
 - **MM-IPC (Mix Modification by Inverted Phase Cancellation):** Augmentation that randomly varies background complexity during training by subtracting audio layers from the full mix. Indoor variants (with reverb): SER/SR/ER/R. Outdoor variants (no reverb): SE/S/E/C. Letters indicate what's present: S=scene, E=event, R=reverb, C=clean. Implemented via lazy loading in `datasets/polsess_dataset.py`. Validation uses deterministic selection (seeded by sample index).
 - **Curriculum Learning:** Configure in YAML `training.curriculum_learning`. Progressive variant introduction + optional LR scheduler gating. Note: when curriculum learning is active, the LR scheduler is **disabled by default** until a curriculum entry includes `lr_scheduler: start` — omitting this key means the scheduler never runs.
@@ -197,7 +219,7 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 
 1. **NaN in SI-SDR:** AMP underflow — EPS patch should handle it. If not, `use_amp: false`. The trainer skips NaN/Inf batches; after 1000 consecutive NaN batches it aborts the run (`ConsecutiveNaNError` → `SystemExit(1)`, sweep-friendly — see `MAX_CONSECUTIVE_NAN_BATCHES` in `training/trainer.py`).
 2. **Memory overflow:** Reduce `batch_size`, use `grad_accumulation_steps` to compensate.
-3. **Config precedence:** CLI > YAML > env vars > defaults. Additionally, `Config.__post_init__` silently forces the model's output source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2), overriding whatever the YAML says.
+3. **Config precedence:** CLI > YAML > env vars > defaults. Additionally, `Config.__post_init__` forces the model's output source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2), overriding whatever the YAML says — it prints a line when it actually changes the value.
 4. **MambaTasNet NaN:** Deep configs need `residual_in_fp32: true`.  `grad_clip_norm: 1.0` (not 5.0) might help too.
 5. **Mamba on Windows:** Requires WSL2 + CUDA toolkit 12.4+. Non-Mamba models work natively.
 6. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr`, not dict access.

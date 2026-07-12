@@ -1,10 +1,12 @@
 # PolSESS Speech Separation for Polish ASR Preprocessing
 
-PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, SPMamba, Mamba-TasNet, DPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
+PyTorch implementation of speech separation on the PolSESS dataset using multiple architectures (ConvTasNet, DPRNN, SepFormer, MossFormer2, SPMamba, Mamba-TasNet, DPMamba). Trained models will be used for preprocessing Polish ASR on real conversational speech (CLARIN corpus).
 
 **Key Feature**: PolSESS includes realistic acoustic conditions simulation (reverb + scene sounds + events), unlike other datasets (LibriMix), leading to better generalization on real speech.
 
 ## Current Performance (March 2026)
+
+> Early baselines from the initial architecture survey and DPRNN HPO run — numbers below predate MossFormer2 and the 16k/32k/64k/128k scaling work. See the thesis for final results.
 
 **Baseline Experiments Complete** — SB Task (2-Speaker Separation):
 
@@ -43,7 +45,7 @@ PyTorch implementation of speech separation on the PolSESS dataset using multipl
 | LibriSpeechMixASR | large | 18.80 |
 | REAL-M | large | 63.31 |
 
-See [`sweeps/EXPERIMENT_LOG.md`](sweeps/EXPERIMENT_LOG.md) for full experimental details.
+See [`sweeps/EXPERIMENT_LOG_monolithic.md`](sweeps/EXPERIMENT_LOG_monolithic.md) for full experimental details.
 
 ## Features
 
@@ -68,10 +70,17 @@ polsess_separation/
 │   ├── spmamba.py            # SPMamba (State-space model)
 │   ├── mamba_tasnet.py       # Mamba-TasNet (single-path BiMamba)
 │   ├── dpmamba.py            # DPMamba (dual-path BiMamba)
-│   └── mamba/                # BiMamba building blocks (from xi-j/Mamba-TasNet)
-│       ├── selective_scan_interface.py
-│       ├── bimamba.py
-│       └── mamba_blocks.py
+│   ├── mamba/                 # BiMamba building blocks (from xi-j/Mamba-TasNet)
+│   │   ├── selective_scan_interface.py
+│   │   ├── bimamba.py
+│   │   └── mamba_blocks.py
+│   └── mossformer2/           # MossFormer2, vendored from ClearerVoice-Studio
+│       ├── __init__.py       # Project wrapper (MossFormer2 class + registry hook)
+│       ├── mossformer2.py
+│       ├── mossformer2_block.py
+│       ├── fsmn.py
+│       ├── conv_module.py
+│       └── layer_norm.py
 │
 ├── datasets/                  # Dataset handling
 │   ├── polsess_dataset.py    # PolSESS with MM-IPC augmentation
@@ -87,11 +96,26 @@ polsess_separation/
 │   ├── wandb_logger.py       # Experiment tracking
 │   └── logger.py             # Logging setup
 │
-├── asr/                       # ASR evaluation (WER/CER via Whisper)
-│   ├── evaluate_asr.py       # Unified evaluation (separation/mixture/baseline)
-│   ├── dataset.py            # LibriSpeechMixDataset + RealMDataset
-│   ├── metrics.py            # WER/CER via jiwer
-│   └── transcribe.py         # WhisperTranscriber wrapper
+├── asr/                       # ASR notebooks driving the asr_pipeline/ package
+│   ├── explore_pipeline.ipynb    # Interactive per-stage frontend for asr_pipeline/
+│   ├── evaluate_pipeline.ipynb   # L2 audio-quality + L3 WER eval vs CLARIN oracles
+│   ├── clarin_fragments.ipynb    # Select CLARIN test fragments
+│   ├── clarin_subset_review.ipynb
+│   └── archive/               # Pre-CLARIN one-shot ASR flow (parked; old asr. imports)
+│
+├── asr_pipeline/               # Productionised CLARIN speech-sep ASR pipeline
+│   ├── pipeline.py            # Orchestrator: 7 fixed-order stages, phase-major
+│   ├── config.py              # Nested dataclass config (paired with configs/*.yaml)
+│   ├── stages/                # diarization, routing, enhancement, separation,
+│   │                          #   post_separation_processing, assembly, transcription
+│   ├── eval/                  # L2 (SI-SDR/PESQ/STOI/SQUIM) + L3 (cpWER/tcpWER) scoring
+│   ├── configs/                # default.yaml + ablation/language presets
+│   └── SCOPE.md               # Scope contract — read before editing this package
+│
+├── scripts/                    # Benchmarks + CLARIN/ASR-pipeline helper scripts
+│   ├── benchmark_inference.py # Real-time factor / latency benchmarking (thesis data)
+│   ├── benchmark_training.py  # Training throughput benchmarking (thesis data)
+│   └── ...                    # diarize/transcribe/eval-prep scripts for asr_pipeline/
 │
 ├── config.py                  # Configuration dataclasses
 ├── train.py                   # Training entry point
@@ -101,22 +125,24 @@ polsess_separation/
 │   ├── convtasnet/
 │   ├── dprnn/
 │   ├── sepformer/
+│   ├── mossformer2/            # matched (~26M) / full (~55.7M) configs
 │   ├── spmamba/
 │   ├── mamba_tasnet/          # XS/S/M/L configs
 │   └── dpmamba/               # XS/S/M/L configs
 │
 ├── sweeps/                    # W&B sweep configurations and logs
-│   ├── EXPERIMENT_LOG.md     # Complete experimental results
+│   ├── EXPERIMENT_LOG_monolithic.md  # Complete experimental results
 │   ├── 1-baselines-SB/       # Baseline sweep configs
 │   └── 3-hyperparam-opt/     # Hyperparameter optimization sweeps
 │
-└── tests/                     # Comprehensive test suite (264 tests, 17 files)
+└── tests/                     # Comprehensive test suite (44 files, ~950 tests)
     ├── test_model.py
     ├── test_model_factory.py
     ├── test_dataset.py
     ├── test_mmipc.py
     ├── test_config_yaml.py
     ├── test_evaluation.py
+    ├── test_pipeline_*.py     # ~half the suite: asr_pipeline/ stages + eval
     └── ...
 ```
 
@@ -125,7 +151,7 @@ polsess_separation/
 - **Model Factory Pattern**: Justified for comparing 6+ different architectures
 - **Direct DataLoader Creation**: Explicit and easy to modify (no dataset factory)
 - **Single `evaluate.py`**: All evaluation logic in one file (standard research pattern)
-- **Comprehensive Tests**: 264 tests ensuring correctness and reproducibility
+- **Comprehensive Tests**: ~950 tests across 44 files ensuring correctness and reproducibility
 - **Config-Driven**: YAML configs for reproducible experiments
 
 ## Quick Start
@@ -143,14 +169,14 @@ pip install -r requirements.txt
 python train.py --config experiments/dprnn/dprnn_baseline.yaml
 
 # Override model or task at the CLI
-python train.py --config experiments/baseline.yaml --model-type spmamba
-python train.py --config experiments/baseline.yaml --task SB
+python train.py --config experiments/dprnn/dprnn_baseline.yaml --model-type spmamba
+python train.py --config experiments/dprnn/dprnn_baseline.yaml --task SB
 
 # Disable W&B logging
-python train.py --config experiments/baseline.yaml --no-wandb
+python train.py --config experiments/dprnn/dprnn_baseline.yaml --no-wandb
 
 # Resume from checkpoint
-python train.py --config experiments/baseline.yaml --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
+python train.py --config experiments/dprnn/dprnn_baseline.yaml --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 
 # See all options
 python train.py --help
@@ -162,9 +188,9 @@ python train.py --help
 
 ```bash
 # Register a sweep
-wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml
 
-# Run an agent (use /run-sweep workflow for tmux crash-resistance)
+# Run an agent (inside tmux for crash-resistance)
 wandb agent <sweep_id>
 ```
 
@@ -241,6 +267,7 @@ All configuration is centralized in [`config.py`](config.py) with three sections
 - `ConvTasNetParams`: N, kernel_size, stride, B, H, P, X, R, C, norm_type, mask_nonlinear
 - `DPRNNParams`: N, kernel_size, stride, C, num_layers, chunk_size, rnn_type, hidden_size, bidirectional
 - `SepFormerParams`: N, kernel_size, stride, C, num_blocks, num_layers, d_model, nhead, d_ffn, chunk_size
+- `MossFormer2Params`: N, kernel_size, C, num_blocks, attn_dropout (vendored from ClearerVoice-Studio; matched ~26M / full ~55.7M configs)
 - `SPMambaParams`: n_fft, stride, n_layers, lstm_hidden_units, attn_n_head, n_srcs
 - `MambaTasNetParams`: N, kernel_size, stride, C, bot_dim, n_mamba, d_state, d_conv, expand, bidirectional, rms_norm
 - `DPMambaParams`: N, kernel_size, stride, C, num_layers, chunk_size, n_mamba_dp, d_state, d_conv, expand, bidirectional, rms_norm, skip_around_intra
@@ -285,10 +312,10 @@ With batch_size=4:
 - **GPU VRAM:** ~3.5 GB (DPRNN/ConvTasNet)
 - **Training speed:** ~0.3s per batch
 
-**SPMamba** (FP32 for stability):
+**SPMamba**:
 - **GPU VRAM:** ~11.3 GB (batch_size=1)
 - **Training speed:** ~1.25 hours per epoch
-- **Recommendation:** Disable AMP (`use_amp: false`) for numerical stability
+- **Note:** AMP no longer needs to be disabled manually — `Trainer` auto-dispatches Mamba models and MossFormer2 to bfloat16 autocast without a GradScaler (Mamba's CUDA kernels run float32 internally regardless), which is stable by default.
 
 ## Troubleshooting
 
@@ -310,6 +337,7 @@ With batch_size=4:
 - **ConvTasNet:** [Conv-TasNet: Surpassing Ideal Time-Frequency Magnitude Masking for Speech Separation](https://arxiv.org/abs/1809.07454)
 - **DPRNN:** [Dual-Path RNN: Efficient Long Sequence Modeling for Time-Domain Single-Channel Speech Separation](https://arxiv.org/abs/1910.06379)
 - **SepFormer:** [Attention is All You Need in Speech Separation](https://arxiv.org/abs/2010.13154)
+- **MossFormer2:** [MossFormer2: Combining Transformer and RNN-Free Recurrent Network for Enhanced Time-Domain Monaural Speech Separation](https://arxiv.org/abs/2312.11825) (vendored from [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio))
 - **SPMamba:** [SPMamba: State-Space Model is All You Need in Speech Separation](https://arxiv.org/abs/2404.02063)
 - **DPMamba / Mamba-TasNet:** [Dual-Path Mamba: Short and Long-term Bidirectional Selective Structured State Space Models for Speech Separation](https://arxiv.org/abs/2403.18257) and [Speech Slytherin: Examining the Performance and Efficiency of Mamba for Speech Separation, Recognition, and Synthesis](https://arxiv.org/abs/2407.09732)
 - **SpeechBrain:** [SpeechBrain: A PyTorch-based Speech Toolkit](https://github.com/speechbrain/speechbrain)

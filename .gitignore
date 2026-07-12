@@ -58,6 +58,24 @@ Thumbs.db
 /venv_backup
 
 *.csv
+# Blanket rule above targets generated eval/benchmark noise (root-level
+# evaluation_results*.csv / checkpoints_for_eval*.csv, scripts/benchmark_*.csv,
+# etc.) — any bare *.csv elsewhere is disposable output, not a committed
+# artifact. The few CSVs that ARE committed source-of-truth are force-tracked
+# below so the "what's intentionally tracked" policy is visible here instead
+# of only in git history:
+# - the thesis eval manifest is the committed record of which checkpoints
+#   constitute the thesis comparison (see evaluate_all.py --manifest).
+!experiments/thesis_eval_manifest.csv
+# - append-only sweep run ledger across both training PCs (see
+#   sweeps/RESULTS_SCHEMA.md / sweeps/EXPERIMENT_LOG_monolithic.md).
+!sweeps/all_runs.csv
+# - frozen CLARIN dev/test fragment split assignment (see
+#   asr_pipeline/SCOPE.md).
+!asr_pipeline/eval/clarin_split.csv
+# - generated thesis artifacts (param-count manifest etc.) written by
+#   scripts under docs/generated/ (see scripts/model_manifest.py).
+!docs/generated/*.csv
 
 /.cache
 
