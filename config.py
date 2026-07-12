@@ -3,7 +3,7 @@
 import os
 import warnings
 import yaml
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from utils import ensure_dir
@@ -475,12 +475,17 @@ def load_config_from_dict(config_dict: dict) -> Config:
     model_dict = dict(config_dict.get("model", {}) or {})
     training_dict = dict(config_dict.get("training", {}) or {})
 
-    # Backward compat: drop nested params for models removed from the registry so
-    # that checkpoints/YAMLs written before their removal still load. `resepformer`
-    # was removed 2026-06-17 (commit 0a27a28); its config block lingers in older
-    # checkpoints as `resepformer: None`.
-    for removed_model in ("resepformer",):
-        model_dict.pop(removed_model, None)
+    # Backward compat: drop nested params for models not defined on ModelConfig
+    # so that checkpoints/YAMLs written while such a model existed still load —
+    # otherwise the stray key trips ModelConfig(**model_dict). `resepformer` was
+    # removed 2026-06-17 (commit 0a27a28); `spmamba3` lives only on the
+    # feature/spmamba3-rebuild branch, so `spmamba3: null` lingers in configs
+    # here. The field guard keeps this correct on that branch (where spmamba3 IS
+    # a ModelConfig field, so its saved params must be preserved, not dropped).
+    _model_field_names = {f.name for f in fields(ModelConfig)}
+    for removed_model in ("resepformer", "spmamba3"):
+        if removed_model not in _model_field_names:
+            model_dict.pop(removed_model, None)
 
     # Handle nested dataset-specific params
     polsess_dict = data_dict.pop("polsess", None)

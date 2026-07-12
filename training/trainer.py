@@ -237,7 +237,14 @@ class Trainer:
         Handles both compiled and non-compiled models by unwrapping
         torch.compile() wrapper if needed.
         """
-        checkpoint = load_model_from_checkpoint(checkpoint_path, self.model, self.device)
+        # map_location must be "cpu", not self.device: torch.load(map_location="cuda")
+        # puts Adam's per-param `step` counters on the GPU, and load_state_dict
+        # leaves them there (it only re-homes `step` for capturable/fused
+        # optimizers). CUDA step tensors force a GPU->CPU sync per parameter on
+        # every optimizer.step(), which made every resumed run 7-25% slower than
+        # a fresh one (measured 2026-07-12). Loading on CPU keeps `step` on CPU;
+        # load_state_dict still moves exp_avg/exp_avg_sq to the param device.
+        checkpoint = load_model_from_checkpoint(checkpoint_path, self.model, "cpu")
 
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         
