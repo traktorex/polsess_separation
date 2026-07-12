@@ -31,10 +31,19 @@ from asr_pipeline.eval.metrics import per_fragment_metrics                 # noq
 from asr_pipeline.eval.layer3 import read_per_speaker, read_mixture       # noqa: E402
 from asr_pipeline.eval.recordings import (                                # noqa: E402
     load_recording, load_reference_utterances)
+# The campaign statistics (recording-clustered bootstrap, Holm/BH gate,
+# micro-average, tertile strata) live in the package now (asr_pipeline/eval/
+# stats.py), unit-tested there; this script is their CLI driver. Re-imported
+# names keep the module's public surface (and tests/test_rescore_stratified.py)
+# unchanged.
+from asr_pipeline.eval.stats import (                                     # noqa: E402,F401
+    B_DRAWS, SEED, assign_strata, benjamini_hochberg, boot_pvalue,
+    cluster_boot_2key, cluster_boot_gap, cluster_boot_paired,
+    cluster_boot_paired_draws, holm_bonferroni, micro, recording_means,
+    significance_star as _sig)
 from scripts.eval_harness import eval_root, load_purity, load_split       # noqa: E402
 
 EVAL = eval_root()
-B_DRAWS, SEED = 10000, 0
 
 
 def _recid(fid): return fid.split("__")[0]
@@ -64,28 +73,23 @@ def _load_gt(frags):
 
 
 def _strata(frags):
-    """Recording-level tertiles. Each recording gets ONE stratum (mean of its
-    fragments' composite scores), so a multi-segment recording can never leak
-    into two strata (which would double-count it). Returns {recid: stratum}.
-    A fragment with no composite score is a hard error — silently sinking it into
-    HIGH (the old comp.get(...,9.0) default) would corrupt the one-shot number."""
+    """Recording-level acoustic-complexity tertiles for this fragment set.
+
+    Loads the per-fragment composite scores from disk, then delegates the pure
+    collapse + tertile assignment to the package
+    (:func:`asr_pipeline.eval.stats.recording_means` /
+    :func:`~asr_pipeline.eval.stats.assign_strata`). A fragment with no composite
+    score is a hard error — silently sinking it into HIGH (the old
+    comp.get(...,9.0) default) would corrupt the one-shot number. Returns
+    {recid: stratum}."""
     with open(EVAL / "composite_scores.csv", newline="") as fh:
         comp = {r["frag_id"]: float(r["composite"]) for r in csv.DictReader(fh)}
     missing = [f for f in frags if f not in comp]
     if missing:
         sys.exit(f"composite_scores.csv missing {len(missing)} fragment(s): "
                  f"{', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}")
-    rec_comp = defaultdict(list)
-    for f in frags:
-        rec_comp[_recid(f)].append(comp[f])
-    rec_mean = {r: sum(v) / len(v) for r, v in rec_comp.items()}
-    order = sorted(rec_mean, key=lambda r: rec_mean[r])
-    t = len(order) // 3
-    strat = {**{r: "LOW" for r in order[:t]},
-             **{r: "MID" for r in order[t:2 * t]},
-             **{r: "HIGH" for r in order[2 * t:]}}
-    assert len(strat) == len(order), "strata must partition the recordings"
-    return strat
+    rec_mean = recording_means({f: comp[f] for f in frags}, _recid)
+    return assign_strata(rec_mean)
 
 
 def per_fragment(cfg, gt, frags):
@@ -157,175 +161,6 @@ def by_recording(frag):
         for k, v in r.items():
             R[k] += v
     return rec
-
-
-def micro(rows, eK, lK):
-    e = sum(r[eK] for r in rows if lK in r)
-    l = sum(r[lK] for r in rows if lK in r)
-    return 100 * e / l if l else float("nan")
-
-
-def _boot_resample(ids, stat, rng):
-    """The shared cluster-bootstrap kernel: point estimate + the finite draws.
-
-    ``stat(sample) -> float`` is the paired statistic over a list of recording ids
-    (a resampled ``sample`` may repeat ids). Resamples the RECORDINGS with
-    replacement ``B_DRAWS`` times and drops any non-finite draw (a resample can sum
-    to a 0/0 nan; one nan poisons ``np.percentile`` and would flip a significance
-    star ON for a meaningless delta). Returns ``(point, finite_draws_ndarray)`` —
-    ``point`` is ``stat(ids)`` (nan and empty draws when ``ids`` is empty). The
-    four bootstrap wrappers below differ ONLY in how they build ``ids`` and
-    ``stat``; the resample/nan-guard/percentile logic lives here once."""
-    if not ids:
-        return float("nan"), np.array([])
-    point = stat(ids)
-    idx = np.arange(len(ids))
-    draws = np.array([stat([ids[i] for i in rng.choice(idx, len(idx), replace=True)])
-                      for _ in range(B_DRAWS)])
-    return point, draws[np.isfinite(draws)]
-
-
-def _boot_ci(ids, stat, rng):
-    """``(point, lo, hi)`` — the 95% percentile CI form of :func:`_boot_resample`.
-    nan CI bounds when ``ids`` is empty or no draw is finite."""
-    point, draws = _boot_resample(ids, stat, rng)
-    if draws.size == 0:
-        return point, float("nan"), float("nan")
-    lo, hi = np.percentile(draws, [2.5, 97.5])
-    return point, lo, hi
-
-
-def _paired_ids(recs_a, recs_b, lK):
-    """Recordings present on both sides with non-zero reference length on each —
-    so a resample can never sum to a 0/0 nan draw."""
-    return [r for r in recs_a if r in recs_b
-            and recs_a[r].get(lK, 0) > 0 and recs_b[r].get(lK, 0) > 0]
-
-
-def _paired_delta(recs_a, recs_b, eK, lK):
-    """micro(recs_a) − micro(recs_b) over a sample; nan if either side is empty."""
-    def delta(sample):
-        ae = sum(recs_a[r][eK] for r in sample); al = sum(recs_a[r][lK] for r in sample)
-        be = sum(recs_b[r][eK] for r in sample); bl = sum(recs_b[r][lK] for r in sample)
-        return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
-    return delta
-
-
-def cluster_boot_paired(recs_a, recs_b, eK, lK, rng):
-    """Paired (anchor - cfg) micro-avg delta, cluster-bootstrap by recording.
-    Positive => cfg better (lower error). Recordings with zero reference length
-    on either side are excluded up front (see :func:`_paired_ids`)."""
-    ids = _paired_ids(recs_a, recs_b, lK)
-    return _boot_ci(ids, _paired_delta(recs_a, recs_b, eK, lK), rng)
-
-
-def cluster_boot_paired_draws(recs_a, recs_b, eK, lK, rng):
-    """Like ``cluster_boot_paired`` but ALSO returns the finite bootstrap draws.
-
-    Same point estimate and same resampling — so the Holm/FDR pass can derive a
-    bootstrap p-value from the draws (fraction on the wrong side of 0, two-sided)
-    WITHOUT re-running the bootstrap. Returns ``(point, draws_array)``;
-    ``draws_array`` is empty when no finite draw exists."""
-    ids = _paired_ids(recs_a, recs_b, lK)
-    return _boot_resample(ids, _paired_delta(recs_a, recs_b, eK, lK), rng)
-
-
-def cluster_boot_2key(recs, eKa, lKa, eKb, lKb, rng):
-    """Paired Δ = micro(a) − micro(b) of TWO metrics over the SAME recordings,
-    cluster-bootstrapped by recording. For the separation-vs-mixture contrast a =
-    mixture content floor, b = pipeline content floor (both inside recs[anchor]),
-    so + = pipeline lower error = separation recovered content. Same recording
-    resample + nan-guard as cluster_boot_paired."""
-    ids = [r for r in recs if recs[r].get(lKa, 0) > 0 and recs[r].get(lKb, 0) > 0]
-
-    def delta(sample):
-        ae = sum(recs[r][eKa] for r in sample); al = sum(recs[r][lKa] for r in sample)
-        be = sum(recs[r][eKb] for r in sample); bl = sum(recs[r][lKb] for r in sample)
-        return (100 * ae / al) - (100 * be / bl) if al and bl else float("nan")
-
-    return _boot_ci(ids, delta, rng)
-
-
-def boot_pvalue(draws) -> float:
-    """Two-sided bootstrap p-value for H0: paired Δ = 0.
-
-    Standard percentile-bootstrap p: p = 2 * min(frac draws <= 0, frac draws >= 0),
-    clipped to [0, 1]. A Δ whose draws sit entirely on one side of 0 gets the
-    smallest resolvable p (≈ 2/B_DRAWS, never exactly 0 — the bootstrap cannot
-    resolve below its resolution). Empty draws → 1.0 (cannot reject)."""
-    draws = np.asarray(draws, dtype=float)
-    draws = draws[np.isfinite(draws)]
-    n = draws.size
-    if n == 0:
-        return 1.0
-    frac_le = float(np.count_nonzero(draws <= 0)) / n
-    frac_ge = float(np.count_nonzero(draws >= 0)) / n
-    p = 2.0 * min(frac_le, frac_ge)
-    # Floor at the bootstrap resolution so an all-one-side draw isn't reported p=0.
-    return float(min(max(p, 1.0 / n), 1.0))
-
-
-def holm_bonferroni(pvals):
-    """Holm-Bonferroni step-down adjusted p-values (family-wise, conservative).
-
-    ``pvals`` is a list of raw p-values; returns adjusted p-values in the SAME
-    order. Reject H_i at level α iff adjusted p_i <= α. Monotone by construction
-    (cumulative max along the sorted order)."""
-    m = len(pvals)
-    if m == 0:
-        return []
-    order = sorted(range(m), key=lambda i: pvals[i])
-    adj = [0.0] * m
-    running = 0.0
-    for rank, i in enumerate(order):
-        val = (m - rank) * pvals[i]
-        running = max(running, val)
-        adj[i] = min(running, 1.0)
-    return adj
-
-
-def benjamini_hochberg(pvals):
-    """Benjamini-Hochberg FDR-adjusted p-values (less conservative than Holm).
-
-    Same order in / out as ``holm_bonferroni``. Standard step-up with the
-    monotone (cumulative-min from the largest) enforcement."""
-    m = len(pvals)
-    if m == 0:
-        return []
-    order = sorted(range(m), key=lambda i: pvals[i])
-    adj = [0.0] * m
-    prev = 1.0
-    for rank in range(m - 1, -1, -1):
-        i = order[rank]
-        val = pvals[i] * m / (rank + 1)
-        prev = min(prev, val)
-        adj[i] = min(prev, 1.0)
-    return adj
-
-
-def cluster_boot_gap(recs_a, recs_b, eK, lK, gK, gL, rng):
-    """Paired Δ of the ATTRIBUTION GAP (cpWER - MIMO content floor), cluster-boot
-    by recording. gap = micro(cpWER) - micro(content); Δ = gap_anchor - gap_cfg,
-    so positive => cfg has the SMALLER gap (better attribution). (eK,lK) = cpWER
-    error/length; (gK,gL) = content-floor error/length. Excludes recordings with
-    zero reference length on either side (same nan-guard as cluster_boot_paired)."""
-    ids = _paired_ids(recs_a, recs_b, lK)
-
-    def gap(recs, sample):
-        ce = sum(recs[r][eK] for r in sample); cl = sum(recs[r][lK] for r in sample)
-        ge = sum(recs[r][gK] for r in sample); gl = sum(recs[r][gL] for r in sample)
-        return (100 * ce / cl - 100 * ge / gl) if cl and gl else float("nan")
-
-    def delta(sample):
-        return gap(recs_a, sample) - gap(recs_b, sample)
-
-    return _boot_ci(ids, delta, rng)
-
-
-def _sig(lo, hi):
-    """Significance star only for a finite CI that excludes 0 (a nan CI is NOT
-    significant — the bug this guards against printed `*` on nan <= 0 == False)."""
-    return " *" if np.isfinite(lo) and np.isfinite(hi) and not (lo <= 0 <= hi) else ""
 
 
 def dump_per_fragment(perfrag, strat, comp, path):

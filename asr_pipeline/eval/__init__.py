@@ -51,6 +51,19 @@ from asr_pipeline.eval.recordings import (
     walk_eval_tree,
 )
 from asr_pipeline.eval.run import ScoreCard, evaluate_many, evaluate_recording
+from asr_pipeline.eval.stats import (
+    assign_strata,
+    benjamini_hochberg,
+    boot_pvalue,
+    cluster_boot_2key,
+    cluster_boot_gap,
+    cluster_boot_paired,
+    cluster_boot_paired_draws,
+    holm_bonferroni,
+    micro,
+    recording_means,
+    significance_star,
+)
 from asr_pipeline.eval.summary import (
     inventory,
     summarize_layer2_intrusive,
@@ -79,6 +92,10 @@ __all__ = [
     "mimo_cer_meeteval", "per_fragment_metrics",
     "compute_intrusive", "pesq_wb_chunked", "stoi_chunked", "squim_chunked",
     "load_squim_model", "unload_squim_model",
+    # Campaign statistics (recording-clustered bootstrap + Holm/BH gate)
+    "cluster_boot_paired", "cluster_boot_paired_draws", "cluster_boot_2key",
+    "cluster_boot_gap", "boot_pvalue", "holm_bonferroni", "benjamini_hochberg",
+    "micro", "significance_star", "recording_means", "assign_strata",
     # Transcript IO
     "Utterance", "parse_gt_txt", "parse_transcript_file", "is_untimed",
     # Summaries

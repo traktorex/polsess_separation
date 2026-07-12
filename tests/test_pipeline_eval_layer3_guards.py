@@ -104,6 +104,74 @@ def test_layer3_modes_dict_always_has_four_keys(tmp_path):
     assert l3["mixture_orc"] is None and l3["mixture_mimo"] is None  # no mixture txt
 
 
+# ---------------------------------------------------------------------------
+# C1 — cpCER surfaced per mode + byte-compat of the pre-existing mode keys
+# ---------------------------------------------------------------------------
+
+# The 10 keys every populated mode carried before cpCER was added (the
+# cpwer_meeteval result). compute_layer3 now routes through per_fragment_metrics
+# but must keep these byte-identical and ADD cpcer* — nothing renamed/removed.
+_LEGACY_MODE_KEYS = {
+    "cpwer", "cp_assignment", "cp_errors", "cp_length", "tcp_collar_s",
+    "tcp_skipped", "tcpwer", "tcp_assignment", "tcp_errors", "tcp_length",
+}
+
+
+def test_layer3_surfaces_cpcer_and_preserves_legacy_keys(tmp_path):
+    import pytest as _pytest
+    _pytest.importorskip("meeteval")
+    _pytest.importorskip("rapidfuzz")
+    eaf = tmp_path / "annotation.eaf"
+    write_eaf({"A": [(1.0, 2.0, "ala ma kota")],
+               "B": [(5.0, 6.0, "pies je obiad")]},
+              tmp_path / "rec1.wav", eaf)
+    pdir = tmp_path / "pipeline"
+    pdir.mkdir()
+    _write_gt_txt(pdir / "transcript_A.txt", [(1.0, 2.0, "ala ma psa")])   # 1 sub
+    _write_gt_txt(pdir / "transcript_B.txt", [(5.0, 6.0, "pies je obiad")])
+
+    rec = _rec(tmp_path, reference_eaf=eaf, pipeline_dir=pdir)
+    full = compute_layer3(rec)["modes"]["full"]
+
+    # every legacy key is still present …
+    assert _LEGACY_MODE_KEYS <= set(full)
+    # … and the only additions are the cpcer trio.
+    assert set(full) - _LEGACY_MODE_KEYS == {"cpcer", "cpcer_errors", "cpcer_length"}
+    assert 0.0 < full["cpcer"] <= 1.0                 # one char-sub present
+    assert full["cpcer_length"] > 0
+    assert isinstance(full["cpcer_errors"], int)
+
+
+def test_layer3_cpcer_equals_standalone_cp_cer(tmp_path):
+    # The surfaced cpcer must equal cp_cer_meeteval on the same ref/hyp — i.e.
+    # the layer3 path and the sweep/rescore path agree exactly.
+    import pytest as _pytest
+    _pytest.importorskip("meeteval")
+    _pytest.importorskip("rapidfuzz")
+    from asr_pipeline.eval.metrics import cp_cer_meeteval
+    from asr_pipeline.eval.layer3 import read_per_speaker
+    from asr_pipeline.eval.recordings import load_reference_utterances
+
+    eaf = tmp_path / "annotation.eaf"
+    write_eaf({"A": [(1.0, 2.0, "ala ma kota")],
+               "B": [(5.0, 6.0, "pies je obiad kanapke")]},
+              tmp_path / "rec1.wav", eaf)
+    pdir = tmp_path / "pipeline"
+    pdir.mkdir()
+    _write_gt_txt(pdir / "transcript_A.txt", [(1.0, 2.0, "ala ma psa")])
+    _write_gt_txt(pdir / "transcript_B.txt", [(5.0, 6.0, "pies je obiad")])
+
+    rec = _rec(tmp_path, reference_eaf=eaf, pipeline_dir=pdir)
+    ref = {k: v for k, v in load_reference_utterances(rec).items() if v}
+    hyp = read_per_speaker(pdir)
+    expected = cp_cer_meeteval(ref, hyp, session_id=rec.id)
+
+    full = compute_layer3(rec)["modes"]["full"]
+    assert full["cpcer"] == expected["cer"]
+    assert full["cpcer_errors"] == expected["errors"]
+    assert full["cpcer_length"] == expected["length"]
+
+
 def test_layer3_scores_minimal_mode(tmp_path):
     # The (no-sep, no-enh) ablation arm — SCOPE §6 / open question 6: a
     # populated pipeline_minimal/ dir must be scored as mode "minimal".

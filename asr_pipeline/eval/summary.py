@@ -69,7 +69,7 @@ def summarize_layer2_squim(scores: Iterable[ScoreCard]) -> pd.DataFrame:
 def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
     """One row per recording, columns per ablation mode + mixture baseline.
 
-    Columns (all % WER):
+    Columns (WER/CER as %):
       - ``mixture_orc``     ORC-WER of single-stream Whisper on the raw mixture
       - ``mixture_mimo``    MIMO-WER of the same (optimised reference interleaving;
                             MIMO <= ORC, more robust to faulty GT timestamps)
@@ -77,6 +77,10 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
       - ``no_enh_cpwer``    cpWER of pipeline run with enhancement disabled
       - ``no_sep_cpwer``    cpWER of pipeline run with separation disabled
       - ``full_cpwer``      cpWER of the full pipeline
+      - ``{mode}_cpcer``    cpCER (character error rate under the cpWER routing)
+                            per mode — minimal/no_enh/no_sep/full. The campaign's
+                            co-headline metric (Polish morphology inflates WER);
+                            added alongside every ``*_cpwer`` column.
       - ``full_tcpwer``     tcpWER (time-constrained) of the full pipeline, or
                             None when the reference is untimed
       - ``tcp_skipped``     True when tcpWER was skipped — untimed reference, no
@@ -112,9 +116,13 @@ def summarize_layer3(scores: Iterable[ScoreCard]) -> pd.DataFrame:
                 if l3.get("mixture_mimo") is not None else None
             ),
             "minimal_cpwer": _pct(modes.get("minimal"), "cpwer"),
+            "minimal_cpcer": _pct(modes.get("minimal"), "cpcer"),
             "no_enh_cpwer": _pct(modes.get("no_enh"), "cpwer"),
+            "no_enh_cpcer": _pct(modes.get("no_enh"), "cpcer"),
             "no_sep_cpwer": _pct(modes.get("no_sep"), "cpwer"),
+            "no_sep_cpcer": _pct(modes.get("no_sep"), "cpcer"),
             "full_cpwer":   _pct(modes.get("full"),   "cpwer"),
+            "full_cpcer":   _pct(modes.get("full"),   "cpcer"),
             "full_tcpwer":  _pct(modes.get("full"),   "tcpwer"),
             "tcp_skipped":  bool(l3.get("ref_untimed", False)),
         }

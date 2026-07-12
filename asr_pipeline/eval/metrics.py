@@ -59,6 +59,7 @@ words — `no`, `tak`, `aha`, `yhy` — are deliberately kept.
 
 from __future__ import annotations
 
+import math
 import re
 from functools import lru_cache
 from typing import Dict, List
@@ -753,6 +754,39 @@ def mimo_cer_meeteval(
 # Per-fragment metric collection — the shared scoring core
 # ---------------------------------------------------------------------------
 
+# Combinatorial-metric blow-up caps. MeetEval's ORC-/MIMO-WER build a DENSE
+# dynamic-programming table sized by the *product* of the reference-speaker and
+# hypothesis-stream token counts: ORC pools the reference → sum(ref)·prod(hyp);
+# MIMO keeps the reference streams separate → prod(ref)·prod(hyp) (a 4-D table
+# for a 2×2 recording). cpWER/cpCER concatenate each speaker first (one edit
+# distance) and stay bounded, so they ALWAYS run. On the ~90 s eval fragments
+# the tables are trivial and these caps never trip; on a full-length recording
+# MIMO reaches tens of GB and the Linux OOM killer takes down the whole WSL VM
+# mid-cell (measured: ~100 utts / ~800 words already >6 GB and climbing).
+#
+# Ported here from ``asr/explore_pipeline.ipynb``'s scoring cell (which guarded
+# only its two direct ORC/MIMO-WER calls) so that NO package consumer routing
+# through :func:`per_fragment_metrics` can hit the blow-up: any combinatorial
+# sub-metric whose estimated table exceeds its cap is skipped (its sub-result
+# becomes ``None``) with a visible note (SCOPE §4.3), never silently hung on.
+# The character-level floors (``orccer``/``mix_cer``) use CHAR counts in the
+# same formula, so they trip sooner (chars ≈ 5–6× words) — the char DP is the
+# real OOM risk. Raise the caps if you have the RAM and want them on a long clip.
+_ORC_TABLE_CAP = 5e8    # sum(ref)·prod(hyp); ~<2 GB peak, safe on 31 GB
+_MIMO_TABLE_CAP = 1e9   # prod(ref)·prod(hyp); ~<0.5 GB peak, safe on 31 GB
+
+
+def _stream_word_counts(utts_by_spk: Dict[str, List[Utterance]]) -> List[int]:
+    """Per-stream word counts (≥1 each) for a DP-table-size estimate."""
+    return [max(1, sum(len(u.text.split()) for u in utts))
+            for utts in utts_by_spk.values()] or [1]
+
+
+def _stream_char_counts(utts_by_spk: Dict[str, List[Utterance]]) -> List[int]:
+    """Per-stream character counts (≥1 each) for a char-level DP-size estimate."""
+    return [max(1, sum(len(u.text) for u in utts))
+            for utts in utts_by_spk.values()] or [1]
+
 
 def per_fragment_metrics(
     ref: Dict[str, List[Utterance]],
@@ -760,19 +794,22 @@ def per_fragment_metrics(
     session_id: str,
     mix: "List[Utterance] | None" = None,
     lang: str = "pl",
-) -> Dict[str, Dict[str, object]]:
+    tcp_collar_s: float = 5.0,
+    skip_tcp: bool = False,
+) -> Dict[str, "Dict[str, object] | None"]:
     """The full Layer-3 per-fragment metric set for one (ref, hyp[, mix]).
 
     ONE definition of the "meeteval calls → per-fragment err/len dicts" loop that
     used to be re-implemented in ``scripts/rescore_stratified.py``,
-    ``scripts/dump_sweep_results.py`` and ``scripts/sweep_pipeline.py``. It returns
-    the raw meeteval sub-result dicts (each carrying its own ``errors``/``length``)
-    keyed by role, so every caller reads exactly the counts it always read — no
-    rounding, no aggregation here. The three call sites did not compute an
-    *identical* set (rescore skipped the mixture ORC-WER floor; sweep skipped the
-    ORC-CER content floor); this computes the **union** so numbers are unchanged
-    for each caller while the loop lives in one place. Extra computed sub-results
-    a caller doesn't use are simply ignored — no reported value changes.
+    ``scripts/dump_sweep_results.py`` and ``scripts/sweep_pipeline.py`` (and now
+    ``eval/layer3.compute_layer3``). It returns the raw meeteval sub-result dicts
+    (each carrying its own ``errors``/``length``) keyed by role, so every caller
+    reads exactly the counts it always read — no rounding, no aggregation here.
+    The call sites did not compute an *identical* set (rescore skipped the mixture
+    ORC-WER floor; sweep skipped the ORC-CER content floor); this computes the
+    **union** so numbers are unchanged for each caller while the loop lives in one
+    place. Extra computed sub-results a caller doesn't use are simply ignored — no
+    reported value changes.
 
     ``ref``/``hyp`` are per-speaker dicts (already normalized/prepared by the
     caller — e.g. rescore's ``--normalize`` runs before this). ``mix`` is the
@@ -787,16 +824,63 @@ def per_fragment_metrics(
         mix_orc  orc_wer_meeteval      (mixture floor, ORC-WER)      [mix only]
         mix_mimo mimo_wer_meeteval     (mixture floor, MIMO-WER)     [mix only]
         mix_cer  mimo_cer_meeteval     (mixture floor, MIMO-CER)     [mix only]
+
+    ``tcp_collar_s`` / ``skip_tcp`` thread through to the ``cp`` sub-call
+    (``cpwer_meeteval``) so a caller scoring an *untimed* reference can suppress
+    tcpWER (``skip_tcp=True`` → ``cp["tcpwer"] is None``); the defaults reproduce
+    the previous unconditional ``collar=5.0``, timed-reference behaviour exactly,
+    so existing callers are byte-for-byte unchanged.
+
+    Every combinatorial sub-metric (all but ``cp``/``cpcer``) is gated by a
+    DP-table-size cap (:data:`_ORC_TABLE_CAP` / :data:`_MIMO_TABLE_CAP`): on a
+    recording long enough to OOM the machine the offending floor is skipped —
+    its value is ``None`` and a note is printed (SCOPE §4.3) — instead of hanging
+    the whole scorer. On the eval fragments the caps never trip and the output is
+    identical to the ungated version. ``cp``/``cpcer`` are never gated (bounded).
     """
-    out: Dict[str, Dict[str, object]] = {
-        "cp": cpwer_meeteval(ref, hyp, session_id=session_id, lang=lang),
+    ref_w = _stream_word_counts(ref)
+    hyp_w = _stream_word_counts(hyp)
+    ref_c = _stream_char_counts(ref)
+    hyp_c = _stream_char_counts(hyp)
+
+    def _guarded(role: str, cells: float, cap: float, compute):
+        """Run ``compute()`` unless the estimated DP table exceeds ``cap``; then
+        skip it (return ``None``) with a visible note. A no-op on eval fragments,
+        where every table is far under cap."""
+        if cells <= cap:
+            return compute()
+        msg = (f"per_fragment_metrics[{session_id}]: {role} skipped — meeteval "
+               f"DP table ~{cells:.1e} cells > {cap:.0e} cap (long recording; "
+               f"cpWER/cpCER still computed)")
+        print(msg)
+        dlog("metrics", msg)
+        return None
+
+    out: Dict[str, "Dict[str, object] | None"] = {
+        "cp": cpwer_meeteval(ref, hyp, session_id=session_id, lang=lang,
+                             tcp_collar_s=tcp_collar_s, skip_tcp=skip_tcp),
         "cpcer": cp_cer_meeteval(ref, hyp, session_id=session_id, lang=lang),
-        "orc": orc_wer_multistream(ref, hyp, session_id=session_id, lang=lang),
-        "mimo": mimo_wer_meeteval(ref, hyp, session_id=session_id, lang=lang),
-        "orccer": orc_cer_charopt(ref, hyp, session_id=session_id, lang=lang),
+        "orc": _guarded(
+            "orc", sum(ref_w) * math.prod(hyp_w), _ORC_TABLE_CAP,
+            lambda: orc_wer_multistream(ref, hyp, session_id=session_id, lang=lang)),
+        "mimo": _guarded(
+            "mimo", math.prod(ref_w) * math.prod(hyp_w), _MIMO_TABLE_CAP,
+            lambda: mimo_wer_meeteval(ref, hyp, session_id=session_id, lang=lang)),
+        "orccer": _guarded(
+            "orccer", sum(ref_c) * math.prod(hyp_c), _ORC_TABLE_CAP,
+            lambda: orc_cer_charopt(ref, hyp, session_id=session_id, lang=lang)),
     }
     if mix is not None:
-        out["mix_orc"] = orc_wer_meeteval(ref, mix, session_id=session_id, lang=lang)
-        out["mix_mimo"] = mimo_wer_meeteval(ref, mix, session_id=session_id, lang=lang)
-        out["mix_cer"] = mimo_cer_meeteval(ref, mix, session_id=session_id, lang=lang)
+        mix_w = max(1, sum(len(u.text.split()) for u in mix))
+        out["mix_orc"] = _guarded(
+            "mix_orc", sum(ref_w) * mix_w, _ORC_TABLE_CAP,
+            lambda: orc_wer_meeteval(ref, mix, session_id=session_id, lang=lang))
+        out["mix_mimo"] = _guarded(
+            "mix_mimo", math.prod(ref_w) * mix_w, _MIMO_TABLE_CAP,
+            lambda: mimo_wer_meeteval(ref, mix, session_id=session_id, lang=lang))
+        # mimo_cer runs word-level MIMO internally, then scores chars → the
+        # combinatorial cost is the word-level MIMO table, same as mix_mimo.
+        out["mix_cer"] = _guarded(
+            "mix_cer", math.prod(ref_w) * mix_w, _MIMO_TABLE_CAP,
+            lambda: mimo_cer_meeteval(ref, mix, session_id=session_id, lang=lang))
     return out

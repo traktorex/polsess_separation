@@ -109,6 +109,31 @@ def test_summarize_layer3_percentages_and_none_modes():
     assert pd.isna(r["mixture_mimo"])            # None mixture → None cell
 
 
+def test_summarize_layer3_surfaces_cpcer_columns():
+    # C1: per-mode cpCER columns added alongside every *_cpwer, as %; None mode
+    # or a mode missing cpcer → NaN cell (never 100*None).
+    l3 = {
+        "ref_lengths": {"A": 3, "B": 2},
+        "modes": {
+            "full":   {"cpwer": 0.20, "cpcer": 0.10, "tcpwer": 0.25},
+            "no_sep": None,
+            "no_enh": {"cpwer": 0.40, "cpcer": 0.30},   # no tcpwer key
+            "minimal": {"cpwer": 0.50},                 # cpwer only, no cpcer
+        },
+        "mixture_orc": None,
+        "mixture_mimo": None,
+        "tcp_collar_s": 5.0,
+    }
+    r = summarize_layer3([ScoreCard(_min_rec(), None, l3)]).iloc[0]
+    assert r["full_cpcer"] == pytest.approx(10.0)
+    assert r["no_enh_cpcer"] == pytest.approx(30.0)
+    assert pd.isna(r["no_sep_cpcer"])       # None mode → NaN
+    assert pd.isna(r["minimal_cpcer"])      # mode present but no cpcer key → NaN
+    # existing cpwer columns unchanged
+    assert r["full_cpwer"] == pytest.approx(20.0)
+    assert r["minimal_cpwer"] == pytest.approx(50.0)
+
+
 def test_summarize_layer2_skips_when_no_layer2():
     card = ScoreCard(_min_rec(), None, None)
     assert len(summarize_layer2_intrusive([card])) == 0

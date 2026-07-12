@@ -33,9 +33,9 @@ from typing import Optional
 
 from asr_pipeline.debug_log import dlog
 from asr_pipeline.eval.metrics import (
-    cpwer_meeteval,
     mimo_wer_meeteval,
     orc_wer_meeteval,
+    per_fragment_metrics,
 )
 from asr_pipeline.eval.recordings import Recording, load_reference_utterances
 from asr_pipeline.eval.transcript_parser import (
@@ -116,7 +116,8 @@ def compute_layer3(
             "ref_lengths": {"A": int, "B": int},
             "ref_untimed": bool,              # True → tcpWER skipped (no GT times)
             "modes": {
-                "full":     {"cpwer": …, "tcpwer": … or None, "tcp_skipped": …},
+                "full":     {"cpwer": …, "cpcer": …, "tcpwer": … or None,
+                             "tcp_skipped": …},
                 "no_sep":   {…} or None,
                 "no_enh":   {…} or None,
                 "minimal":  {…} or None,   # both stages off
@@ -126,10 +127,21 @@ def compute_layer3(
             "tcp_collar_s": float,
         }
 
+    Each populated mode carries the full ``cpwer_meeteval`` result (``cpwer``,
+    ``tcpwer``, assignments, error/length counts — unchanged keys) plus the
+    character-error-rate under the same cpWER routing: ``cpcer`` (0..1 fraction),
+    ``cpcer_errors``, ``cpcer_length``. cpCER is the campaign's co-headline metric
+    (Polish morphology inflates WER); surfacing it here means
+    ``evaluate_recording`` / ``summarize_layer3`` produce it without the sweep
+    script's private scorer. The per-mode dict is built from the shared
+    :func:`~asr_pipeline.eval.metrics.per_fragment_metrics` scoring core, so the
+    numbers match the sweep/rescore tables exactly.
+
     When the reference is **untimed** (``start=end=None``), tcpWER is
     skipped — scoring it on placeholder times would fabricate a number
     (SCOPE §4.1). ``ref_untimed=True`` and each mode's ``tcpwer`` is ``None``
-    with ``tcp_skipped=True``; cpWER and ORC/MIMO (time-agnostic) are unaffected.
+    with ``tcp_skipped=True``; cpWER/cpCER and ORC/MIMO (time-agnostic) are
+    unaffected.
     """
     ref_utts = {k: v for k, v in load_reference_utterances(rec).items() if v}
     if "A" not in ref_utts or "B" not in ref_utts:
@@ -159,10 +171,24 @@ def compute_layer3(
         if hyp is None:
             modes_out[mode] = None
             continue
-        modes_out[mode] = cpwer_meeteval(
-            ref_utts, hyp, session_id=rec.id, tcp_collar_s=tcp_collar_s,
-            lang=lang, skip_tcp=ref_untimed,
+        # Route through the shared scoring core (the sweep/rescore path) so the
+        # cpWER and cpCER numbers here match those tables exactly. ``mix=None``:
+        # the single-stream mixture floor is scored once, recording-level, below —
+        # not per mode. ``per_fragment_metrics`` also computes the content-floor
+        # metrics (orc/mimo/orccer); L3 does not surface them per mode, so they
+        # are ignored here.
+        pf = per_fragment_metrics(
+            ref_utts, hyp, session_id=rec.id, lang=lang,
+            tcp_collar_s=tcp_collar_s, skip_tcp=ref_untimed,
         )
+        # ``pf["cp"]`` IS the former direct ``cpwer_meeteval(...)`` result —
+        # every pre-cpCER key/value is byte-identical; cpcer* are the additions.
+        mode_out = dict(pf["cp"])
+        cpcer = pf["cpcer"]
+        mode_out["cpcer"] = cpcer["cer"]
+        mode_out["cpcer_errors"] = cpcer["errors"]
+        mode_out["cpcer_length"] = cpcer["length"]
+        modes_out[mode] = mode_out
 
     # Mixture baseline (single-stream) — take whichever mode dir has a
     # transcript_mixture.txt. The mixture transcript is Whisper on the *raw*

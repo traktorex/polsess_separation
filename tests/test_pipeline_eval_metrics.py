@@ -555,3 +555,100 @@ def test_per_fragment_metrics_without_mix_omits_mixture_floors():
     m = per_fragment_metrics(ref, hyp, session_id="t")
     assert set(m) == {"cp", "cpcer", "orc", "mimo", "orccer"}
     assert m["cp"]["cpwer"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# per_fragment_metrics — tcp threading (byte-compat surface for layer3)
+# ---------------------------------------------------------------------------
+
+
+def test_per_fragment_metrics_threads_skip_tcp():
+    # skip_tcp threads into the cp sub-call so an untimed-reference caller
+    # (layer3.compute_layer3) gets tcpwer=None, never a fabricated number.
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    m = per_fragment_metrics(ref, hyp, session_id="t", skip_tcp=True)
+    assert m["cp"]["tcpwer"] is None
+    assert m["cp"]["tcp_skipped"] is True
+    assert m["cp"]["cpwer"] == 0.0            # cpWER still computed (time-agnostic)
+
+
+def test_per_fragment_metrics_threads_tcp_collar():
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma kota")]}
+    m = per_fragment_metrics(ref, hyp, session_id="t", tcp_collar_s=2.5)
+    assert m["cp"]["tcp_collar_s"] == 2.5
+    assert m["cp"]["tcp_skipped"] is False    # default: tcpWER computed
+
+
+def test_per_fragment_metrics_defaults_match_direct_cpwer():
+    # The default (no tcp args) reproduces the standalone cpwer_meeteval result
+    # byte-for-byte — the property layer3/rescore/sweep byte-compat rests on.
+    pytest.importorskip("meeteval")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(1.0, 2.0, "pies je")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma psa")], "B": [U(1.0, 2.0, "pies je")]}
+    m = per_fragment_metrics(ref, hyp, session_id="t")
+    direct = cpwer_meeteval(ref, hyp, session_id="t")
+    assert m["cp"] == direct
+
+
+# ---------------------------------------------------------------------------
+# per_fragment_metrics — combinatorial blow-up guard (ported from the explore
+# notebook's scoring cell). On a recording long enough to OOM the machine the
+# ORC/MIMO/orccer floors are SKIPPED (value None) with a printed note, instead
+# of hanging; cpWER/cpCER (bounded) always compute. Must be impossible for a
+# package consumer to hit the blow-up. Fixture is tiny to construct and fast
+# BECAUSE the guard skips the expensive meeteval calls.
+# ---------------------------------------------------------------------------
+
+
+def _long_utts(n_words: int):
+    return [U(0.0, 1.0, " ".join(["kot"] * n_words))]
+
+
+def test_blowup_guard_skips_combinatorial_floors_but_keeps_cp(capsys):
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    # 2×2 streams of 800 words → MIMO table prod(ref)·prod(hyp) ≈ 4e11 cells
+    # (would allocate ~TB and OOM); ORC ≈ 1e9 > 5e8 cap; orccer (chars) larger.
+    big = {"A": _long_utts(800), "B": _long_utts(800)}
+    m = per_fragment_metrics(big, dict(big), session_id="adv")
+    # Combinatorial floors skipped (None), not hung.
+    assert m["orc"] is None
+    assert m["mimo"] is None
+    assert m["orccer"] is None
+    # Bounded metrics still computed (identical inputs → 0 error).
+    assert m["cp"] is not None and m["cp"]["cpwer"] == 0.0
+    assert m["cpcer"] is not None and m["cpcer"]["cer"] == 0.0
+    # Skip is visible on stdout (SCOPE §4.3), not silent.
+    out = capsys.readouterr().out
+    assert "skipped" in out and "DP table" in out
+
+
+def test_blowup_guard_skips_mixture_floors_too():
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    big = {"A": _long_utts(1300), "B": _long_utts(1300)}
+    mix = _long_utts(1300)
+    m = per_fragment_metrics(big, dict(big), session_id="adv", mix=mix)
+    # Schema stays stable — all eight keys present even when skipped.
+    assert set(m) == {"cp", "cpcer", "orc", "mimo", "orccer",
+                      "mix_orc", "mix_mimo", "mix_cer"}
+    # The prod-based mixture floors (prod(ref)·len(mix) ≈ 2.2e9 > 1e9) skip;
+    # the sum-based mix_orc (sum(ref)·len(mix) ≈ 3.4e6) is under cap → computes.
+    assert m["mix_mimo"] is None and m["mix_cer"] is None
+    assert isinstance(m["mix_orc"], dict)
+
+
+def test_under_cap_all_floors_compute_none_skipped():
+    # A normal ~fragment-sized input trips nothing — every floor is a real dict.
+    pytest.importorskip("meeteval")
+    pytest.importorskip("rapidfuzz")
+    ref = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(1.0, 2.0, "kot ma alę")]}
+    hyp = {"A": [U(0.0, 1.0, "ala ma kota")], "B": [U(1.0, 2.0, "kot ma alę")]}
+    mix = [U(0.0, 2.0, "ala ma kota kot ma alę")]
+    m = per_fragment_metrics(ref, hyp, session_id="t", mix=mix)
+    for k in ("orc", "mimo", "orccer", "mix_orc", "mix_mimo", "mix_cer"):
+        assert isinstance(m[k], dict), f"{k} should compute under the cap"
