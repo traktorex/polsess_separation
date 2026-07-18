@@ -121,6 +121,7 @@ def test_invalid_enum_raises():
 @pytest.mark.parametrize("section,field,name", [
     ("separation", "seam_mode", "seam_mode"),
     ("separation", "volume_normalization", "volume_normalization"),
+    ("separation", "separator_backend", "separator_backend"),
     ("assembly", "output_mode", "output_mode"),
     ("enhancement", "backend", "enhancement.backend"),
     ("post_separation_processing", "backend", "post_separation_processing.backend"),
@@ -408,6 +409,7 @@ def test_default_yaml_separation_matches_dataclass():
     callers silently run a different separator/seam than YAML users."""
     yaml_cfg = load_pipeline_config_from_yaml(str(DEFAULT_YAML)).separation
     dc_cfg = PipelineConfig().separation
+    assert yaml_cfg.separator_backend == dc_cfg.separator_backend == "repo"
     assert yaml_cfg.checkpoint_path == dc_cfg.checkpoint_path
     assert yaml_cfg.seam_mode == dc_cfg.seam_mode
     assert yaml_cfg.vad_threshold == dc_cfg.vad_threshold

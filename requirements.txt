@@ -21,5 +21,7 @@ rapidfuzz>=3.0.0   # ASR-eval: fast char edit distance for CER under cpWER assig
 pyannote.audio>=3.1,<5  # ASR-pipeline: diarization stage; <5 pins the 3.x/4.x output shape the stage duck-types
 onnxruntime>=1.16.0  # fragment-acoustics: DNSMOS sig_bak_ovr ONNX inference (CPU)
 pyloudnorm>=0.2.0    # fragment-acoustics: integrated LUFS in score_fragment_acoustics.py
+sr-corrnet-ss @ git+https://github.com/dmlguq456/SR_CorrNet_SS  # B1 sr_corrnet separator backend (MIT)
+loguru>=0.7.0        # sole new transitive need of sr-corrnet-ss (its other deps already above)
 
 mamba-ssm>=2.3.1; platform_system=="Linux"

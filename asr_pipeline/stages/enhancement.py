@@ -95,6 +95,28 @@ def _hann_overlap_add(
 # ---------------------------------------------------------------------------
 
 
+def force_clearvoice_onto_device(cv, device: torch.device):
+    """Force a ClearVoice instance's model onto ``device`` and return its
+    selected model wrapper (``cv.models[0]``).
+
+    ClearerVoice picks its own GPU at init via ``get_free_gpu``; this pins the
+    model + its inference helpers onto the device the pipeline is using so a
+    stage never runs on a different GPU than the rest. Shared by this stage's
+    `_ClearVoiceBackend` and the separation stage's clearvoice backend — one
+    home for the private-layout workaround (``.device`` attr, the ModuleList
+    branch), so an upstream layout change is edited once.
+    """
+    sm = cv.models[0]
+    sm.device = device
+    if sm.model is not None:
+        if isinstance(sm.model, torch.nn.ModuleList):
+            for m in sm.model:
+                m.to(device).eval()
+        else:
+            sm.model.to(device).eval()
+    return sm
+
+
 class _ClearVoiceBackend:
     """Wrapper around any of ClearerVoice-Studio's single-output SE models.
 
@@ -133,18 +155,7 @@ class _ClearVoiceBackend:
             task="speech_enhancement",
             model_names=[self.model_name],
         )
-        # ClearerVoice picks its own GPU at init via `get_free_gpu`. Force
-        # the model + its inference helpers onto the device our pipeline
-        # is using, so we don't end up running enhancement on a different
-        # GPU than the rest of the stages.
-        sm = cv.models[0]
-        sm.device = device
-        if sm.model is not None:
-            if isinstance(sm.model, torch.nn.ModuleList):
-                for m in sm.model:
-                    m.to(device).eval()
-            else:
-                sm.model.to(device).eval()
+        sm = force_clearvoice_onto_device(cv, device)
         self._cv = cv
         self._device = device
         # Respect each backend's one-pass window so we chunk just under it.

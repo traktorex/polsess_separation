@@ -7,8 +7,15 @@ the PIT chunk-alignment heuristic.
 
 import numpy as np
 import pytest
+import torch
 
 from asr_pipeline.stages.separation import (
+    _ClearVoiceSeparator,
+    _MossFormer2DPSeparator,
+    _SpeechBrainSeparator,
+    _SRCorrNetSeparator,
+    _TFLocoformerAdapter,
+    _TigerSeparator,
     _dilate_mask,
     _extend_end_to_silence,
     _extend_start_to_silence,
@@ -288,3 +295,186 @@ def test_pit_silent_tail_keeps_order():
     cur1, cur2 = np.ones(8), -np.ones(8)
     r1, r2 = _pit_swap_if_needed(prev1, prev2, cur1, cur2, overlap_samples=8)
     assert np.array_equal(r1, cur1) and np.array_equal(r2, cur2)
+
+
+# ---------------------------------------------------------------------------
+# External separator adapters (B1 swap) — fakes only, no downloads
+# ---------------------------------------------------------------------------
+
+
+class _FakeSBModel:
+    """Stands in for a SpeechBrain separation model: separate_batch returns
+    [batch, time, n_src] with source k = (input + k) so the permute is
+    checkable per source."""
+
+    def __init__(self, n_src: int = 2) -> None:
+        self.n_src = n_src
+
+    def separate_batch(self, mix: torch.Tensor) -> torch.Tensor:
+        return torch.stack(
+            [mix + float(k) for k in range(self.n_src)], dim=-1
+        )
+
+
+def test_speechbrain_adapter_permutes_to_contract():
+    adapter = _SpeechBrainSeparator(_FakeSBModel())
+    x = torch.arange(16, dtype=torch.float32).unsqueeze(0)  # [1, T]
+    out = adapter(x)
+    assert out.shape == (1, 2, 16)
+    assert torch.equal(out[0, 0], x[0])          # source 0 = input + 0
+    assert torch.equal(out[0, 1], x[0] + 1.0)    # source 1 = input + 1
+
+
+def test_speechbrain_adapter_rejects_non_two_source():
+    adapter = _SpeechBrainSeparator(_FakeSBModel(n_src=3))
+    with pytest.raises(RuntimeError, match="2-source"):
+        adapter(torch.zeros(1, 16))
+
+
+class _FakeCV:
+    """Stands in for a ClearVoice instance: callable, returns a fixed-shape
+    numpy array regardless of input."""
+
+    def __init__(self, out_shape) -> None:
+        self.out_shape = out_shape
+
+    def __call__(self, batched):
+        n = int(np.prod(self.out_shape))
+        return np.arange(n, dtype=np.float32).reshape(self.out_shape)
+
+
+def test_clearvoice_adapter_reshapes_nsrc_batch_time():
+    # MossFormer2_SS_16K's observed convention: (n_src, 1, T).
+    adapter = _ClearVoiceSeparator(_FakeCV((2, 1, 8)), one_pass_window_s=2.0,
+                                   sample_rate=16_000)
+    out = adapter(torch.zeros(1, 8))
+    assert out.shape == (1, 2, 8)
+    assert float(out[0, 0, 0]) == 0.0 and float(out[0, 1, 0]) == 8.0
+
+
+def test_clearvoice_adapter_accepts_two_dim_output():
+    adapter = _ClearVoiceSeparator(_FakeCV((2, 8)), one_pass_window_s=2.0,
+                                   sample_rate=16_000)
+    assert adapter(torch.zeros(1, 8)).shape == (1, 2, 8)
+
+
+def test_clearvoice_adapter_rejects_wrong_source_count():
+    adapter = _ClearVoiceSeparator(_FakeCV((3, 8)), one_pass_window_s=2.0,
+                                   sample_rate=16_000)
+    with pytest.raises(RuntimeError, match="2-source"):
+        adapter(torch.zeros(1, 8))
+
+
+def test_clearvoice_adapter_refuses_input_beyond_one_pass_window():
+    # Longer input would silently hand stitching to ClearVoice's internal
+    # segmented decode (SCOPE §4.1) — must refuse, naming the knobs to lower.
+    adapter = _ClearVoiceSeparator(_FakeCV((2, 8)), one_pass_window_s=2.0,
+                                   sample_rate=16_000)
+    with pytest.raises(RuntimeError, match="training_chunk_length_s"):
+        adapter(torch.zeros(1, 2 * 16_000 + 1))
+
+
+# ---------------------------------------------------------------------------
+# B1 tier-2 SOTA adapters (sr_corrnet / tf_locoformer / tiger / mossformer2_dp)
+# ---------------------------------------------------------------------------
+
+class _FakeSSInference:
+    def __init__(self, n_src: int = 2, extra: int = 0) -> None:
+        self.n_src = n_src
+        self.extra = extra  # length mismatch across sources
+
+    def process_waveform(self, waveform, n_spks=None):
+        t = waveform.shape[-1]
+        wavs = [torch.full((t + (self.extra if k else 0),), float(k))
+                for k in range(self.n_src)]
+        return {"waveforms": wavs, "vad": None, "doa": None}
+
+
+def test_sr_corrnet_adapter_stacks_to_contract():
+    adapter = _SRCorrNetSeparator(_FakeSSInference())
+    out = adapter(torch.zeros(1, 64))
+    assert out.shape == (1, 2, 64)
+    assert float(out[0, 1, 0]) == 1.0
+
+
+def test_sr_corrnet_adapter_trims_to_common_length():
+    out = _SRCorrNetSeparator(_FakeSSInference(extra=5))(torch.zeros(1, 64))
+    assert out.shape == (1, 2, 64)
+
+
+def test_sr_corrnet_adapter_rejects_wrong_source_count():
+    with pytest.raises(RuntimeError, match="expected 2"):
+        _SRCorrNetSeparator(_FakeSSInference(n_src=3))(torch.zeros(1, 64))
+
+
+class _IdentityTFModel:
+    """Returns the input spectrum for both speakers → the adapter's
+    STFT→model→iSTFT round-trip must reproduce the input waveform."""
+
+    def __call__(self, spec):  # [B, T', F] complex
+        return torch.stack([spec, spec], dim=1)  # [B, 2, T', F]
+
+
+def test_tf_locoformer_adapter_roundtrip_preserves_waveform():
+    adapter = _TFLocoformerAdapter(_IdentityTFModel(), n_fft=256, hop_length=64)
+    x = torch.sin(torch.linspace(0, 40.0, 4000)).unsqueeze(0)
+    out = adapter(x)
+    assert out.shape == (1, 2, 4000)
+    # hann/center STFT↔iSTFT is a faithful round-trip away from the edges
+    assert torch.allclose(out[0, 0, 256:-256], x[0, 256:-256], atol=1e-4)
+
+
+def test_tf_locoformer_adapter_rejects_bad_shape():
+    class _Bad:
+        def __call__(self, spec):
+            return torch.stack([spec] * 3, dim=1)
+
+    with pytest.raises(RuntimeError, match="expected \\[batch, 2"):
+        _TFLocoformerAdapter(_Bad(), n_fft=256, hop_length=64)(torch.zeros(1, 1024))
+
+
+class _FakeWaveModel:
+    """[1, C, T] → [1, n_src, T] (TIGER convention)."""
+
+    def __init__(self, n_src: int = 2) -> None:
+        self.n_src = n_src
+
+    def __call__(self, x):
+        b, _, t = x.shape
+        return torch.stack(
+            [torch.full((b, t), float(k)) for k in range(self.n_src)], dim=1
+        )
+
+
+def test_tiger_adapter_passes_through_contract():
+    out = _TigerSeparator(_FakeWaveModel())(torch.zeros(1, 64))
+    assert out.shape == (1, 2, 64)
+
+
+def test_tiger_adapter_rejects_wrong_source_count():
+    with pytest.raises(RuntimeError, match="expected \\[1, 2"):
+        _TigerSeparator(_FakeWaveModel(n_src=3))(torch.zeros(1, 64))
+
+
+class _FakeBTSModel:
+    """[B, T] → [B, T, n_src] (SpeechBrain / dual-path MossFormer2 convention)."""
+
+    def __init__(self, n_src: int = 2) -> None:
+        self.n_src = n_src
+
+    def __call__(self, mix):
+        return torch.stack(
+            [mix + float(k) for k in range(self.n_src)], dim=-1
+        )
+
+
+def test_mossformer2_dp_adapter_permutes_to_contract():
+    x = torch.arange(16, dtype=torch.float32).unsqueeze(0)
+    out = _MossFormer2DPSeparator(_FakeBTSModel())(x)
+    assert out.shape == (1, 2, 16)
+    assert torch.equal(out[0, 1], x[0] + 1.0)
+
+
+def test_mossformer2_dp_adapter_rejects_wrong_source_count():
+    with pytest.raises(RuntimeError, match="expected \\[batch, time, 2"):
+        _MossFormer2DPSeparator(_FakeBTSModel(n_src=3))(torch.zeros(1, 16))

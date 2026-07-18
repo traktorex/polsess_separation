@@ -91,14 +91,56 @@ def preflight(cfg: PipelineConfig) -> list:
                 "(isolated CohereX venv python)."
             )
 
-    # --- Stage 3b: separator checkpoint (repo-relative path) ---
+    # --- Stage 3b: separator (checkpoint_path meaning depends on backend) ---
     if cfg.separation.enabled:
-        sep_ck = Path(cfg.separation.checkpoint_path)
-        if not sep_ck.exists():
-            problems.append(
-                f"separator checkpoint missing: {sep_ck} (the path is repo-relative "
-                "— run from the repo root or set an absolute separation.checkpoint_path)."
-            )
+        sep_backend = cfg.separation.separator_backend
+        if sep_backend == "repo":
+            sep_ck = Path(cfg.separation.checkpoint_path)
+            if not sep_ck.exists():
+                problems.append(
+                    f"separator checkpoint missing: {sep_ck} (the path is repo-relative "
+                    "— run from the repo root or set an absolute separation.checkpoint_path)."
+                )
+        elif sep_backend == "speechbrain":
+            if importlib.util.find_spec("speechbrain") is None:
+                problems.append(
+                    "separation.separator_backend='speechbrain' needs the "
+                    "`speechbrain` package (a main-venv dependency)."
+                )
+            else:
+                from asr_pipeline.config import speechbrain_savedir
+
+                savedir = speechbrain_savedir(cfg.separation.checkpoint_path)
+                if not savedir.exists():
+                    print(
+                        f"[warn] external separator not cached yet ({savedir}) — "
+                        "the first run downloads it from HuggingFace (needs "
+                        "network; unset $HF_HUB_OFFLINE for that run)."
+                    )
+        elif sep_backend == "clearvoice":
+            if importlib.util.find_spec("clearvoice") is None:
+                problems.append(
+                    "separation.separator_backend='clearvoice' needs the "
+                    "`clearvoice` package (a main-venv dependency)."
+                )
+        elif sep_backend == "sr_corrnet":
+            if importlib.util.find_spec("sr_corrnet") is None:
+                problems.append(
+                    "separation.separator_backend='sr_corrnet' needs the "
+                    "sr-corrnet-ss package: pip install --no-deps "
+                    "git+https://github.com/dmlguq456/SR_CorrNet_SS "
+                    "&& pip install loguru"
+                )
+        elif sep_backend == "tf_locoformer":
+            ck = Path(cfg.separation.checkpoint_path)
+            if not ck.exists():
+                problems.append(
+                    f"tf_locoformer checkpoint missing: {ck} (download "
+                    "recipe in asr_pipeline/vendor/tf_locoformer/__init__.py)."
+                )
+        # "tiger" and "mossformer2_dp" need only vendored code + an HF
+        # download at load — nothing to preflight beyond the config
+        # validation already done.
 
     # --- Warn-only: num2words (SCOPE §10 q2 is the author's; preflight never blocks) ---
     if not _num2words_importable():

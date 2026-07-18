@@ -400,6 +400,305 @@ def _separate_overlap_add(
 
 
 # ---------------------------------------------------------------------------
+# External separator backends (B1 swap)
+# ---------------------------------------------------------------------------
+#
+# Both adapters present the repo separator contract the stage already calls:
+# ``separator(audio_lo)`` with ``[1, T]`` float32 at ``separator_sample_rate``
+# → ``[1, 2, T]``. Construction is split from download/model setup
+# (`_load_*` helpers) so tests can inject fakes without network access.
+
+
+def _device_str(device: torch.device) -> str:
+    """Explicit device string: SpeechBrain's and SR-CorrNet's parsers choke on
+    a bare "cuda" (no index) — hand them "cuda:0"-style."""
+    if device.type == "cuda":
+        return f"cuda:{device.index if device.index is not None else 0}"
+    return str(device)
+
+
+class _SpeechBrainSeparator(torch.nn.Module):
+    """Adapter: SpeechBrain separation model → the repo separator contract.
+
+    ``separate_batch`` takes ``[batch, time]`` at the model's own sample rate
+    and returns ``[batch, time, n_src]``, already padded/trimmed to the input
+    length — so the adapter is a permute plus a source-count check.
+    """
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        est = self.model.separate_batch(audio_lo)
+        if est.dim() != 3 or est.shape[-1] != 2:
+            raise RuntimeError(
+                f"SpeechBrain separator returned shape {tuple(est.shape)}; "
+                "expected [batch, time, 2] — not a 2-source separation model?"
+            )
+        return est.permute(0, 2, 1)
+
+
+def _load_speechbrain_separator(
+    source: str, device: torch.device
+) -> _SpeechBrainSeparator:
+    """Download (first run) + load a SpeechBrain separation model from HF.
+
+    ``source`` is the HF repo id carried in ``checkpoint_path``
+    (e.g. "speechbrain/sepformer-whamr").
+    """
+    from speechbrain.inference.separation import SepformerSeparation
+
+    from asr_pipeline.config import speechbrain_savedir
+
+    model = SepformerSeparation.from_hparams(
+        source=source,
+        savedir=str(speechbrain_savedir(source)),
+        run_opts={"device": _device_str(device)},
+    )
+    model.eval()
+    return _SpeechBrainSeparator(model)
+
+
+class _ClearVoiceSeparator(torch.nn.Module):
+    """Adapter: ClearerVoice-Studio separation model → the repo separator
+    contract, via the tensor-to-tensor ClearVoice call (same idiom as the
+    enhancement stage's `_ClearVoiceBackend`). MossFormer2_SS_16K returns
+    ``(n_src, batch, T)``.
+
+    ClearVoice's own long-audio segmented decode is a different stitching
+    algorithm than this stage's configured Hann overlap-add — letting it kick
+    in would silently substitute the processing the operator configured
+    (SCOPE §4.1), so inputs longer than the model's one-pass window are
+    refused, naming the knobs to lower.
+    """
+
+    def __init__(self, cv, one_pass_window_s: float, sample_rate: int) -> None:
+        super().__init__()
+        self._cv = cv
+        self.one_pass_window_s = float(one_pass_window_s)
+        self.sample_rate = int(sample_rate)
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        max_samples = int(self.one_pass_window_s * self.sample_rate)
+        if audio_lo.shape[-1] > max_samples:
+            raise RuntimeError(
+                f"ClearVoice separator got "
+                f"{audio_lo.shape[-1] / self.sample_rate:.2f} s of input but its "
+                f"one-pass decode window is {self.one_pass_window_s:.1f} s; longer "
+                "input would trigger ClearVoice's internal segmented decode — a "
+                "different stitching algorithm than the configured overlap-add "
+                "(SCOPE §4.1, no silent substitution). Set "
+                "separation.training_chunk_length_s, min_fragment_length_s and "
+                "overlap_add_threshold_s at or below the window."
+            )
+        batched = np.asarray(audio_lo.detach().cpu().numpy(), dtype=np.float32)  # (1, T)
+        out = np.asarray(self._cv(batched), dtype=np.float32)
+        if out.ndim == 3 and out.shape[1] == 1:  # (n_src, 1, T) → (n_src, T)
+            out = out[:, 0, :]
+        if out.ndim != 2 or out.shape[0] != 2:
+            raise RuntimeError(
+                f"ClearVoice separator returned shape {out.shape}; expected "
+                "(2, T) or (2, 1, T) — not a 2-source separation model?"
+            )
+        return torch.from_numpy(out).unsqueeze(0)
+
+
+class _SRCorrNetSeparator(torch.nn.Module):
+    """Adapter: SR-CorrNet-SS (`sr-corrnet-ss` pip pkg) → the repo contract.
+
+    `SSInference.process_waveform` is self-contained (its own std input
+    normalisation + STFT/iSTFT) and returns per-speaker 1-D waveforms. Its
+    internal normalisation changes output scale — the stage's
+    `sum_equals_mix` volume normalisation restores mixture level afterwards.
+    """
+
+    def __init__(self, ss_inference) -> None:
+        super().__init__()
+        self._ss = ss_inference
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        out = self._ss.process_waveform(
+            audio_lo.squeeze(0), n_spks=torch.tensor(2)
+        )
+        wavs = out["waveforms"]
+        if len(wavs) != 2:
+            raise RuntimeError(
+                f"SR-CorrNet returned {len(wavs)} source(s); expected 2."
+            )
+        n = min(w.shape[-1] for w in wavs)
+        return torch.stack(
+            [w.detach().reshape(-1)[:n].cpu() for w in wavs], dim=0
+        ).unsqueeze(0)
+
+
+def _load_sr_corrnet_separator(source: str, device: torch.device):
+    """Load an SR-CorrNet-SS checkpoint from HF (e.g.
+    "shinuh/sr-corrnet-ss-1ch-whamr"). Needs the `sr-corrnet-ss` package
+    (installed from github.com/dmlguq456/SR_CorrNet_SS, MIT)."""
+    try:
+        from sr_corrnet import SSInference
+    except ImportError as e:
+        raise ImportError(
+            "separator_backend='sr_corrnet' needs the sr-corrnet-ss package: "
+            "pip install --no-deps git+https://github.com/dmlguq456/SR_CorrNet_SS "
+            "&& pip install loguru"
+        ) from e
+
+    # NB the HF repo id goes in `checkpoint_path` (config auto-resolves from
+    # the repo's config.yaml); the package's own docstring example passing it
+    # positionally as `config` is stale against its signature.
+    return _SRCorrNetSeparator(
+        SSInference.from_pretrained(
+            checkpoint_path=source, device=_device_str(device)
+        )
+    )
+
+
+class _TFLocoformerAdapter(torch.nn.Module):
+    """Adapter: vendored TF-Locoformer standalone model → the repo contract.
+
+    The model maps complex STFT [B, T, F] → per-speaker complex STFT
+    [B, 2, T, F]; this adapter owns the STFT/iSTFT round-trip with the
+    checkpoint's own analysis params (hann, center — torch defaults match
+    ESPnet's, which the weights were trained under).
+    """
+
+    def __init__(self, model, n_fft: int, hop_length: int) -> None:
+        super().__init__()
+        self.model = model
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        n_in = audio_lo.shape[-1]
+        window = torch.hann_window(self.n_fft, device=audio_lo.device)
+        spec = torch.stft(
+            audio_lo, self.n_fft, hop_length=self.hop_length,
+            window=window, return_complex=True,
+        )  # [1, F, T']
+        est = self.model(spec.transpose(1, 2))  # [1, 2, T', F] complex
+        if est.dim() != 4 or est.shape[1] != 2:
+            raise RuntimeError(
+                f"TF-Locoformer returned shape {tuple(est.shape)}; "
+                "expected [batch, 2, frames, freqs]."
+            )
+        wavs = torch.istft(
+            est.squeeze(0).transpose(1, 2), self.n_fft,
+            hop_length=self.hop_length, window=window, length=n_in,
+        )  # [2, T]
+        return wavs.unsqueeze(0)
+
+
+def _load_tf_locoformer_separator(
+    ckpt_path: str, device: torch.device
+) -> _TFLocoformerAdapter:
+    """Load the vendored TF-Locoformer with a local checkpoint file
+    (``checkpoint_path`` = the .pth). Model kwargs + STFT params are the
+    WHAMR-medium constants recorded in the vendor package — the one published
+    checkpoint this arm uses; extend there if another variant is ever added."""
+    from asr_pipeline.vendor.tf_locoformer import (
+        TFLocoformerSeparator, WHAMR_MEDIUM_KWARGS, WHAMR_MEDIUM_STFT,
+    )
+
+    model = TFLocoformerSeparator(**WHAMR_MEDIUM_KWARGS)
+    sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    # Upstream ships keys prefixed 'separator.' (ESPnet wrapper) — strip.
+    sd = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
+    model.load_state_dict(sd, strict=True)
+    model.to(device).eval()
+    return _TFLocoformerAdapter(model, **WHAMR_MEDIUM_STFT)
+
+
+class _MossFormer2DPSeparator(torch.nn.Module):
+    """Adapter: vendored dual-path MossFormer2 (alibabasglab standalone) →
+    the repo contract. Wrapper forward is [B, T] → [B, T, num_spks], so a
+    permute plus a source-count check (same shape family as SpeechBrain)."""
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        est = self.model(audio_lo)
+        if est.dim() != 3 or est.shape[-1] != 2:
+            raise RuntimeError(
+                f"Dual-path MossFormer2 returned shape {tuple(est.shape)}; "
+                "expected [batch, time, 2]."
+            )
+        return est.permute(0, 2, 1)
+
+
+def _load_mossformer2_dp_separator(
+    source: str, device: torch.device
+) -> _MossFormer2DPSeparator:
+    """Load a dual-path MossFormer2 checkpoint from HF (e.g.
+    "alibabasglab/mossformer2-whamr-2spk"). Model code is vendored under
+    asr_pipeline/vendor/mossformer2_dp (MIT)."""
+    from asr_pipeline.vendor.mossformer2_dp import Mossformer2Wrapper
+
+    model = Mossformer2Wrapper.from_pretrained(source)
+    model.to(device).eval()
+    return _MossFormer2DPSeparator(model)
+
+
+class _TigerSeparator(torch.nn.Module):
+    """Adapter: vendored TIGER → the repo contract. TIGER is
+    waveform-to-waveform ([B, C, T] → [B, num_sources, T]) so this is a
+    reshape plus a source-count check."""
+
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, audio_lo: torch.Tensor) -> torch.Tensor:
+        est = self.model(audio_lo.unsqueeze(0))  # [1, 1, T] → [1, n_src, T]
+        if est.dim() != 3 or est.shape[1] != 2:
+            raise RuntimeError(
+                f"TIGER returned shape {tuple(est.shape)}; expected [1, 2, T]."
+            )
+        return est
+
+
+def _load_tiger_separator(source: str, device: torch.device) -> _TigerSeparator:
+    """Load vendored TIGER from HF (e.g. "JusperLee/TIGER-speech", 16 kHz —
+    set separator_sample_rate accordingly). Architecture kwargs ride in the
+    checkpoint's config.json via PyTorchModelHubMixin."""
+    from asr_pipeline.vendor.tiger import TIGER
+
+    model = TIGER.from_pretrained(source)
+    model.to(device).eval()
+    return _TigerSeparator(model)
+
+
+def _load_clearvoice_separator(
+    model_name: str, sample_rate: int, device: torch.device
+) -> _ClearVoiceSeparator:
+    """Load a ClearerVoice-Studio separation model (e.g. "MossFormer2_SS_16K").
+
+    ``one_time_decode_length`` is read fail-loud (enhancement-stage
+    convention). ``sample_rate`` is the operator-declared
+    ``separator_sample_rate``; when the model args expose a sampling rate the
+    two are cross-checked so a 16 k model never silently runs on 8 k input.
+    """
+    from clearvoice import ClearVoice
+
+    from asr_pipeline.stages.enhancement import force_clearvoice_onto_device
+
+    cv = ClearVoice(task="speech_separation", model_names=[model_name])
+    sm = force_clearvoice_onto_device(cv, device)
+    native_sr = getattr(sm.args, "sampling_rate", None)
+    if native_sr is not None and int(native_sr) != int(sample_rate):
+        raise RuntimeError(
+            f"separation.separator_sample_rate={sample_rate} but ClearVoice "
+            f"{model_name} reports sampling_rate={native_sr} — fix the config."
+        )
+    return _ClearVoiceSeparator(
+        cv, float(sm.args.one_time_decode_length), sample_rate
+    )
+
+
+# ---------------------------------------------------------------------------
 # Volume normalisation
 # ---------------------------------------------------------------------------
 
@@ -523,14 +822,60 @@ class SeparationStage(Stage):
     # Lifecycle
     # ------------------------------------------------------------------
     def load(self, device: torch.device) -> None:
-        # Separator — the one seam back to the parent project. When the
-        # package is lifted into CLARIN this is the only line to replace.
-        from utils.model_utils import load_model_for_inference
+        backend = self.config.separator_backend
+        if backend == "repo":
+            # Repo checkpoint — the one seam back to the parent project. When
+            # the package is lifted into CLARIN this is the only line to
+            # replace (the external backends below have no parent imports).
+            from utils.model_utils import load_model_for_inference
 
-        separator, _ckpt = load_model_for_inference(
-            self.config.checkpoint_path, device=str(device)
-        )
-        separator.eval()
+            separator, _ckpt = load_model_for_inference(
+                self.config.checkpoint_path, device=str(device)
+            )
+            separator.eval()
+        elif backend == "speechbrain":
+            separator = _load_speechbrain_separator(
+                self.config.checkpoint_path, device
+            )
+        elif backend == "clearvoice":
+            separator = _load_clearvoice_separator(
+                self.config.checkpoint_path,
+                self.config.separator_sample_rate,
+                device,
+            )
+            # Static-geometry check at load, not per fragment: window/chunk
+            # knobs above the model's one-pass decode window would otherwise
+            # fail every overlap identically mid-batch (the adapter's forward
+            # refusal stays as defense-in-depth).
+            widest_s = max(
+                self.config.training_chunk_length_s,
+                self.config.min_fragment_length_s,
+                self.config.overlap_add_threshold_s,
+            )
+            if widest_s > separator.one_pass_window_s:
+                raise ValueError(
+                    f"clearvoice separator's one-pass decode window is "
+                    f"{separator.one_pass_window_s:.1f} s but the configured "
+                    f"geometry allows {widest_s:.1f} s windows — set "
+                    "separation.training_chunk_length_s, min_fragment_length_s "
+                    "and overlap_add_threshold_s at or below the window."
+                )
+        elif backend == "sr_corrnet":
+            separator = _load_sr_corrnet_separator(
+                self.config.checkpoint_path, device
+            )
+        elif backend == "tf_locoformer":
+            separator = _load_tf_locoformer_separator(
+                self.config.checkpoint_path, device
+            )
+        elif backend == "tiger":
+            separator = _load_tiger_separator(self.config.checkpoint_path, device)
+        elif backend == "mossformer2_dp":
+            separator = _load_mossformer2_dp_separator(
+                self.config.checkpoint_path, device
+            )
+        else:  # unreachable — PipelineConfig.__post_init__ validates the enum
+            raise ValueError(f"Unknown separator_backend: {backend!r}")
 
         vad_model, _ = torch.hub.load(
             "snakers4/silero-vad", "silero_vad", trust_repo=True
@@ -542,11 +887,11 @@ class SeparationStage(Stage):
         self._device = device
 
     def load_signature(self) -> tuple:
-        # Only the separator checkpoint controls which weights end up on the
-        # GPU. All other knobs (context window mode, seam mode, VAD
+        # Only the separator backend + checkpoint control which weights end up
+        # on the GPU. All other knobs (context window mode, seam mode, VAD
         # thresholds, volume normalisation, etc.) are runtime behaviour —
         # re-read on every call, no reload needed.
-        return (self.config.checkpoint_path,)
+        return (self.config.separator_backend, self.config.checkpoint_path)
 
     def unload(self) -> None:
         # Detailed logging here because this method is the prime suspect for

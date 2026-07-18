@@ -36,6 +36,7 @@ enhancement:
 
 separation:
   enabled: true
+  separator_backend: repo                 # one of config.SEPARATOR_BACKENDS; loader notes on SeparationConfig
   checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt
   separator_sample_rate: 8000
   training_chunk_length_s: 4.0

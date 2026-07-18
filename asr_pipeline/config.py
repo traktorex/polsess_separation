@@ -290,6 +290,24 @@ class EnhancementConfig:
     resample_quality: str = "soxr_hq"
 
 
+# The one authoritative separator-backend name set: __post_init__ validates
+# against it, and callers (preflight, tests) reference it instead of
+# re-enumerating. Per-backend semantics are documented on
+# `SeparationConfig.separator_backend` below.
+SEPARATOR_BACKENDS = (
+    "repo", "speechbrain", "clearvoice",
+    "sr_corrnet", "tf_locoformer", "tiger", "mossformer2_dp",
+)
+
+
+def speechbrain_savedir(source: str) -> Path:
+    """Cache dir for a SpeechBrain HF checkpoint (repo-relative, like the repo
+    checkpoints, so $HF_HUB_OFFLINE=1 eval runs keep working once cached).
+    Lives here (torch-free module) so preflight can warn about a pending
+    first-run download without importing the torch-heavy separation stage."""
+    return Path("checkpoints/external/speechbrain") / source.replace("/", "__")
+
+
 @dataclass
 class SeparationConfig:
     """Stage 3b: source separation on overlap regions + VAD gating.
@@ -302,6 +320,36 @@ class SeparationConfig:
     """
 
     enabled: bool = True
+    # Which loader interprets `checkpoint_path` (B1 external-separator swap):
+    #   - "repo": a repo training checkpoint file, loaded via
+    #     utils.model_utils.load_model_for_inference (reads model_type from the
+    #     embedded config — any architecture trained in this repo works).
+    #   - "speechbrain": a HuggingFace repo id (e.g.
+    #     "speechbrain/sepformer-whamr"), loaded via speechbrain.inference and
+    #     cached under checkpoints/external/speechbrain/. NB SpeechBrain
+    #     separators emit unnormalised (hot) streams — keep
+    #     volume_normalization: sum_equals_mix on this backend.
+    #   - "clearvoice": a ClearerVoice-Studio separation model name (e.g.
+    #     "MossFormer2_SS_16K"), loaded through the `clearvoice` package
+    #     (already a dependency via the enhancement stage). Its one-pass decode
+    #     window is short (2 s for MossFormer2_SS_16K); the adapter refuses
+    #     longer inputs, so set training_chunk_length_s / min_fragment_length_s
+    #     / overlap_add_threshold_s at or below that window.
+    #   B1 tier-2 SOTA arms (2026-07-18):
+    #   - "sr_corrnet": an SR-CorrNet-SS HF id (e.g.
+    #     "shinuh/sr-corrnet-ss-1ch-whamr", 8 kHz); needs the `sr-corrnet-ss`
+    #     pip package (MIT, github.com/dmlguq456/SR_CorrNet_SS).
+    #   - "tf_locoformer": a LOCAL .pth path (WHAMR-medium checkpoint at
+    #     checkpoints/external/tf_locoformer/); model code vendored under
+    #     asr_pipeline/vendor/tf_locoformer (Apache-2.0), 8 kHz.
+    #   - "tiger": a TIGER HF id (e.g. "JusperLee/TIGER-speech", 16 kHz —
+    #     set separator_sample_rate: 16000); model code vendored under
+    #     asr_pipeline/vendor/tiger (Apache-2.0).
+    #   - "mossformer2_dp": a dual-path MossFormer2 HF id (e.g.
+    #     "alibabasglab/mossformer2-whamr-2spk", 8 kHz); model code vendored
+    #     under asr_pipeline/vendor/mossformer2_dp (MIT). NB a different
+    #     architecture from the repo's own models/mossformer2.
+    separator_backend: str = "repo"  # one of SEPARATOR_BACKENDS (loader notes above)
     checkpoint_path: str = (
         "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt"
     )
@@ -873,6 +921,8 @@ class PipelineConfig:
         # Validate enum-string knobs early so misconfiguration is loud.
         _one_of(self.separation.context_window_mode, "context_window_mode",
                 ("expand_to_chunk", "fixed_pad", "none"))
+        _one_of(self.separation.separator_backend, "separation.separator_backend",
+                SEPARATOR_BACKENDS)
         _one_of(self.separation.seam_mode, "seam_mode",
                 ("zero_crossing", "overlap_boundary", "snap_to_silence"))
         _one_of(self.separation.volume_normalization, "volume_normalization",

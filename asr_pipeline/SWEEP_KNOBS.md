@@ -83,7 +83,8 @@ sweeping it would re-introduce routing-time drops and is off the table for eval.
 
 | knob | type | baseline | options/range | status | notes |
 |---|---|---|---|---|---|
-| `checkpoint_path` | str | mossformer2 matched-128k | (swappable) | 🔒/🆕 | now MossFormer2; old SepFormer 128k is an optional A/B ablation row |
+| `separator_backend` | enum | repo | repo \| speechbrain \| clearvoice \| sr_corrnet \| tf_locoformer \| tiger \| mossformer2_dp | 🆕 | **B1 external-separator swap (2026-07-18)**: selects the loader for `checkpoint_path` (repo ckpt file / HF id / ClearVoice model name / local .pth for tf_locoformer); not a sweep knob — an experiment-arm switch; arm configs `configs/b1_*.yaml` |
+| `checkpoint_path` | str | mossformer2 matched-128k | (swappable) | 🔒/🆕 | now MossFormer2; old SepFormer 128k is an optional A/B ablation row; meaning depends on `separator_backend` |
 | `separator_sample_rate` | int | 8000 | — | 🔒 | = model training SR |
 | `training_chunk_length_s` | float s | 4.0 | — | 🔒 | property of the trained model; don't sweep blind |
 | `context_window_mode` | enum | expand_to_chunk | expand_to_chunk \| fixed_pad \| none | 🆕 | **how much context the separator sees — real lever, never swept** (p4/p5 ablation configs touch related behaviour) |
