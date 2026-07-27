@@ -1,132 +1,110 @@
-# Road 1 — Pipeline showcase webapp: design proposal
+# Road 1 — Pipeline showcase webapp: design (accepted)
 
-**Status: DESIGN PROPOSAL — awaiting author acceptance (author ruling 2026-07-27: no implementation until the design is accepted).**
-Provenance: four-agent research session 2026-07-27 — `clarin_review` presentation inventory, `asr_pipeline` data-surface map, framework/UX research (web), plus author rulings from the conceptual session. Companion docs: `frontends_road2_ondevice.md` (browser demo), backlog B9 (quantization ladder).
+**Status: ACCEPTED — IMPLEMENTATION GO given by author 2026-07-28** (examples-page mode §5.5 confirmed; branch `feature/webapp-showcase`; Opus 5 subagents implement, orchestrator reviews/decides/tests). Decision log §8.
+Provenance: four-agent research session 2026-07-27 (clarin_review inventory, asr_pipeline surface map, framework/UX research) + author review 2026-07-28. Companions: `frontends_road2_ondevice.md` (separate track, discussed elsewhere), backlog B9.
 
 ## 1. Product definition
 
-An **interactive showcase** for `asr_pipeline/`: upload (or pick) a recording → watch the pipeline stages execute live → listen to the two separated speaker streams and read speaker-attributed transcripts. "Real-time" means *interactive with live progress*, not streaming — the pipeline is phase-major batch. Ground truth from 6,854 historical `run_meta.json`: median **48.9 s** per fragment, p25 40.1 s, p75 58.0 s, **p95 168.8 s** (3.5× median — this kills any global percent bar; see §5.2).
+An **interactive showcase** for `asr_pipeline/`: upload (or pick) a recording → watch the pipeline stages execute live → listen to the two separated speaker streams and read speaker-attributed transcripts. "Real-time" means *interactive with live progress*, not streaming. Ground truth from 6,854 historical `run_meta.json` (predominantly ~90 s fragments — see the ETA weighting rule, §5.2): median **48.9 s**, p25 40.1, p75 58.0, **p95 168.8 s**.
 
-Audiences: the author; supervisors (persistent authenticated link); defense audience (live or recorded). Explicitly **not** a diagnostic tool — diagnostic panels exist but ship **off by default** behind a drawer (author ruling).
+Audiences: author; supervisors (persistent authenticated link); defense audience — **the webapp is a thesis artifact and will likely be shown live at the defense** (author, 2026-07-28) → pin dependency versions, archive a tagged build, and follow the §6 demo-day runbook strictly. Not a diagnostic tool — diagnostic panels ship **off by default** behind a drawer.
 
-The shipped config is `sweep_best_e31_refineplus.yaml`, which enables `relabel` → **8 stages**, not 7: diarization → routing → enhancement → separation → post_separation_processing → relabel → assembly → transcription.
+**Config identity (verified 2026-07-28):** the shipped config `configs/sweep_best_e31_refineplus.yaml` **is** the v41_merge arm — its header reads `SHIPPED BEST config — "v41_merge" (2026-07-04, V5_INSTRUMENT_PREREG.md §PHASE-2 VERDICT)`. The filename is the historical lineage name (dr_refineplus, 2026-06-19); content was updated through the v2→v5 campaigns (git: `7b3e9bd` finalists → `34d8fd3` v2_finalist → v41_merge fix-ups). It sets `relabel.enabled: true` → **8 stages**, and `assembly.output_mode: full_length` → assembled streams are mixture-length **by config**, so the whole results view shares one clock without timestamp remapping.
 
-## 2. Architecture decision
+## 2. Architecture (accepted)
 
-**Primary: FastAPI + hand-written, no-build-step JS. Progress via polling (`GET /jobs/{id}` ~1 Hz), not SSE.**
+**FastAPI + hand-written, no-build-step JS. Progress via polling (`GET /jobs/{id}` ~1 Hz), not SSE** (cloudflared Quick Tunnels buffer SSE-over-GET — cloudflared#1449). ~225 lines of timeline/waveform/karaoke/stream-switcher JS liftable from `scripts/build_review_page.py`; zero new Python dependencies (fastapi/uvicorn/starlette/python-multipart/jinja2 all present); Starlette `FileResponse` gives HTTP-Range audio seeking free.
 
-Decisive reasons:
-1. **The components already exist, written by the author.** `scripts/build_review_page.py` contains a working 4-lane SVG diarization timeline with overlap bands + adaptive ruler + click-to-seek; server-side peak extraction (`_peaks`, 400 buckets); two-lane SVG waveforms; an A/B/Both stream switcher that preserves `currentTime`; karaoke word-highlighting with change-only DOM writes; one `requestAnimationFrame` clock driving everything. ~225 lines directly liftable, already debugged, already matching the data.
-2. **Zero new dependencies.** `fastapi 0.136.0`, `uvicorn`, `starlette 1.0`, `python-multipart`, `jinja2` are all already in the fragile main venv. Starlette's `FileResponse` does HTTP Range natively → `<audio>` seeking works for free.
-3. **SSE is a demo-day landmine**: cloudflared Quick Tunnels buffer SSE-over-GET until the connection closes (cloudflared#1449, open). Polling is immune to every proxy pathology, survives page reload and phone sleep, and a ~50 s job at 1 Hz is ~50 requests. WebSocket (supported by cloudflared) only if sub-second smoothness ever proves necessary.
-4. **SCOPE §1 pushes the same way**: the queue must live outside `asr_pipeline/`; a framework that wants to own the queue fights the contract.
-5. Design polish is the stated priority; FastAPI + own JS is the option where the layout is fully ours.
-
-**Runner-up (genuine second): Gradio 6** — 6.12.0 already installed; `gr.HTML(html_template=…, js_on_load=…, server_functions=…)` + `head=` makes bespoke components possible without the custom-component toolchain now. Rejected for the showcase because the layout is the product and Gradio 6.x is churning (breaking changes across minor versions). **Escape hatch kept**: `gr.mount_gradio_app` can later mount a knob-twiddling "lab" Blocks app at `/lab` in the same process — a web `explore_pipeline` — without touching the showcase surface. Don't build it up front.
-
-Rejected: Streamlit (rerun model fights a 50 s blocking GPU job), NiceGUI (build all audio UI ourselves *and* inherit Material look), Reflex/FastHTML (new dependency, no payoff).
+**Gradio rejected outright (author).** The previously mooted `/lab` escape hatch — mounting an auto-generated Gradio Blocks knob-panel at a sub-path as a web `explore_pipeline` — is dropped with it. Future config choice (author: "later a dropdown with choosable configs") will be a plain `<select>` over `asr_pipeline/configs/*.yaml` presets in our own UI, run through `apply_overrides`/`load_pipeline_config_from_yaml` — no framework needed. v1 ships **one fixed config** (v41_merge) and zero knobs.
 
 ## 3. Placement and SCOPE compliance
 
-- New top-level **`webapp/`** directory, sibling of `asr_pipeline/`. Imports the package **read-only**; `asr_pipeline` never imports the webapp. No server code inside the package (SCOPE §1/§7 — Life-2-shaped work stays outside).
-- **Queue**: one `threading.Thread` worker consuming a `queue.Queue`; `concurrency_limit = 1` by physics (12 GB GPU, phase-major). No platform job queue — SCOPE forbids it in Life 1.
-- **Error semantics** (SCOPE §4.2 reading): the *webapp* owns per-job isolation exactly as `run_batch` does — a failed job renders an error card with the exception type; the pipeline keeps failing loudly underneath. No auto-retry, no partial-success framing, no fallback toggles (§4.1 no-silent-substitution — includes the Sortformer >240 s streaming-model swap warning, which the UI must surface).
-- **Startup**: `check_preflight(cfg)` before serving — missing `$SORTFORMER_VENV_PY`/`$HF_TOKEN` fails in seconds, with the non-raising `preflight(cfg)` list rendered as a ✓/✗ config-health screen.
+Unchanged from the accepted proposal: new top-level **`webapp/`**, pure read-only consumer of `asr_pipeline`; one worker thread + `queue.Queue` (concurrency 1 by physics, FIFO, visible queue position); webapp owns per-job failure isolation (error card with exception type; the pipeline keeps failing loudly underneath — SCOPE §4.2 reading); `check_preflight(cfg)` at startup with the non-raising `preflight()` list as a ✓/✗ config-health screen; no silent substitution anywhere — the >240 s Sortformer streaming-model swap warning is surfaced in the UI.
 
-## 4. Backend design
+## 4. Backend design (accepted; hooks approved)
 
 ```
 webapp/
-  app.py        # FastAPI: GET /, POST /jobs (upload), GET /jobs/{id} (poll), GET /jobs/{id}/files/*, GET /examples
+  app.py        # FastAPI: GET /, POST /jobs, GET /jobs/{id}, GET /jobs/{id}/files/*, GET /examples
   queue.py      # worker thread + queue.Queue; JOBS: dict[str, JobState]
-  render.py     # _peaks() lifted from build_review_page.py; optional mp3/stereo encode
+  render.py     # peaks (min/max + RMS, see §5.3); optional encode helpers
   static/       # app.js, app.css (ES modules, no build step)
   templates/    # index.html (jinja2)
 ```
 
-- Worker executes `asr_pipeline.batch.run_batch(cfg, [(job_id, path)], out_root, "pipeline", on_event=job.record, skip_existing=False)` — already a complete single-job executor with GPU teardown and `write_run_outputs`.
-- **Progress sources**: (a) `on_event` `stage_start`/`stage_end` (`load_s`/`run_s` split — trustworthy, measured around the actual calls) for the stage cards; (b) tail of `/tmp/asr_pipeline_debug.log` (`[  12.34s] [stage] message`, fsync'd, one run's worth) for intra-stage progress and **all warnings** — SCOPE §4.3 visibility carried into the UI. No `stage_end` on failure — exception propagation is the failure signal.
-- **Job persistence**: jobs live on disk under an eval-tree-shaped `out_root` (the layout `run_batch` already writes). Free result caching for canned examples via `skip_existing`; job id in the URL → deep-linkable results (fixes the review page's no-URL-state gap).
-- Data contract consumed (all existing): `stream_A/B.wav`, `transcript_*.{txt,json}` (word timestamps 100% populated + per-word alignment `score`), `annotation.eaf`, `diarization.json`, `routing.json`, `metadata.json` (provenance/config snapshot, `spk_to_label`, `weak_anchor`, sortformer `diarization_diag`), `run_meta.json`, input mixture copy. Verified: assembled streams are exactly mixture-length under the shipped config → everything shares one clock, **no timestamp_map needed** for the default surface. (Re-verify at implementation time; if `assembly.output_mode: shortened` is ever exposed, the timestamp_map hook becomes relevant.)
+Worker: `run_batch(cfg, [(job_id, path)], out_root, "pipeline", on_event=job.record, skip_existing=False)`. Progress = `on_event` (stage cards, load/run split) + debug-log tail (intra-stage counts, warnings — SCOPE §4.3 visibility). Jobs persist on disk under an eval-tree-shaped `out_root`; job id in URL (deep-linkable); `skip_existing` caches the examples gallery.
 
-**Optional package hooks — each needs explicit author sign-off, none blocks v1** (in value order, all additive/default-inert, following the `on_event=None → byte-identical` precedent):
-1. Assembly decision diagnostics onto `ctx` + `metadata.json` (per-overlap `pairing` + ECAPA cosine sums — currently function-local in `_assign_overlaps`; `diarization_diag` precedent; ~20 lines). Enables the attribution-confidence diagnostic panel.
-2. `stage_progress` event `{stage, done, total}` (~5 lines at existing dlog points). Log-tailing is a viable alternative — only worth it if tailing proves brittle.
-3. `overlaps` array into the eval-facing `diarization.json` (~3 lines) — enables the dropped/merged-region diff panel for file-based consumers.
+**Package hooks — ALL THREE APPROVED by the author 2026-07-28** (additive, default-inert, `on_event=None → byte-identical` precedent; implement during the build, each with a matching test):
+1. **Assembly attribution diagnostics**: per-overlap `pairing` (straight/swapped/arbitrary-…) + ECAPA cosine sums onto `ctx` and into `metadata.json` (the `diarization_diag` precedent; currently function-local in `_assign_overlaps`). Feeds the attribution diagnostic panel.
+2. **`stage_progress` event** `{"event","stage","done","total"}` emitted at the existing dlog loop points (separation/post-sep/assembly). Coarser fallback remains the log tail.
+3. **`overlaps` array** added to the eval-facing `diarization.json` in `io.py`. Feeds the routing dropped/merged-diff panel.
 
-## 5. UI design (the part to accept)
+(The formerly-listed timestamp_map export is **not needed**: `output_mode: full_length` is pinned in the shipped config — §1. Revisit only if `shortened` mode is ever exposed.)
 
-Visual language: carry the review page's palette (**A `#1f6feb` blue / B `#e36209` orange**, translucent red = overlap) and the notebook's color vocabulary (blue solo / red overlap pieces, magma spectrograms). One color = one speaker, everywhere — timeline, waveform, transcript headers, text tint. Render *N* speaker lanes from `metadata.speakers` (no hardcoded 2 in layout code — SCOPE §3; phantom-3rd-speaker runs display as-is, §10 q1).
+## 5. UI design (accepted with modifications)
+
+Visual language unchanged: review-page palette (A `#1f6feb` / B `#e36209`, translucent red overlap), one color = one speaker everywhere, N lanes from `metadata.speakers`. **Language (author ruling): Polish UI, but technical vocabulary stays English where Polish is unwieldy — stage names, `load`/`run` labels, file names.**
 
 ### 5.1 Screen flow
 
-**Home** (upload + canned examples) → **Job page** (progress morphing into results, same URL) → **Examples** (pre-run gallery). Uploads: drag-and-drop, client-side cap (§7), quality expectations stated (Polish speech, 2 speakers).
+Home (upload + examples link) → Job page (progress morphing into results, same URL) → Examples gallery. No upload duration cap (author ruling — §6 has the practical ceiling).
 
-### 5.2 Progress: the pipeline diagram IS the progress UI
+### 5.2 Progress (modified)
 
-Eight stage cards in fixed order, grouped into three phases:
+**One linear chain of 8 stage rows — no phase grouping** (author ruling: enhancement/relabel sat awkwardly in a "Separate" phase; the pipeline is a strict sequence, so the UI shows a single chain): diarization → routing → enhancement → separation → post_separation → relabel → assembly → transcription. Row states `pending / loading / running / done (X s) / skipped / failed`; dead time labeled (`load MossFormer2 · 26.4 M params · matched-128k`), live counts from the log tail (`region 7/12`), retrospective durations on completed rows. No global percent bar.
 
-| Phase | Stages |
-|---|---|
-| **Understand** | diarization · routing |
-| **Separate** | enhancement · separation · post_separation · relabel |
-| **Transcribe** | assembly · transcription |
+**ETA (modified — duration-weighted):** the historical corpus is ~90 s fragments, so raw per-stage medians would mislead on other lengths. Estimator: per-stage `load_s` median (constant, duration-independent) + per-stage `run_s`-per-audio-second median × upload duration; separation/post-sep re-estimated **after routing completes** using actual overlap seconds (their cost tracks overlap, not duration). Presented as coarse text ("około minuty"), refined as stages land; accumulate every finished job's `stage_timings` (with audio duration) to improve the estimator over time.
 
-Card states: `pending / loading / running / done (X s) / skipped / failed`. The `load_s`/`run_s` split is shown as two sub-phases — **dead time is labeled, not hidden**: "⟳ loading MossFormer2 · 26.4 M params · matched-128k" → "▶ separating 12 overlap regions" (counts from the log tail). Completed cards show retrospective durations (GitHub-Actions pattern). **No global percentage** (p95/median = 3.5× guarantees a stalling bar); a coarse text ETA ("about a minute") from accumulated per-stage medians scaled by audio duration; past ~2.5× estimate, copy switches to "taking longer than usual — long recordings route through the streaming diarizer".
+**Progressive disclosure (modified):** diarization timeline renders when routing completes (~s 8) with **provisional** speaker labels; after relabel+assembly finalize the stream↔speaker mapping and `spk_to_label`, the timeline component silently re-renders with final labels (visually identical in the common case; the refresh guarantees consistency). Audio players appear at assembly, transcripts at transcription.
 
-**Progressive disclosure**: the diarization timeline renders the moment routing completes (~second 8), audio players at assembly, transcripts at transcription. The viewer is reading real output while the GPU works. Queue: FIFO, visibly ("2 jobs ahead · ~2 min"), previous result stays interactive while queued.
+### 5.3 Results layout (modified in two places)
 
-### 5.3 Results layout (top to bottom)
+Order unchanged: header (name, duration, small chip row, warning banners, provenance line) → timeline stack → transport (Mixture ↔ A ↔ Both A→L·B→R ↔ B, position-preserving element swap) → transcripts → downloads.
 
-1. **Header**: recording name, duration, a *small* chip row (speakers, № overlap regions, total overlap seconds) — not the review page's 10-chip wall. Warnings as banners (weak ECAPA anchor, streaming-diarizer swap, phantom 3rd speaker). Provenance line from `metadata.config` (`enh=… · sep=… · asr=…`).
-2. **Timeline stack**, x-aligned, one shared playhead, click-anywhere-to-seek:
-   - diarization lanes (one per speaker, overlap wash behind — `buildTimeline()` minus GT lanes);
-   - waveform lanes A/B (server-rendered SVG from `_peaks()` — no client decode, no wavesurfer dependency);
-   - adaptive time ruler.
-3. **Transport**: one custom player with a four-way segmented control — **Mixture ↔ A ↔ Both (A→L·B→R) ↔ B** — preserving position and play state on switch (the review page's element-swap mechanism, kept deliberately over Web Audio crossfades: gapless enough, no iOS unlock gesture, debugged). *This control is the thesis claim made audible* — the audience hears the overlap collapse into two clean streams; the campaign's own result (separation the only Holm-significant stage) in ten seconds.
-4. **Transcripts**: two side-by-side speaker columns (A left, B right) on a shared vertical axis — the honest rendering for an overlap-heavy corpus. Turn blocks (speaker + timestamp header, text below), karaoke word-pill highlight driven by the shared clock, click-any-word-to-seek, low-alignment-confidence words subtly shaded (per-word `score`, free), autoscroll that yields to manual scrolling with a "jump to playhead" affordance. Mixture mode collapses to a single column (`transcript_mixture`).
-5. **Downloads**: `stream_A/B.wav`, transcripts (`.txt`/`.json`), `annotation.eaf` (first-class — SCOPE §9), `metadata.json`.
+**Waveforms (author ruling 2026-07-28: keep v1 simple, upgrade = deferred nice-to-have):** v1 ships the review page's proven form — server-computed peak envelope (`_peaks()`-style, ~800 buckets), canvas/SVG-rendered, click-to-seek, shared playhead, zero client decode. **Deferred nice-to-have (return if time allows):** min/max envelope + RMS body (DAW form, ~2,000 buckets) — design `render.py`'s peaks JSON with room for extra per-bucket fields so the upgrade is additive; zoom likewise deferred (wavesurfer.js v7 with precomputed peaks = drop-in path). Spectrograms stay in the diagnostics drawer.
 
-### 5.4 Diagnostics drawer (off by default — author ruling)
+**Transcripts (modified):** two speaker columns on the shared clock, turn blocks, karaoke word pill, click-word-to-seek, low-confidence shading, yielding autoscroll + "wróć do kursora". Additionally (author): columns scroll internally by default **and** each has a "rozwiń całość" affordance removing the inner max-height so the entire transcript reads in-page.
 
-A single toggle reveals per-stage panels, lazy-rendered (the notebook's `MAX_DETAILED_PLOTS = 20` lesson — never render all N overlap panels eagerly):
+**ELAN future-proofing (author request — Life 2 / CLARIN, do not build now, do not block later):** keep the transcript component boundary clean so the read-only columns can later be swapped for a simple ELAN-style tier viewer/editor. Concretely: (a) segments get stable ids in the client data model; (b) the transcript component receives tier-shaped data (speaker → list of {id, start, end, text, words}) — which is exactly the `.eaf`/WhisperX shape already; (c) server routes keep an obvious slot for a future `PATCH /jobs/{id}/segments/{sid}`; (d) `annotation.eaf` remains a first-class download. No editor code in v1.
 
-| Panel | Source | Notebook precedent |
-|---|---|---|
-| Routing detail: region list, durations, dropped-by-`min_overlap_dur` / merged-by-`merge_gap` diff | `routing.json` (+hook 3 for the diff) | cell 9 |
-| Enhancement before/after: waveform pair + two players | `enhanced_full` (spill or in-process) | cell 11 |
-| Per-overlap separation drawer: mix/s1/s2 + VAD masks + silero prob step-plot + emit region | `ctx.overlap_separated` (in-process; never persisted) | cell 13 |
-| BWE 2×2 spectrograms pre/post | recompute `s_raw × mask` (pre is not stored) | cell 15 |
-| Assembly attribution: per-overlap straight/swapped + ECAPA cosines | **needs hook 1** | — (new) |
-| Sortformer head census / fold accounting | `metadata.diarization_diag` | cell 7 |
-| Stage timings table + debug-log stream | `run_meta.json` + log tail | cell 21 |
-| Config health | `preflight(cfg)` list | cell 5 |
+### 5.4 Diagnostics drawer (unchanged)
 
-In-process panels require the server to keep the last job's `ctx` in memory (bounded: keep 1) or `spill_intermediate: true` per run — decide at implementation; no package change either way.
+Off by default; lazy-rendered panels mapping to notebook cells: routing region table + dropped/merged diff (hook 3), enhancement before/after, per-overlap separation drawer, BWE spectrograms, **attribution panel (hook 1)**, sortformer head census, stage timings + log stream, config health. In-process `ctx` retention (last job) or per-run spill — decide at implementation.
 
-### 5.5 Examples page
+### 5.5 Examples page (recommendation recorded — awaiting author confirmation)
 
-Pre-run gallery (canned CLARIN fragments or self-recorded clips — see §8), cached via `skip_existing`. **Scoring (cpWER/cpCER vs frozen GT) appears here only, never on arbitrary uploads** (showcase/diagnostic line). Optionally per-mode rows (full / no_sep) as the academic comparison-table pattern — the only place config comparison exists in v1.
+Author framing: pre-processed gallery vs live-runnable examples. **Recommendation: hybrid that stays 95% option A.** The gallery shows **frozen, pre-processed results** (instant load, no GPU dependency, deterministic — the numbers match what the thesis reports) with GT transcripts + cpWER/cpCER shown **only here**. Each example additionally offers **"uruchom ponownie"** — a button that submits the example's mixture as a *normal new job* through the standard upload path (no GT, no scoring on that path). This gives the live-demo moment at the defense ("watch it process this exact recording") without integrating metric computation and GT display into the main job page. CLARIN fragments are cleared for the authenticated page (author, 2026-07-28).
 
 ## 6. Deployment & demo-day runbook
 
-- Serve on the training PC (WSL2). **Persistent supervisor link**: cloudflared *named* tunnel + Cloudflare Access (email OTP, free ≤50 users — enable the OTP IdP first). **Defense**: open quick tunnel, live. Cloudflare caps request bodies at 100 MB — irrelevant under our upload cap, but enforce client-side and say why.
-- Upload cap **5 min** (recommendation; §8 q4): >240 s already auto-routes Sortformer to the streaming model with a loud warning the UI must display; the cap keeps VRAM headroom and demo latency sane.
-- **Warm-up run at app start and ~5 min before the defense** (cold start ≫ 48.9 s: HF cache, per-stage loads). `HF_HUB_OFFLINE=1` (campaign-verified byte-identical, kills 504-aborts). Keep `deterministic: true` — a supervisor re-running the same file and getting the same transcript is worth more than the ~2× enhancement-stage speedup.
-- Uploads deleted after 24 h (configurable); canned examples persistent.
+- **Local-first (author, 2026-07-28): the app is mainly used on the machine itself / home LAN.** Tunnels are the secondary path: cloudflared named tunnel + Cloudflare Access for a persistent supervisor link, open quick tunnel for the defense — the 100 MB body limit applies only there and the UI mentions it only when relevant.
+- **No upload duration cap** (author ruling 2026-07-28); honest ceilings instead — the >240 s streaming-diarizer warning banner and a duration-scaled ETA. Pipeline verified end-to-end to 1:35:29 (pyannote path) — long jobs are allowed, just labeled.
+- Warm-up run at app start and ~5 min before the defense; `HF_HUB_OFFLINE=1`; keep `deterministic: true`.
+- Uploads deleted after 24 h (configurable); examples persistent.
+- **License note:** ECAPA2 + Sortformer v1 are CC-BY-NC — fine for thesis/defense/supervisor use (non-commercial academic); flag before any public-facing or CLARIN-production deployment (the documented Life-2 path is the NVIDIA-Open streaming v2.1 swap).
+- Thesis-artifact duties (author: shown live at defense): pin `requirements` versions for `webapp/`, tag the demo build, keep a recorded fallback video of one full run.
 
 ## 7. Effort estimate
 
-Backend (~250 lines Python): ~2 d. Front-end (lift + new layout + transcript columns): ~3–4 d. Examples page + polish: ~1–2 d. Deployment/auth/runbook: ~0.5–1 d. **Total ≈ 7–9 working days**, essentially zero GPU budget. Phasing: backend + progress + results core first (demoable at ~day 4); diagnostics drawer and examples page second.
+Backend ~2 d · front-end ~3–4 d · package hooks + tests ~0.5–1 d · examples page + polish ~1–2 d · deployment/auth/runbook ~0.5–1 d → **≈ 8–10 working days**, no GPU budget beyond example pre-processing. Phasing: core (backend + progress + results) first — demoable ~day 4; hooks + diagnostics drawer + examples second.
 
-## 8. Open questions for the author (accept/modify to unblock)
+## 8. Decision log (author, 2026-07-28)
 
-1. **Accept the FastAPI + no-build-JS + polling architecture?** (Gradio-6 `/lab` escape hatch reserved, not built.)
-2. **Accept the §5 layout?** A visual mockup accompanies this doc — judge hierarchy and density there.
-3. **Fixed config only?** Recommendation: showcase ships `sweep_best_e31_refineplus` with **zero knobs**; the diagnostics drawer may include a read-only config view; any knob-twiddling waits for the optional `/lab`. (Knobs on the main surface turn the showcase into the diagnostic tool it is explicitly not.)
-4. Upload cap 5 min OK?
-5. **UI language**: Polish (review-page precedent, supervisor/defense audience) vs English (thesis artifact, screenshots). Recommendation: Polish, English toggle only if cheap.
-6. **Canned examples content**: may CLARIN fragments be exposed on an authenticated page (license/consent check needed) — or self-recorded clips?
-7. **Package hooks** (§4): approve none/some — none blocks v1.
-8. Is the webapp itself a thesis artifact (screenshots in ch7 / archived for the defense record)? If yes, pin versions and raise the polish bar accordingly.
-9. Does `explore_pipeline.ipynb` stay the author's lab (recommendation: yes — the drawer showcases, the notebook investigates)?
+| # | Decision |
+|---|---|
+| 1 | Architecture (FastAPI + no-build JS + polling) — **accepted**; Gradio rejected; `/lab` dropped |
+| 2 | Layout — **accepted** with modifications below |
+| 3 | v1 = one fixed config (v41_merge); config **dropdown later**, plain select over presets |
+| 4 | Upload cap — **none** (technical ceilings only, stated honestly) |
+| 5 | Language: **Polish UI, English technical terms** (load/run, stage names) |
+| 6 | CLARIN fragments **may** appear on the authenticated examples page |
+| 7 | Package hooks 1–3 — **all approved** |
+| 8 | Webapp **is a thesis artifact**, likely live at defense → pin versions, tagged build |
+| 9 | `explore_pipeline.ipynb` **stays** (author's lab; webapp = everyone else) |
+| 5.a | Stage display: **single linear chain**, no phase grouping |
+| 5.c | ETA: **duration-weighted** estimator (load constant + run per-audio-second; overlap-aware after routing) |
+| 5.d | Early timeline **re-renders with final labels** after relabel/assembly |
+| 5.e | Waveforms: v1 = simple peak envelope; **min/max+RMS upgrade = deferred nice-to-have** (author 2026-07-28), zoom likewise |
+| 5.f | Transcripts: internal scroll + **"rozwiń całość"** full-read affordance |
+| 5.g | **ELAN-style tier editor slot reserved** (Life 2): stable segment ids, tier-shaped data, future PATCH slot — no editor in v1 |
+| 5.h | Examples page: **pre-processed gallery + "uruchom ponownie"-as-new-job** — **confirmed 2026-07-28** |
