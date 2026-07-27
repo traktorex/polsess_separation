@@ -10,10 +10,11 @@ Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian 
 
 ## Style
 
+Reply in English unless the user specifies otherwise.
 The amount of thinking should be proportional to the complexity of the task you're given.
 Avoid unnecessary verbosity by using CoT to structure your response.
 
-Important: when launching subagents, use only Opus agents (unless the user specifies differently). You may decide to use Sonnet subagents for the easiest work. Never launch Fable subagents.
+Important: when launching subagents, use only Opus agents (unless the user specifies differently). You may decide to use Sonnet subagents for the easiest work. Never launch Fable subagents — with one standing exception (approved 2026-07-25): agents whose job is synthesis/adjudication or premium prose editing (`review-synthesizer`, `code-review-synthesizer`, `redaktor`) pin `model: fable` in their frontmatter, because deciding between conflicting reviewers merits the strongest reasoning. Do not extend the exception to other agents without asking.
 
 ## Dataset Variants
 
@@ -223,7 +224,7 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 1. **NaN in SI-SDR:** AMP underflow — EPS patch should handle it. If not, `use_amp: false`. The trainer skips NaN/Inf batches; after 1000 consecutive NaN batches it aborts the run (`ConsecutiveNaNError` → `SystemExit(1)`, sweep-friendly — see `MAX_CONSECUTIVE_NAN_BATCHES` in `training/trainer.py`).
 2. **Memory overflow:** Reduce `batch_size`, use `grad_accumulation_steps` to compensate.
 3. **Config precedence:** CLI > YAML > env vars > defaults. Additionally, `Config.__post_init__` forces the model's output source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2), overriding whatever the YAML says — it prints a line when it actually changes the value.
-4. **MambaTasNet NaN:** Deep configs need `residual_in_fp32: true`.  `grad_clip_norm: 1.0` (not 5.0) might help too.
+4. **MambaTasNet NaN:** Deep configs need `residual_in_fp32: true`.  `grad_clip_norm: 1.0` (not 5.0) might help too. Historical: every Mamba run before 2026-04-19 silently trained *and validated* in fp16 — torch.compile's `OptimizedModule` wrapper defeated the old class-name AMP dispatch (fixed in `2327c89`; compile disabled for Mamba in `c99b56c`) — so pre-fix NaN lore (including this pitfall's origin) dates from that regime.
 5. **Mamba on Windows:** Requires WSL2 + CUDA toolkit 12.4+. Non-Mamba models work natively.
 6. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr`, not dict access.
 

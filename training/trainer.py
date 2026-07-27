@@ -569,6 +569,15 @@ class Trainer:
         # batch already stepped and zeroed.
         self.optimizer.zero_grad()
 
+        # A fully-NaN epoch skips every batch, leaving total_samples == 0 — the
+        # pre-2026-06 Mamba collapse runs died here with a bare ZeroDivisionError.
+        # Reachable when an epoch has fewer batches than MAX_CONSECUTIVE_NAN_BATCHES.
+        if total_samples == 0:
+            raise ConsecutiveNaNError(
+                f"epoch {self.current_epoch}: every training batch was NaN/Inf "
+                "and skipped — model state is unrecoverable, aborting run"
+            )
+
         avg_sisdr = total_sisdr / total_samples
         avg_sisdri = total_sisdri / total_samples
         return avg_sisdr, avg_sisdri
