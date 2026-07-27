@@ -91,3 +91,6 @@ Thumbs.db
 
 /docs/deep_research
 /docs/sweep_plan
+
+# webapp build artifact (regenerable via webapp/examples_build.py; machine-absolute paths)
+webapp/examples_manifest.json

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!--
+  PLACEHOLDER SHELL. The real front-end (HTML/CSS/JS) is a separate work stream;
+  this file exists only so the route renders and the mount point + API URLs are
+  already in place. Do not build UI here.
+-->
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zadanie {{ job_id }} — asr_pipeline</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <h1>Zadanie {{ job_id }}</h1>
+  <div id="app"
+       data-page="job"
+       data-job-id="{{ job_id }}"
+       data-poll-url="{{ poll_url }}"
+       data-log-url="{{ log_url }}"></div>
+  <noscript>Ta strona wymaga JavaScriptu.</noscript>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

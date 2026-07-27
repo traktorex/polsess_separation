@@ -39,6 +39,13 @@ Response `200 {"job_id": str}`. Errors: `400` (no/invalid file, ffmpeg failure �
   "elapsed_s": float|null,
   "warnings": [str],                // WARN lines from debug log + weak_anchor + streaming-diarizer swap
   "error": {"type": str, "message": str} | null,   // status=failed only; no partial-success framing
+  "partial": null | {               // progressive disclosure (design §5.2): present ONLY while status=running,
+                                    // once the per-job spill files exist; null otherwise
+    "diarization": {"turns": [{"speaker","start","end"}], "overlaps": [{"start","end","duration"}]} | null,
+    "routing": {"overlap_regions": [{"start": float, "end": float}]} | null
+  },                                // served from <job>/spill/{diarization.json, overlap_regions.json};
+                                    // spill segments are mapped to the eval-facing `turns` shape so the
+                                    // frontend consumes ONE shape pre- and post-completion
   "result": null | {
     "speakers": [str], "spk_to_label": {str: str}, "weak_anchor": bool,
     "total_duration_s": float, "n_overlap_regions": int, "overlap_total_s": float,
@@ -69,7 +76,22 @@ served from the job's copied `debug.log` after completion.
 ### `GET /api/jobs/{id}/files/{name}`
 `FileResponse` (HTTP Range works) from the job's output dir. **Whitelist only**:
 `mixture.wav`, `stream_A.wav`, `stream_B.wav`, `transcript_*.txt|json`, `annotation.eaf`,
-`metadata.json`, `debug.log`. Reject anything else (404) — no path traversal.
+`metadata.json`, `debug.log`, `enhanced_full.wav` (served from `<job>/spill/` — enhancement
+A/B diagnostic panel). Reject anything else (404) — no path traversal.
+
+## v1.1 ratified deltas (orchestrator, 2026-07-28 night)
+
+Implemented additions accepted into the contract:
+- `GET /api/jobs?limit=N` — compact recent-jobs rows (feeds the home page list).
+- `GET /api/examples/{example_id}/files/{name}` — same whitelist; serves frozen example audio.
+- `GET /api/examples?ids=a,b&light=1` — optional filters; `light=1` omits `job_like` for instant gallery render.
+- Example rows carry `"gt"` (parsed fragment-level `annotation.eaf` tiers) in addition to `gt_available`.
+- `result.diarization` additionally carries `"overlaps"` (hook 3; `null` when absent).
+- **Interpretations (binding):** `eta_s` = seconds REMAINING (monotone-decreasing; full estimate while queued;
+  `null` on terminal jobs). `queue_position` = queued jobs ahead (0 = running/next). Log `offset` = LINE index.
+- **Per-job spill (binding):** every job runs with `spill_intermediate: true`, `artifact_dir = <job_dir>/spill`
+  — the source of `partial` and `enhanced_full.wav`. Deferred-to-later diagnostics (per-overlap separation
+  plots, BWE spectrograms) can mine the same spill dir in a future rev without contract changes.
 
 ### `GET /api/examples`
 `[{"id": str, "title": str, "duration_s": float, "split": "dev"|"test",
