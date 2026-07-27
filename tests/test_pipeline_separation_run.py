@@ -147,6 +147,26 @@ def test_entry_schema_matches_overlap_separated_contract():
     assert entry["pad_start"] <= entry["emit_start"] <= entry["emit_end"] <= entry["pad_end"] + 1e-9
 
 
+def test_run_reports_progress_per_region():
+    """Hook 2: the per-region loop reports (done, total) through the sink the
+    orchestrator wires; `total` is the number of routed regions."""
+    calls: list[tuple[int, int]] = []
+    stage = _make_stage()
+    stage.on_progress = lambda done, total: calls.append((done, total))
+    stage.run(_make_ctx(30.0, [(2.0, 3.0), (8.0, 9.0), (14.0, 15.0)]))
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_run_without_progress_sink_is_silent():
+    """Default (no sink wired): `_progress` is a no-op — the stage runs exactly
+    as it did before the hook existed."""
+    stage = _make_stage()
+    assert stage.on_progress is None
+    ctx = _make_ctx(20.0, [(8.0, 9.0)])
+    stage.run(ctx)                       # must not raise
+    assert len(ctx.overlap_separated) == 1
+
+
 def test_min_overlap_skip_leaves_nonconsecutive_idx():
     """Regions under _MIN_OVERLAP_SAMPLES are skipped; idx keeps indexing
     ctx.overlap_regions, so surviving entries carry their original index."""

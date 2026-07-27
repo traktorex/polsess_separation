@@ -106,9 +106,12 @@ def write_pipeline_outputs(
 
     Writes to ``<out_dir>/<subdir_name>/``::
 
-        diarization.json         stage-1 turns on the mixture timeline
+        diarization.json         stage-1 turns + the diarizer's pre-routing
+                                 overlap timeline, on the mixture clock
                                  (debugging aid / pipeline provenance)
-        routing.json             stage-2 overlap regions (debugging aid)
+        routing.json             stage-2 overlap regions (debugging aid) — the
+                                 post-filter subset of diarization.json's
+                                 `overlaps`
         stream_<label>.wav       one per assembled speaker stream (Stage 4)
         transcript_<label>.txt   decimal-seconds format, no speaker header
                                  (parse_gt_txt-compatible)
@@ -149,10 +152,23 @@ def write_pipeline_outputs(
             }
             for row in ctx.diarization.segments_df.itertuples()
         ]
+        # The diarizer's own overlap timeline, field names as in the spill
+        # schema. This is the PRE-routing list: `routing.json` holds the
+        # post-filter regions the separator actually ran on, so the difference
+        # between the two files is what routing dropped or merged.
+        overlaps = [
+            {
+                "start": float(row.start),
+                "end": float(row.end),
+                "duration": float(row.duration),
+            }
+            for row in ctx.diarization.overlaps_df.itertuples()
+        ]
         with open(pipeline_dir / "diarization.json", "w") as f:
             json.dump(
                 {
                     "turns": turns,
+                    "overlaps": overlaps,
                     "total_duration_s": float(ctx.diarization.total_duration_s),
                 },
                 f,
@@ -247,6 +263,11 @@ def write_pipeline_outputs(
     # L3-L4-fallback census fields, so a later census can count v4.1 lever firings.
     if ctx.diarization_diag is not None:
         meta["diarization_diag"] = ctx.diarization_diag
+    # Stage-4 attribution diagnostics: per-overlap pairing + the ECAPA cosine
+    # sums behind it. Absent when assembly didn't run, or ran in no-separation
+    # mode (no per-overlap decision to report).
+    if ctx.assembly_diag is not None:
+        meta["assembly_diag"] = ctx.assembly_diag
     if stage_timings is not None:
         meta["stage_timings"] = stage_timings
     if config_snapshot is not None:

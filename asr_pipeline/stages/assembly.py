@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import soundfile as sf
@@ -223,6 +223,19 @@ def _cap_anchor_audio(
 
 def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a * b).sum())
+
+
+def _diag_cos(value: Optional[float]) -> Optional[float]:
+    """A cosine sum as a plain float for the diagnostic, else None.
+
+    ``None`` in means the pairing was decided without cosines (B+ handoff or a
+    fixed fallback). Non-finite in means ECAPA produced a degenerate embedding —
+    which `json.dumps` would write as a bare `NaN`/`Infinity` literal that
+    strict JSON parsers reject, so it becomes `null` too.
+    """
+    if value is None or not np.isfinite(value):
+        return None
+    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -537,6 +550,7 @@ def _assign_overlaps(
     external_pairings: Optional[dict[int, str]] = None,
     overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
     anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
     summed cosine similarity to the anchors (``ecapa_argmax``). Falls back to
@@ -554,8 +568,14 @@ def _assign_overlaps(
     here) fall through to the per-overlap argmax unchanged — the SCOPE-compliant
     fall-soft to current behaviour.
 
+    ``progress`` is an optional ``(done, total)`` sink called once per overlap
+    (the orchestrator's `stage_progress` plumbing); ``None`` = silent.
+
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
-    emit_pieces: {speaker: audio_np}}`.
+    emit_pieces: {speaker: audio_np}, diag}`. ``diag`` is the JSON-safe
+    attribution record `{idx, pairing, cos_straight, cos_swapped}` that
+    `AssemblyStage.run` lifts onto `ctx.assembly_diag` (cosines are `None`
+    whenever the pairing was not decided by an ECAPA argmax).
     """
     n = len(overlap_separated)
     _log(f"assigning {n} overlaps to speakers via ECAPA cosine...")
@@ -578,6 +598,10 @@ def _assign_overlaps(
                 "overlap_separated entries have no 's1_gated'/'s2_gated' — "
                 "run the post_separation_processing stage before assembly."
             )
+        # Diagnostic cosines: filled in on the ECAPA path only, so they stay
+        # None for the B+ handoff and the fixed fallbacks.
+        cos_straight: Optional[float] = None
+        cos_swapped: Optional[float] = None
         too_short = len(ovl["s1_gated"]) < min_overlap_len
         have_both_anchors = (
             len(speakers) >= 2
@@ -608,6 +632,7 @@ def _assign_overlaps(
                 ).cpu()
                 straight = _cos(emb1, anchors[a]) + _cos(emb2, anchors[b])
                 swapped = _cos(emb1, anchors[b]) + _cos(emb2, anchors[a])
+                cos_straight, cos_swapped = straight, swapped
                 if not (np.isfinite(straight) and np.isfinite(swapped)):
                     # ECAPA is an external model fed degenerate gated input; a
                     # non-finite cosine (e.g. a NaN embedding) would make
@@ -662,12 +687,23 @@ def _assign_overlaps(
             "orig_end": float(ovl["emit_end"]),
             "pairing": pairing,
             "emit_pieces": emit_pieces,
+            # Attribution diagnostic — the decision without the audio, JSON-safe.
+            # `idx` is the routing-region index (joins to routing.json's
+            # `overlap_regions`), not this loop's dense position.
+            "diag": {
+                "idx": int(ovl["idx"]),
+                "pairing": pairing,
+                "cos_straight": _diag_cos(cos_straight),
+                "cos_swapped": _diag_cos(cos_swapped),
+            },
         })
         if (i_ovl + 1) % 10 == 0 or i_ovl + 1 == n:
             _log(
                 f"  assigned {i_ovl+1}/{n} overlaps "
                 f"({time.perf_counter()-t_start:.1f}s elapsed)"
             )
+        if progress is not None:
+            progress(i_ovl + 1, n)
     return assignments
 
 
@@ -967,7 +1003,12 @@ class AssemblyStage(Stage):
                 external_pairings=ctx.overlap_speaker_assignment,
                 overlap_min_duration_s=cfg.overlap_min_duration_s,
                 anchor_min_duration_s=cfg.anchor_min_duration_s,
+                progress=self._progress,
             )
+            # Attribution diagnostics: one compact record per overlap (pairing +
+            # the two ECAPA cosine sums, no audio). Mirrors `ctx.diarization_diag`
+            # — io.write_pipeline_outputs writes it verbatim into metadata.json.
+            ctx.assembly_diag = [a["diag"] for a in assignments]
         elif ctx.overlap_regions:
             _log(
                 f"no separated streams; filling "

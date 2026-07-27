@@ -343,3 +343,103 @@ def test_on_event_none_is_a_noop(monkeypatch):
     p.stages = [_DummyStage("a", log)]
     p.run_stage("a", _ctx())         # must not raise
     assert log == [("load", "a"), ("run", "a")]
+
+
+# ---------------------------------------------------------------------------
+# stage_progress: inner-loop progress events (webapp hook 2)
+# ---------------------------------------------------------------------------
+
+
+class _ProgressStage(_DummyStage):
+    """Dummy stage with a 3-item inner loop that reports progress.
+
+    Also records what `self.on_progress` was during run(), so the tests can
+    check the sink is wired for the run and only for the run.
+    """
+
+    def __init__(self, name: str, logbook: list, total: int = 3):
+        super().__init__(name, logbook)
+        self.total = total
+        self.sink_during_run = "unset"
+
+    def run(self, ctx) -> None:
+        self._logbook.append(("run", self.name))
+        self.sink_during_run = self.on_progress
+        for i in range(self.total):
+            self._progress(i + 1, self.total)
+
+
+def test_stage_progress_events_have_the_exact_schema(monkeypatch):
+    # The webapp consumes {"event","stage","done","total"} verbatim — pinned
+    # here as an exact dict equality, keys and all.
+    p, events, log = _events_pipeline(monkeypatch)
+    p.stages = [_ProgressStage("a", log, total=3)]
+    p.run_stage("a", _ctx())
+    progress = [e for e in events if e["event"] == "stage_progress"]
+    assert progress == [
+        {"event": "stage_progress", "stage": "a", "done": 1, "total": 3},
+        {"event": "stage_progress", "stage": "a", "done": 2, "total": 3},
+        {"event": "stage_progress", "stage": "a", "done": 3, "total": 3},
+    ]
+    # ... and they sit between the stage's start and end events.
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "stage_start" and kinds[-1] == "stage_end"
+
+
+def test_stage_progress_sink_is_cleared_after_run(monkeypatch):
+    # The sink lives for one run only: set during run(), None afterwards
+    # (a stale sink would outlive the run that owns it).
+    p, _, log = _events_pipeline(monkeypatch)
+    stage = _ProgressStage("a", log)
+    p.stages = [stage]
+    p.run_stage("a", _ctx())
+    assert callable(stage.sink_during_run)
+    assert stage.on_progress is None
+
+
+def test_stage_progress_sink_is_cleared_after_failure(monkeypatch):
+    # Same, on the failure path: the `finally` clears the sink before the
+    # exception propagates.
+    p, _, log = _events_pipeline(monkeypatch)
+    stage = _FailingStage("a", log)
+    p.stages = [stage]
+    with pytest.raises(RuntimeError, match="boom"):
+        p.run_stage("a", _ctx())
+    assert stage.on_progress is None
+
+
+def test_stage_progress_is_silent_without_on_event(monkeypatch):
+    # on_event=None → the stage's sink is None, `_progress` is a no-op, and
+    # the run is byte-identical to the un-instrumented one.
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    p = Pipeline(cfg)                 # no on_event
+    log: list = []
+    stage = _ProgressStage("a", log, total=3)
+    p.stages = [stage]
+    p.run_stage("a", _ctx())
+    assert stage.sink_during_run is None
+    assert log == [("load", "a"), ("run", "a")]
+
+
+def test_stage_progress_consumer_exception_does_not_kill_the_run(monkeypatch):
+    # A buggy progress consumer is an observer failing, not the pipeline
+    # failing: it must not escape into stage logic or abort the run.
+    monkeypatch.setenv("HF_TOKEN", "test-hf-token")
+    cfg = PipelineConfig()
+    cfg.device = "cpu"
+    seen: list = []
+
+    def exploding(event: dict) -> None:
+        seen.append(event["event"])
+        if event["event"] == "stage_progress":
+            raise ValueError("consumer bug")
+
+    p = Pipeline(cfg, on_event=exploding)
+    log: list = []
+    p.stages = [_ProgressStage("a", log, total=2)]
+    p.run_stage("a", _ctx())          # must not raise
+    assert log == [("load", "a"), ("run", "a")]
+    assert seen.count("stage_progress") == 2      # both attempts made
+    assert "stage_end" in seen                    # run completed normally

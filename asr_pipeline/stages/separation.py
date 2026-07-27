@@ -1048,6 +1048,8 @@ class SeparationStage(Stage):
                     f"run: overlap {idx + 1}/{n_regions} done "
                     f"({time.perf_counter() - t0:.1f}s elapsed)"
                 )
+            # No-op unless the orchestrator wired a progress sink.
+            self._progress(idx + 1, n_regions)
 
         ctx.overlap_separated = results
 

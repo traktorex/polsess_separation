@@ -141,6 +141,14 @@ class PipelineContext:
     spk_to_label: Dict[str, str] = field(default_factory=dict)
     timestamp_map: Optional[TimestampMap] = None
     weak_anchor: bool = False
+    # Stage 4 diagnostics — one compact, JSON-safe record per assigned overlap:
+    # `{idx, pairing, cos_straight, cos_swapped}`, where `idx` is the
+    # routing-region index and the cosine sums are None whenever the pairing did
+    # not come from an ECAPA argmax (B+ handoff, too-short / weak-anchor
+    # fallback, non-finite cosine). Written verbatim into metadata.json by
+    # io.write_pipeline_outputs, like `diarization_diag`. None when assembly
+    # didn't run or ran in no-separation mode (no per-overlap decision taken).
+    assembly_diag: Optional[List[Dict[str, Any]]] = None
 
     # Stage 5 — transcription
     # key: speaker label from pyannote; value: Whisper result dict

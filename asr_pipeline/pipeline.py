@@ -57,10 +57,15 @@ class Pipeline:
 
     ``on_event`` is an optional callback that receives a small dict per stage
     boundary so a CLI can print progress and the outputs can record trustworthy
-    per-stage timings. Two event kinds fire per stage:
+    per-stage timings. Three event kinds fire per stage:
 
       - ``{"event": "stage_start", "stage": <name>}`` — just before the stage's
         model is (re)loaded.
+      - ``{"event": "stage_progress", "stage": <name>, "done": int,
+        "total": int}`` — inner-loop progress, emitted only by the stages with
+        long per-item loops (separation, post_separation_processing, assembly)
+        at their existing per-item log points. ``done`` counts items finished,
+        ``total`` the items the stage set out to process.
       - ``{"event": "stage_end", "stage": <name>, "load_s": float,
         "run_s": float, "wall_s": float}`` — after ``run()`` returns. ``load_s``
         is the wall time spent in ``stage.load()`` alone (``0.0`` when the stage
@@ -167,6 +172,34 @@ class Pipeline:
         payload.update(fields)
         self._on_event(payload)
 
+    def _progress_sink(
+        self, stage_name: str
+    ) -> Optional[Callable[[int, int], None]]:
+        """Build the `stage_progress` emitter handed to a stage for one run.
+
+        ``None`` when no ``on_event`` was wired — the stage's ``_progress``
+        calls then cost a single ``is None`` check each and emit nothing.
+
+        A raising consumer is logged and swallowed: the sink is an observer
+        (a progress bar), and a bug in it must not kill the run producing the
+        actual result. This is the one place in the pipeline that does not
+        fail loud, and it is outside the pipeline's own contract — everything
+        the stage itself does still crashes on error.
+        """
+        if self._on_event is None:
+            return None
+
+        def sink(done: int, total: int) -> None:
+            try:
+                self._emit(
+                    "stage_progress", stage_name,
+                    done=int(done), total=int(total),
+                )
+            except Exception as exc:   # noqa: BLE001 — observer, see docstring
+                _log(f"stage_progress callback raised {exc!r} — ignored")
+
+        return sink
+
     def run_stage(self, stage_name: str, ctx: PipelineContext) -> None:
         """Run one stage by name on `ctx`. Loads the stage's model only if it
         isn't the currently-loaded one; unloads the previously-loaded stage
@@ -181,6 +214,10 @@ class Pipeline:
         # `_ensure_loaded` returns the wall time spent in `stage.load()` alone
         # (0.0 on a reload-skip no-op) — the load half of the load/run split.
         load_seconds = self._ensure_loaded(stage_name)
+        # Inner-loop progress sink, live for this run only (cleared in the
+        # `finally`, including on failure — a stale sink would otherwise
+        # outlive the run that owns it).
+        stage.on_progress = self._progress_sink(stage_name)
         try:
             _log(f"run_stage({stage_name!r}): calling stage.run()")
             t_run = time.perf_counter()
@@ -197,6 +234,8 @@ class Pipeline:
             _log(f"run_stage({stage_name!r}): FAILED — releasing model")
             self._release_current()
             raise
+        finally:
+            stage.on_progress = None
         self._emit(
             "stage_end", stage_name,
             load_s=load_seconds, run_s=run_seconds,

@@ -342,6 +342,8 @@ class PostSeparationProcessingStage(Stage):
                     f"  processed {i_ovl+1}/{n} regions "
                     f"({time.perf_counter()-t0:.1f}s elapsed)"
                 )
+            # No-op unless the orchestrator wired a progress sink.
+            self._progress(i_ovl + 1, n)
         elapsed = time.perf_counter() - t0
         rtf = total_chunk_s / elapsed if elapsed > 0 else float("inf")
         _log(

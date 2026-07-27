@@ -743,9 +743,13 @@ class DiarizationStage(Stage):
         # Diagnostic spill (only when spill_intermediate=True). This is the
         # {segments, overlaps} schema shared with scripts/diarize_clarin_2speakers
         # and read by scripts/clarin_fragment_finder — DELIBERATELY distinct from
-        # the eval-facing {turns} schema io.write_pipeline_outputs writes to
-        # pipeline/diarization.json (see io.py module docstring). Don't unify:
-        # the fragment finder needs the `overlaps` array that {turns} omits.
+        # the eval-facing {turns, overlaps} schema io.write_pipeline_outputs
+        # writes to pipeline/diarization.json (see io.py module docstring).
+        # Don't unify: the fragment finder reads the full per-segment records
+        # (speaker + duration) this dump keeps, which the eval-facing `turns`
+        # deliberately trims. (The eval-facing file gained its own `overlaps`
+        # array on 2026-07-28 for the webapp's routing diff panel — same field
+        # names, same source frame; the two schemas still differ on segments.)
         if ctx.diarization is None:
             return
         payload = {
