@@ -106,6 +106,15 @@ python -m asr_pipeline batch --split clarin_dev --mode no_enh        # or --mani
 python -m asr_pipeline score --eval-root <eval_root> --out-dir <csv_dir>
 ```
 
+**Showcase webapp (`webapp/` — thesis-defense demo UI over the ASR pipeline):**
+```bash
+./webapp/run.sh                                  # real server, port ${WEBAPP_PORT:-8871}, HF_HUB_OFFLINE=1; preflight at startup
+venv/bin/python -m webapp.dev_server --port 8899 # GPU-free dev harness (FakeRunner replays a timed run; --fail-stage for error UI)
+venv/bin/python -m webapp.examples_build         # regenerate examples_manifest.json (gitignored) from the frozen v41_merge eval tree
+pytest tests/test_webapp_backend.py              # backend suite (no GPU, no asr_pipeline import)
+```
+FastAPI + vanilla ES modules (no build step, no CDN); a pure READ-ONLY consumer of `asr_pipeline` (SCOPE §1 — the job queue lives here, never in the package). One worker thread, one job at a time (12 GB GPU, phase-major). Every job runs with per-job `spill_intermediate` → `<job>/spill` (source of mid-run `partial` results + the enhancement A/B panel). Contract = `webapp/API.md` (binding, orchestrator-owned); design + decision log = `docs/fable_plans/frontends_road1_webapp.md`. Jobs land in `$WEBAPP_JOBS_ROOT` (default `~/webapp_jobs`). Polish UI, English technical terms; GT/scores appear ONLY on the examples page.
+
 ## Architecture Overview
 
 **Configuration (`config.py`):** Dataclasses (`DataConfig`, `ModelConfig`, `TrainingConfig`) with nested model/dataset params. Priority: defaults < env vars < YAML < CLI args. Use `get_config_from_args()` for CLI, `load_config_for_run(wandb.config)` for sweeps.
