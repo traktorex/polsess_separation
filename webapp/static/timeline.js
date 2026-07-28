@@ -189,13 +189,26 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
 
   let lastProgrammaticPan = 0;
   let panSuppressUntil = 0;
+  // Where OUR last pan left the port. A frame that finds scrollLeft anywhere
+  // else knows the user moved it — detected synchronously, because the scroll
+  // EVENT lands asynchronously and would lose a race against the per-frame
+  // playhead follow (seen in the wild as the view snapping back mid-drag).
+  let lastSetScroll = 0;
   function panTo(scrollLeft) {
     lastProgrammaticPan = performance.now();
     port.scrollLeft = Math.max(0, scrollLeft);
+    lastSetScroll = port.scrollLeft;
+  }
+  function userMovedPort() {
+    if (Math.abs(port.scrollLeft - lastSetScroll) <= 1) return false;
+    lastSetScroll = port.scrollLeft;
+    panSuppressUntil = performance.now() + PAN_GRACE_MS;
+    return true;
   }
   port.addEventListener("scroll", () => {
     if (performance.now() - lastProgrammaticPan < 250) return;
     panSuppressUntil = performance.now() + PAN_GRACE_MS;
+    lastSetScroll = port.scrollLeft;
   });
 
   /** Fraction of the time axis under a viewport x, clamped to [0,1]. */
@@ -281,12 +294,20 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
   scheduleRedraw();
   measure();
 
+  let lastFollowT = null;
   return {
     node,
     redraw: scheduleRedraw,
     setPlayhead(t) {
       playhead.style.left = `${pct(t, total).toFixed(3)}%`;
       if (zoom <= 1) return;                                  // nothing to pan
+      // Follow only while the clock advances. This runs every frame, paused
+      // included — a paused playhead must never wrestle the view away from
+      // wherever the user panned it.
+      const moving = lastFollowT !== null && t !== lastFollowT;
+      lastFollowT = t;
+      if (!moving) return;
+      if (userMovedPort()) return;                            // adopt the user's pan
       if (performance.now() < panSuppressUntil) return;       // the user is driving
       if (!axis || !portW) return;
       const x = gutter + (pct(t, total) / 100) * axis;
