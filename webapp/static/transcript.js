@@ -23,6 +23,13 @@ import { colorVarFor } from "./timeline.js";
 const LOW_SCORE = 0.45;
 const SOFT_VARS = ["--spkA-soft", "--spkB-soft", "--spkC-soft", "--spkD-soft"];
 
+/* Highlight cap (N13). When WhisperX alignment is weak it stretches the last
+   word — and the segment — across the trailing silence (seen in the wild: a
+   17 s "ciekawostka."). The DATA stays untouched; only the highlight treats a
+   word as over MAX_WORD_HL_S after it starts, and a row as over once its last
+   capped word is (falling back to the segment end when no word has times). */
+const MAX_WORD_HL_S = 2.0;
+
 /* "rozwiń całość" is global (N3): the columns are read side by side, so one
    expanded column next to a short one is never what the reader wanted. Every
    live column registers here and follows the shared flag. */
@@ -77,7 +84,8 @@ function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
         const ws = Number(word.start);
         if (isFinite(ws)) {
           span.dataset.at = String(ws);
-          words.push({ start: ws, end: isFinite(Number(word.end)) ? Number(word.end) : ws + 0.2, node: span });
+          const we = isFinite(Number(word.end)) ? Number(word.end) : ws + 0.2;
+          words.push({ start: ws, end: Math.min(we, ws + MAX_WORD_HL_S), node: span });
         }
         textBox.appendChild(span);
       });
@@ -98,7 +106,11 @@ function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
     });
     body.appendChild(turn);
     if (isFinite(start)) {
-      index.push({ start, end: isFinite(end) ? end : start + 1, node: turn, words });
+      const segEnd = isFinite(end) ? end : start + 1;
+      const hlEnd = words.length
+        ? Math.min(segEnd, Math.max(...words.map((w) => w.end)))
+        : segEnd;
+      index.push({ start, end: hlEnd, node: turn, words });
     }
   }
 
@@ -131,8 +143,11 @@ function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
   let lastProgrammatic = 0;
 
   // Expanded, `.tbody` has no max-height: there is no inner scrollbox left to
-  // return to, so the way-back button would scroll nothing (N4).
-  const updateBack = () => backBtn.classList.toggle("hidden", expanded || !userScrolled);
+  // return to, so the way-back button would scroll nothing (N4). Before the
+  // first anchor exists (page loaded, nothing played) there is no cursor to
+  // return to either (N14).
+  const updateBack = () =>
+    backBtn.classList.toggle("hidden", expanded || !userScrolled || state.anchor < 0);
 
   // offsetTop is relative to the nearest POSITIONED ancestor, which .tbody was
   // not — the old math measured against a far ancestor and landed minutes away.
