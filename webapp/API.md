@@ -85,7 +85,9 @@ Implemented additions accepted into the contract:
 - `GET /api/jobs?limit=N` — compact recent-jobs rows (feeds the home page list).
 - `GET /api/examples/{example_id}/files/{name}` — same whitelist; serves frozen example audio.
 - `GET /api/examples?ids=a,b&light=1` — optional filters; `light=1` omits `job_like` for instant gallery render.
-- Example rows carry `"gt"` (parsed fragment-level `annotation.eaf` tiers) in addition to `gt_available`.
+- Example rows carry `"gt"` (parsed fragment-level `annotation.eaf` tiers) in addition to `gt_available`;
+  `light=1` nulls `gt` too (gallery needs only the flag; the detail `ids=` fetch carries the payload).
+- `result.files` carries `"enhanced_full"` when `<job>/spill/enhanced_full.wav` exists (jobs yes, frozen examples no).
 - `result.diarization` additionally carries `"overlaps"` (hook 3; `null` when absent).
 - **Interpretations (binding):** `eta_s` = seconds REMAINING (monotone-decreasing; full estimate while queued;
   `null` on terminal jobs). `queue_position` = queued jobs ahead (0 = running/next). Log `offset` = LINE index.

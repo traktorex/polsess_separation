@@ -428,6 +428,30 @@ def test_examples_have_no_enhanced_full(jobs_root, tmp_path):
     ).status_code == 404
 
 
+def test_result_files_carry_enhanced_full_when_spilled(jobs_root, upload_wav):
+    """`files.enhanced_full` appears exactly when the spill file exists."""
+    client = make_client(jobs_root, FakeRunner(spill=True))
+    job_id = submit(client, upload_wav)
+    payload = wait_for(client, job_id)
+    assert payload["result"]["files"]["enhanced_full"].endswith(
+        f"/api/jobs/{job_id}/files/enhanced_full.wav"
+    )
+
+    client2 = make_client(jobs_root, FakeRunner(spill=True, enhanced=False))
+    job2 = submit(client2, upload_wav)
+    payload2 = wait_for(client2, job2)
+    assert "enhanced_full" not in payload2["result"]["files"]
+
+
+def test_job_page_unknown_is_html_404(jobs_root):
+    """A stale /j/ link in a browser gets an HTML page, not raw JSON."""
+    client = make_client(jobs_root, FakeRunner())
+    response = client.get("/j/nie-ma-takiego")
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
+    assert "404" in response.text and "Nie ma takiego zadania" in response.text
+
+
 # ---------------------------------------------------------------------------
 # Per-job config copy (shared startup config must stay untouched)
 # ---------------------------------------------------------------------------
@@ -788,7 +812,10 @@ def test_examples_light_and_ids_filters(jobs_root, tmp_path):
     client = make_client(jobs_root, FakeRunner(), examples_manifest=manifest)
     light = client.get("/api/examples?light=1").json()
     assert light[0]["job_like"] is None and light[0]["gt_available"] is True
-    assert client.get("/api/examples?ids=demo__seg00").json()[0]["job_like"]
+    # light also nulls the GT payload itself — the gallery needs only the flag.
+    assert light[0]["gt"] is None
+    full = client.get("/api/examples?ids=demo__seg00").json()
+    assert full[0]["job_like"] and full[0]["gt"]
     assert client.get("/api/examples?ids=other").json() == []
 
 

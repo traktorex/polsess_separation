@@ -224,8 +224,9 @@ class ExamplesLibrary:
                 "gt_available": bool(row.get("gt")),
                 # Addition beyond API.md's row keys: the GT transcript itself.
                 # The design puts GT "only here", and the page has no other
-                # source for it.
-                "gt": row.get("gt"),
+                # source for it. Omitted (null) in light mode — the gallery
+                # needs only gt_available, and shipping 141 GTs cost ~423 KB.
+                "gt": None if light else row.get("gt"),
                 "job_like": None if light else self.job_like(example_id),
             })
         return out
@@ -331,7 +332,14 @@ def create_app(
     @app.get("/j/{job_id}")
     def job_page(request: Request, job_id: str):
         if service.get(job_id) is None:
-            raise HTTPException(404, "Nie ma takiego zadania.")
+            # HTML route -> HTML 404 (a browser hitting a stale /j/ link should
+            # not see raw JSON); the JSON API routes keep their JSON 404s.
+            return templates.TemplateResponse(
+                request,
+                "404.html",
+                {"message": "Nie ma takiego zadania."},
+                status_code=404,
+            )
         return templates.TemplateResponse(
             request,
             "job.html",

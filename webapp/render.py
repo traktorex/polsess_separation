@@ -209,6 +209,10 @@ def build_result(
             files[f"transcript_{label}_txt"] = f"{prefix}/transcript_{label}.txt"
     if (pipeline_dir / "annotation.eaf").exists():
         files["eaf"] = f"{prefix}/annotation.eaf"
+    # Per-job spill sits beside the pipeline dir (API.md v1.1); frozen example
+    # trees have no spill, so the key is simply absent there.
+    if (pipeline_dir.parent / "spill" / "enhanced_full.wav").exists():
+        files["enhanced_full"] = f"{prefix}/enhanced_full.wav"
     files["metadata"] = f"{prefix}/metadata.json"
 
     peaks_map: Dict[str, List[int]] = {}
