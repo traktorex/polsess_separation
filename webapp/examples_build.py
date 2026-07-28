@@ -18,13 +18,15 @@ directory. It is parsed with the standard library rather than
 below) purely to keep this CLI off the heavyweight eval import chain; the two
 must stay in step if the EAF tier convention ever changes.
 
-Scores (`cpwer` / `cpcer`) are emitted as ``null``: computing them needs the
-eval stack, and wiring the real numbers in is the orchestrator's step.
+Scores (`cpwer` / `cpcer`) are joined in from the frozen per-fragment rescore
+CSVs — no metric is recomputed here, so the gallery reports exactly the numbers
+the thesis reports.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -36,6 +38,14 @@ import soundfile as sf
 DEFAULT_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
 DEFAULT_ARM = "v41_merge"
 DEFAULT_OUT = Path(__file__).resolve().parent / "examples_manifest.json"
+
+# Frozen per-fragment scores from the definitive campaign's rescore pass: the
+# dev sheet (23 fragments) and the V5 test sheet (118). Rows are per (fragment,
+# config); only the shipped arm's rows are read.
+DEFAULT_SCORES_CSVS = [
+    DEFAULT_ROOT / "_rescore_perfrag_v41_dev.csv",
+    DEFAULT_ROOT / "_rescore_perfrag_v5_test.csv",
+]
 
 # Frozen thesis fragment lists (the dev/test split of the definitive campaign).
 _SPLIT_FILES = {
@@ -60,6 +70,50 @@ def load_splits() -> Dict[str, str]:
             if frag and not frag.startswith("#"):
                 out[frag] = split
     return out
+
+
+def load_scores(csv_paths: List[Path], arm: str) -> Dict[str, dict]:
+    """``fragment_id -> {"cpwer": float|None, "cpcer": float|None}`` for `arm`.
+
+    Reads the frozen rescore sheets and keeps only the rows whose ``config``
+    column matches the arm being frozen, so the gallery cannot accidentally show
+    another arm's numbers. Values stay raw floats — formatting is the
+    frontend's job. A missing file is reported and skipped, never fatal: the
+    manifest is still usable with `cpwer`/`cpcer` null.
+    """
+    scores: Dict[str, dict] = {}
+    for path in csv_paths:
+        path = Path(path).expanduser()
+        if not path.exists():
+            print(f"[examples] scores CSV not found: {path} (scores will be null)")
+            continue
+        try:
+            with open(path, newline="", encoding="utf-8") as fh:
+                rows = list(csv.DictReader(fh))
+        except (OSError, ValueError) as exc:
+            print(f"[examples] unreadable scores CSV {path}: {exc}")
+            continue
+        kept = 0
+        for row in rows:
+            if (row.get("config") or "").strip() != arm:
+                continue
+            frag = (row.get("frag_id") or "").strip()
+            if not frag:
+                continue
+            scores[frag] = {
+                "cpwer": _float_or_none(row.get("cp_wer")),
+                "cpcer": _float_or_none(row.get("cp_cer")),
+            }
+            kept += 1
+        print(f"[examples] {path.name}: {kept} rows for config={arm!r}")
+    return scores
+
+
+def _float_or_none(value) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_gt_eaf(path: Path) -> Optional[Dict[str, List[dict]]]:
@@ -115,9 +169,13 @@ def _duration_s(mixture: Path, metadata: dict) -> Optional[float]:
 
 
 def build_manifest(root: Path, arm: str, ids: Optional[List[str]] = None,
-                   limit: Optional[int] = None) -> dict:
+                   limit: Optional[int] = None,
+                   scores_csvs: Optional[List[Path]] = None) -> dict:
     """Scan the eval tree and return the manifest dict."""
     splits = load_splits()
+    scores = load_scores(
+        scores_csvs if scores_csvs is not None else DEFAULT_SCORES_CSVS, arm
+    )
     rows: List[dict] = []
     for frag_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         frag = frag_dir.name
@@ -134,6 +192,7 @@ def build_manifest(root: Path, arm: str, ids: Optional[List[str]] = None,
             print(f"[examples] skipping {frag}: unreadable metadata ({exc})")
             continue
         gt = parse_gt_eaf(frag_dir / "annotation.eaf")
+        score = scores.get(frag) or {}
         rows.append({
             "id": frag,
             # Human title: the fragment id is what every thesis artifact calls
@@ -143,8 +202,8 @@ def build_manifest(root: Path, arm: str, ids: Optional[List[str]] = None,
             "duration_s": _duration_s(mixture, metadata),
             "split": splits.get(frag),
             "n_overlap_regions": metadata.get("n_overlap_regions"),
-            "cpwer": None,      # scores are the orchestrator's wiring step
-            "cpcer": None,
+            "cpwer": score.get("cpwer"),
+            "cpcer": score.get("cpcer"),
             "gt": gt,
             "pipeline_dir": str(pipeline_dir),
             "mixture_path": str(mixture),
@@ -171,22 +230,37 @@ def main(argv=None) -> int:
                         help="Restrict to these fragment ids.")
     parser.add_argument("--limit", type=int, default=None,
                         help="Stop after this many examples.")
+    parser.add_argument(
+        "--scores-csv", dest="scores_csvs", action="append", default=None,
+        metavar="PATH",
+        help="Per-fragment rescore CSV to join cpWER/cpCER from (repeatable). "
+             "Default: the frozen dev + V5 test sheets under the eval root.",
+    )
     args = parser.parse_args(argv)
 
     root = Path(args.root).expanduser()
     if not root.exists():
         raise SystemExit(f"eval root not found: {root}")
-    manifest = build_manifest(root, args.arm, ids=args.ids, limit=args.limit)
+    scores_csvs = (
+        [Path(p).expanduser() for p in args.scores_csvs]
+        if args.scores_csvs else None
+    )
+    manifest = build_manifest(
+        root, args.arm, ids=args.ids, limit=args.limit, scores_csvs=scores_csvs
+    )
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    total = len(manifest["examples"])
     with_gt = sum(1 for r in manifest["examples"] if r["gt"])
     with_split = sum(1 for r in manifest["examples"] if r["split"])
+    scored = sum(1 for r in manifest["examples"] if r["cpwer"] is not None)
     print(
-        f"wrote {out} — {len(manifest['examples'])} examples "
-        f"({with_gt} with GT, {with_split} with a split label)"
+        f"wrote {out} — {total} examples "
+        f"({with_gt} with GT, {with_split} with a split label, "
+        f"{scored} scored, {total - scored} without scores)"
     )
     return 0
 

@@ -22,6 +22,7 @@ partial-success framing.
 
 from __future__ import annotations
 
+import copy
 import json
 import queue as _queue
 import shutil
@@ -44,6 +45,11 @@ STATUS_FAILED = "failed"
 
 # Output subdirectory `run_batch` writes under `<jobs_root>/<job_id>/`.
 PIPELINE_SUBDIR = "pipeline"
+
+# Per-stage intermediate spill directory, also under `<jobs_root>/<job_id>/`.
+# It is what `partial` (progressive disclosure) and the `enhanced_full.wav`
+# download are read from — API.md v1.1.
+SPILL_SUBDIR = "spill"
 
 # Debug-log lines carrying these markers are surfaced as user-visible warnings
 # (SCOPE §4.3). "WARN" catches both `[warn]` and `WARNING`; the long-recording
@@ -96,6 +102,27 @@ class Runner(Protocol):
         """
 
 
+def job_config(config, spill_dir: Path):
+    """A per-job **copy** of the shared config, with spilling switched on.
+
+    Every job runs with ``spill_intermediate: true`` and
+    ``artifact_dir = <job_dir>/spill`` (API.md v1.1): the spill is where the
+    progressive-disclosure `partial` payload and the ``enhanced_full.wav``
+    download come from.
+
+    The startup config object is **never mutated** — it is shared by every job
+    and by whatever else holds a reference to it, so each job gets a
+    `copy.deepcopy` (the config is a tree of plain nested dataclasses) and the
+    copy is re-validated through ``__post_init__``, exactly as the CLI does when
+    ``--output`` turns spilling on (`asr_pipeline/__main__.py` `_run_command`).
+    """
+    cfg = copy.deepcopy(config)
+    cfg.spill_intermediate = True
+    cfg.artifact_dir = str(spill_dir)
+    cfg.__post_init__()      # re-validate now that the spill settings changed
+    return cfg
+
+
 class PipelineRunner:
     """The real runner: one `run_batch` call per job.
 
@@ -103,6 +130,9 @@ class PipelineRunner:
     and the single GPU-teardown block — so the webapp adds no pipeline-lifecycle
     logic of its own. Imports are deferred to call time so that constructing the
     app object (and importing this module) costs nothing.
+
+    ``self.config`` is the shared, immutable startup config; each `run` builds
+    its own spill-enabled copy via `job_config`.
     """
 
     def __init__(self, config) -> None:
@@ -128,8 +158,9 @@ class PipelineRunner:
     ) -> None:
         from asr_pipeline.batch import run_batch
 
+        cfg = job_config(self.config, Path(out_root) / job_id / SPILL_SUBDIR)
         report = run_batch(
-            self.config,
+            cfg,
             [(job_id, str(wav_path))],
             out_root=out_root,
             subdir_name=PIPELINE_SUBDIR,
@@ -305,6 +336,9 @@ class JobService:
     def pipeline_dir(self, job_id: str) -> Path:
         return self.job_dir(job_id) / PIPELINE_SUBDIR
 
+    def spill_dir(self, job_id: str) -> Path:
+        return self.job_dir(job_id) / SPILL_SUBDIR
+
     def log_copy_path(self, job_id: str) -> Path:
         return self.job_dir(job_id) / "debug.log"
 
@@ -386,6 +420,7 @@ class JobService:
                 "elapsed_s": job.elapsed_s,
                 "warnings": self._warnings(job),
                 "error": job.error,
+                "partial": self._partial(job) if status == STATUS_RUNNING else None,
                 "result": job.result,
             }
             if status in (STATUS_QUEUED, STATUS_RUNNING):
@@ -396,6 +431,28 @@ class JobService:
                     n_overlap_regions=job.n_overlap_regions,
                 )
             return payload
+
+    def _partial(self, job: JobState) -> Optional[dict]:
+        """Progressive-disclosure payload read from the running job's spill dir.
+
+        API.md v1.1: present only while the job is running and at least one spill
+        file exists; ``null`` otherwise, so the frontend's check is a plain
+        truthiness test. Sub-fields are independently ``null`` until their file
+        lands, and everything is read defensively — a spill file can be caught
+        mid-write, and a half-written JSON must degrade to "not there yet"
+        rather than 500 a 1 Hz poll.
+
+        The spill's ``segments`` are mapped to the eval-facing ``turns`` shape so
+        the frontend consumes ONE diarization shape before and after completion
+        (the two on-disk schemas are deliberately different — see the note in
+        `asr_pipeline/stages/diarization.py` `spill`).
+        """
+        spill = self.spill_dir(job.id)
+        diarization = _partial_diarization(_read_json_file(spill / "diarization.json"))
+        routing = _partial_routing(_read_json_file(spill / "overlap_regions.json"))
+        if diarization is None and routing is None:
+            return None
+        return {"diarization": diarization, "routing": routing}
 
     def _warnings(self, job: JobState) -> List[str]:
         """Warning lines for a job: debug-log WARNs + weak-anchor + swap notice."""
@@ -657,6 +714,49 @@ class JobService:
             self.register(job)
             found += 1
         return found
+
+
+def _rows(payload: Optional[dict], key: str) -> List[dict]:
+    """``payload[key]`` as a list of dicts — anything else reads as empty.
+
+    The spill files are written by a live run and may be read mid-write, so no
+    shape is assumed beyond what is actually there.
+    """
+    if not isinstance(payload, dict):
+        return []
+    value = payload.get(key)
+    return [r for r in value if isinstance(r, dict)] if isinstance(value, list) else []
+
+
+def _partial_diarization(payload: Optional[dict]) -> Optional[dict]:
+    """Spill ``{segments, overlaps}`` -> the eval-facing ``{turns, overlaps}``."""
+    if not isinstance(payload, dict):
+        return None
+    turns = [
+        {"speaker": str(r.get("speaker", "")),
+         "start": _as_float(r.get("start")),
+         "end": _as_float(r.get("end"))}
+        for r in _rows(payload, "segments")
+    ]
+    overlaps = [
+        {"start": _as_float(r.get("start")),
+         "end": _as_float(r.get("end")),
+         "duration": _as_float(r.get("duration"))}
+        for r in _rows(payload, "overlaps")
+    ]
+    return {"turns": turns, "overlaps": overlaps}
+
+
+def _partial_routing(payload: Optional[dict]) -> Optional[dict]:
+    """Spill ``overlap_regions`` (a ``duration``/``speakers`` superset) -> ``{start, end}``."""
+    if not isinstance(payload, dict):
+        return None
+    return {
+        "overlap_regions": [
+            {"start": _as_float(r.get("start")), "end": _as_float(r.get("end"))}
+            for r in _rows(payload, "overlap_regions")
+        ]
+    }
 
 
 def _as_float(value) -> Optional[float]:

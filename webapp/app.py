@@ -35,7 +35,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from webapp.queue import JobService, PipelineRunner, new_job
+from webapp.queue import SPILL_SUBDIR, JobService, PipelineRunner, new_job
 from webapp.render import build_result
 
 _HERE = Path(__file__).resolve().parent
@@ -56,7 +56,10 @@ UPLOAD_SAMPLE_RATE = 16_000
 # Whitelisted downloadable names (API.md). Exact names plus the two per-speaker
 # families, so an N-speaker run exposes stream_C.wav / transcript_C.txt without
 # a code change. Nothing else is servable, and no name may contain a separator.
-_EXACT_FILES = {"mixture.wav", "metadata.json", "annotation.eaf", "debug.log"}
+_EXACT_FILES = {
+    "mixture.wav", "metadata.json", "annotation.eaf", "debug.log",
+    "enhanced_full.wav",       # from <job>/spill/ — enhancement A/B panel
+}
 _FILE_PATTERNS = (
     re.compile(r"^stream_[A-Za-z0-9_]{1,32}\.wav$"),
     re.compile(r"^transcript_[A-Za-z0-9_]{1,32}\.(txt|json)$"),
@@ -121,6 +124,11 @@ def _resolve_whitelisted(
         path = mixture_path
     elif name == "debug.log":
         path = job_dir / "debug.log"
+    elif name == "enhanced_full.wav":
+        # The enhanced mixture is a per-stage spill artefact, not a pipeline
+        # output. Absent (spill off, or the stage has not run yet) -> 404, which
+        # is also what an example directory gives, since examples have no spill.
+        path = job_dir / SPILL_SUBDIR / name
     else:
         path = pipeline_dir / name
     if path is None or not path.is_file():

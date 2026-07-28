@@ -23,7 +23,8 @@ from fastapi.testclient import TestClient
 
 from webapp.app import create_app
 from webapp.eta import EtaEstimator
-from webapp.queue import RunnerFailure
+from webapp.examples_build import build_manifest, load_scores
+from webapp.queue import PipelineRunner, RunnerFailure, job_config
 from webapp.render import peaks
 
 STAGES = [
@@ -115,17 +116,49 @@ def write_fake_outputs(pipeline_dir: Path, *, weak_anchor: bool = False,
     )
 
 
+def write_fake_spill(spill_dir: Path, *, truncated: bool = False,
+                     enhanced: bool = True) -> None:
+    """Per-stage spill as `Pipeline` writes it when `spill_intermediate` is on.
+
+    Note the schema is the spill one — ``segments`` (not ``turns``), with a
+    ``duration`` column — which is exactly what the backend has to map.
+    `truncated` simulates catching a file mid-write.
+    """
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    diarization = json.dumps({
+        "total_duration_s": 1.0,
+        "segments": [
+            {"start": 0.0, "end": 0.4, "duration": 0.4, "speaker": "SPEAKER_00"},
+            {"start": 0.3, "end": 0.9, "duration": 0.6, "speaker": "SPEAKER_01"},
+        ],
+        "overlaps": [{"start": 0.3, "end": 0.4, "duration": 0.1}],
+    })
+    if truncated:
+        diarization = diarization[: len(diarization) // 2]
+    (spill_dir / "diarization.json").write_text(diarization)
+    (spill_dir / "overlap_regions.json").write_text(json.dumps({
+        "speakers": ["SPEAKER_00", "SPEAKER_01"],
+        "overlap_regions": [{"start": 0.3, "end": 0.4, "duration": 0.1}],
+    }))
+    if enhanced:
+        write_wav(spill_dir / "enhanced_full.wav", 1.0, freq=200)
+
+
 class FakeRunner:
     """Scripted stand-in for `PipelineRunner` — the whole point of the seam."""
 
     def __init__(self, *, fail: bool = False, emit_progress: bool = False,
                  with_hooks: bool = False, weak_anchor: bool = False,
-                 gate: threading.Event | None = None):
+                 gate: threading.Event | None = None, spill: bool = False,
+                 truncated_spill: bool = False, enhanced: bool = True):
         self.fail = fail
         self.emit_progress = emit_progress
         self.with_hooks = with_hooks
         self.weak_anchor = weak_anchor
         self.gate = gate                 # optional block, for queue-order tests
+        self.spill = spill or truncated_spill
+        self.truncated_spill = truncated_spill
+        self.enhanced = enhanced
         self.calls: list[str] = []
         self.events_seen: list[dict] = []
 
@@ -134,6 +167,11 @@ class FakeRunner:
 
     def run(self, job_id, wav_path, out_root, on_event):
         self.calls.append(job_id)
+        if self.spill:
+            write_fake_spill(
+                Path(out_root) / job_id / "spill",
+                truncated=self.truncated_spill, enhanced=self.enhanced,
+            )
         if self.gate is not None:
             self.gate.wait(timeout=10)
         for stage in STAGES:
@@ -222,10 +260,11 @@ def test_done_job_matches_api_contract(jobs_root, upload_wav):
     assert set(payload) == {
         "id", "filename", "status", "queue_position", "submitted_at",
         "audio_duration_s", "stages", "eta_s", "elapsed_s", "warnings",
-        "error", "result",
+        "error", "partial", "result",
     }
     assert payload["status"] == "done"
     assert payload["error"] is None
+    assert payload["partial"] is None            # terminal -> no partial
     assert payload["elapsed_s"] > 0
     assert isinstance(payload["warnings"], list)
 
@@ -289,6 +328,158 @@ def test_running_state_visible_midflight(jobs_root, upload_wav):
     assert payload["eta_s"] is not None
     gate.set()
     assert wait_for(client, job_id)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Progressive disclosure: `partial` from the per-job spill (API.md v1.1)
+# ---------------------------------------------------------------------------
+
+
+def test_partial_appears_midrun_from_spill(jobs_root, upload_wav):
+    """Spill files land -> partial fills in, with segments mapped to `turns`."""
+    gate = threading.Event()
+    client = make_client(jobs_root, FakeRunner(gate=gate, spill=True))
+    job_id = submit(client, upload_wav)
+    payload = wait_for(client, job_id, statuses=("running",))
+    # The spill is written before the gate, but the poll may still land first.
+    deadline = time.monotonic() + 5
+    while payload["partial"] is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+        payload = client.get(f"/api/jobs/{job_id}").json()
+
+    partial = payload["partial"]
+    assert set(partial) == {"diarization", "routing"}
+    assert partial["diarization"]["turns"] == [
+        {"speaker": "SPEAKER_00", "start": 0.0, "end": 0.4},
+        {"speaker": "SPEAKER_01", "start": 0.3, "end": 0.9},
+    ]                                            # `duration` dropped, one shape
+    assert partial["diarization"]["overlaps"] == [
+        {"start": 0.3, "end": 0.4, "duration": 0.1}
+    ]
+    assert partial["routing"]["overlap_regions"] == [{"start": 0.3, "end": 0.4}]
+    assert payload["result"] is None
+
+    gate.set()
+    done = wait_for(client, job_id)
+    assert done["partial"] is None                # terminal -> partial cleared
+    assert done["result"] is not None
+
+
+def test_partial_is_null_before_any_spill(jobs_root, upload_wav):
+    gate = threading.Event()
+    client = make_client(jobs_root, FakeRunner(gate=gate, spill=False))
+    job_id = submit(client, upload_wav)
+    assert wait_for(client, job_id, statuses=("running",))["partial"] is None
+    gate.set()
+    wait_for(client, job_id)
+
+
+def test_partial_tolerates_a_half_written_spill_file(jobs_root, upload_wav):
+    """A file caught mid-write reads as absent — a poll must never 500."""
+    gate = threading.Event()
+    client = make_client(jobs_root, FakeRunner(gate=gate, truncated_spill=True))
+    job_id = submit(client, upload_wav)
+    payload = wait_for(client, job_id, statuses=("running",))
+    deadline = time.monotonic() + 5
+    while payload["partial"] is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+        payload = client.get(f"/api/jobs/{job_id}").json()
+    assert payload["partial"]["diarization"] is None      # truncated -> absent
+    assert payload["partial"]["routing"]["overlap_regions"]  # the intact one shows
+    gate.set()
+    wait_for(client, job_id)
+
+
+def test_queued_job_has_no_partial(jobs_root, tmp_path):
+    gate = threading.Event()
+    client = make_client(jobs_root, FakeRunner(gate=gate, spill=True))
+    first = submit(client, write_wav(tmp_path / "a.wav", 1.0))
+    second = submit(client, write_wav(tmp_path / "b.wav", 1.0))
+    wait_for(client, first, statuses=("running",))
+    assert client.get(f"/api/jobs/{second}").json()["partial"] is None
+    gate.set()
+    for job_id in (first, second):
+        wait_for(client, job_id)
+
+
+def test_enhanced_full_is_served_from_the_spill_dir(jobs_root, upload_wav):
+    client = make_client(jobs_root, FakeRunner(spill=True))
+    job_id = submit(client, upload_wav)
+    wait_for(client, job_id)
+    response = client.get(f"/api/jobs/{job_id}/files/enhanced_full.wav")
+    assert response.status_code == 200
+    assert response.content
+
+
+def test_enhanced_full_absent_is_404(jobs_root, upload_wav):
+    """No spill (or the enhancement stage never ran) -> 404, not a fake file."""
+    client = make_client(jobs_root, FakeRunner(spill=True, enhanced=False))
+    job_id = submit(client, upload_wav)
+    wait_for(client, job_id)
+    assert client.get(f"/api/jobs/{job_id}/files/enhanced_full.wav").status_code == 404
+
+
+def test_examples_have_no_enhanced_full(jobs_root, tmp_path):
+    """Frozen examples have no spill dir — the same whitelist entry just 404s."""
+    manifest = _example_manifest(tmp_path, jobs_root)
+    client = make_client(jobs_root, FakeRunner(), examples_manifest=manifest)
+    assert client.get(
+        "/api/examples/demo__seg00/files/enhanced_full.wav"
+    ).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Per-job config copy (shared startup config must stay untouched)
+# ---------------------------------------------------------------------------
+
+
+class FakeConfig:
+    """Stand-in for `PipelineConfig`: the two knobs `job_config` touches."""
+
+    def __init__(self):
+        self.spill_intermediate = False
+        self.artifact_dir = None
+        self.nested = {"separation": {"enabled": True}}
+        self.validated = 0
+
+    def __post_init__(self):
+        self.validated += 1
+
+
+def test_job_config_enables_spill_on_a_copy(tmp_path):
+    shared = FakeConfig()
+    cfg = job_config(shared, tmp_path / "job1" / "spill")
+
+    assert cfg is not shared
+    assert cfg.spill_intermediate is True
+    assert cfg.artifact_dir == str(tmp_path / "job1" / "spill")
+    assert cfg.validated == 1                     # re-validated after the change
+
+    # The shared startup config is never mutated — not the scalars, and not the
+    # nested structures (deep copy, so a later edit cannot leak either way).
+    assert shared.spill_intermediate is False
+    assert shared.artifact_dir is None
+    assert shared.validated == 0
+    cfg.nested["separation"]["enabled"] = False
+    assert shared.nested["separation"]["enabled"] is True
+
+
+def test_job_config_is_per_job(tmp_path):
+    shared = FakeConfig()
+    first = job_config(shared, tmp_path / "a" / "spill")
+    second = job_config(shared, tmp_path / "b" / "spill")
+    assert first.artifact_dir != second.artifact_dir
+    assert shared.artifact_dir is None
+
+
+def test_pipeline_runner_holds_the_shared_config_unmodified(tmp_path):
+    """The runner keeps the startup config as-is; spill lives on the per-job copy."""
+    shared = FakeConfig()
+    runner = PipelineRunner(shared)
+    assert runner.config is shared
+    job_config(runner.config, tmp_path / "spill")
+    assert runner.config.spill_intermediate is False
+    assert runner.config.artifact_dir is None
 
 
 def test_weak_anchor_becomes_a_warning(jobs_root, upload_wav):
@@ -620,6 +811,64 @@ def test_rerun_example_creates_a_plain_job(jobs_root, tmp_path):
 
     missing = client.post("/api/jobs", data={"source_example": "nieznany"})
     assert missing.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# examples_build: score join
+# ---------------------------------------------------------------------------
+
+
+SCORES_HEADER = "frag_id,recid,config,stratum,cp_wer,cp_cer,purity_pct\n"
+
+
+def _scores_csv(path: Path, rows: str) -> Path:
+    path.write_text(SCORES_HEADER + rows, encoding="utf-8")
+    return path
+
+
+def test_load_scores_keeps_only_the_frozen_arm(tmp_path):
+    """Rows for other sweep arms must never leak into the gallery's numbers."""
+    csv_path = _scores_csv(tmp_path / "rescore.csv", (
+        "aaa__seg00,aaa,v41_merge,HIGH,54.0,34.44,\n"
+        "aaa__seg00,aaa,v3_phraseloop,HIGH,99.9,88.8,\n"
+        "bbb__seg00,bbb,v41_merge,LOW,11.95,5.87,\n"
+    ))
+    scores = load_scores([csv_path], "v41_merge")
+    assert scores == {
+        "aaa__seg00": {"cpwer": 54.0, "cpcer": 34.44},
+        "bbb__seg00": {"cpwer": 11.95, "cpcer": 5.87},
+    }
+
+
+def test_load_scores_merges_sheets_and_survives_a_missing_one(tmp_path):
+    dev = _scores_csv(tmp_path / "dev.csv", "aaa__seg00,aaa,v41_merge,MID,14.2,9.53,\n")
+    test = _scores_csv(tmp_path / "test.csv", "bbb__seg00,bbb,v41_merge,LOW,11.9,5.8,\n")
+    scores = load_scores([dev, test, tmp_path / "absent.csv"], "v41_merge")
+    assert sorted(scores) == ["aaa__seg00", "bbb__seg00"]
+
+
+def test_load_scores_handles_blank_cells(tmp_path):
+    csv_path = _scores_csv(tmp_path / "r.csv", "aaa__seg00,aaa,v41_merge,MID,,,\n")
+    assert load_scores([csv_path], "v41_merge") == {
+        "aaa__seg00": {"cpwer": None, "cpcer": None}
+    }
+
+
+def test_build_manifest_joins_scores_onto_examples(tmp_path):
+    root = tmp_path / "frags"
+    for frag in ("aaa__seg00", "bbb__seg00"):
+        write_wav(root / frag / f"{frag}.wav", 1.0)
+        write_fake_outputs(root / frag / "sweep" / "v41_merge")
+    csv_path = _scores_csv(tmp_path / "rescore.csv",
+                           "aaa__seg00,aaa,v41_merge,HIGH,54.0,34.44,\n")
+
+    manifest = build_manifest(root, "v41_merge", scores_csvs=[csv_path])
+    rows = {r["id"]: r for r in manifest["examples"]}
+    assert rows["aaa__seg00"]["cpwer"] == 54.0
+    assert rows["aaa__seg00"]["cpcer"] == 34.44
+    # A fragment absent from the sheets keeps null scores rather than a guess.
+    assert rows["bbb__seg00"]["cpwer"] is None
+    assert rows["bbb__seg00"]["cpcer"] is None
 
 
 # ---------------------------------------------------------------------------
