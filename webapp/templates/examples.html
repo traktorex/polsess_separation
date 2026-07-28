@@ -1,20 +1,25 @@
 <!DOCTYPE html>
-<!--
-  PLACEHOLDER SHELL. The real front-end (HTML/CSS/JS) is a separate work stream;
-  this file exists only so the route renders and the mount point + API URLs are
-  already in place. Do not build UI here.
--->
 <html lang="pl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Przykłady — asr_pipeline</title>
+  <title>Przykłady — Separacja mowy · PolSESS</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-  <h1>Przykłady</h1>
-  <div id="app" data-page="examples" data-examples-api="{{ examples_api }}" data-jobs-api="/api/jobs"></div>
-  <noscript>Ta strona wymaga JavaScriptu.</noscript>
+  <header class="topbar">
+    <h1><a href="/">Separacja mowy · PolSESS</a></h1>
+    <span class="sub">wyniki zamrożone + referencja</span>
+    <nav>
+      <a href="/">Nowe nagranie</a>
+      <a class="active" href="/examples">Przykłady</a>
+      <span id="theme-slot"></span>
+    </nav>
+  </header>
+  <main class="wrap">
+    <div id="app" data-page="examples" data-examples-api="{{ examples_api }}" data-jobs-api="/api/jobs"></div>
+    <noscript><p class="lead">Ta strona wymaga JavaScriptu.</p></noscript>
+  </main>
   <script type="module" src="/static/app.js"></script>
 </body>
 </html>
