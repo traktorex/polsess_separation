@@ -314,7 +314,23 @@ def create_app(
 
     static_dir = _HERE / "static"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    class _NoCacheStatic(StaticFiles):
+        """Static files with ``Cache-Control: no-cache``.
+
+        Without it, browsers apply heuristic freshness to the ES modules and a
+        plain F5 can run a stale module against a new server (Chrome only
+        revalidates the document itself). ``no-cache`` means "revalidate every
+        time", not "don't cache": unchanged files still come back as 304s via
+        ETag/Last-Modified, so the cost is one conditional request per file.
+        """
+
+        def file_response(self, *args, **kwargs):
+            response = super().file_response(*args, **kwargs)
+            response.headers["Cache-Control"] = "no-cache"
+            return response
+
+    app.mount("/static", _NoCacheStatic(directory=str(static_dir)), name="static")
     templates = Jinja2Templates(directory=str(_HERE / "templates"))
 
     @app.exception_handler(RequestValidationError)
