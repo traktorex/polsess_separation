@@ -22,7 +22,9 @@ import soundfile as sf
 # Waveform resolution. Design §5.3 pins v1 to the review page's proven simple
 # peak envelope; the JSON shape ({"mixture": [...], "A": [...]}) leaves room for
 # additive per-bucket min/max/RMS fields later without breaking clients.
-DEFAULT_BUCKETS = 800
+# Raised from 800 for the zoomable timeline (up to 8x): at 800 buckets a zoomed
+# waveform is visibly blocky, and the extra ints cost ~3 KB per stream.
+DEFAULT_BUCKETS = 2400
 
 
 def peaks(wav_path: str | Path, buckets: int = DEFAULT_BUCKETS) -> List[int]:

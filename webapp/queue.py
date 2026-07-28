@@ -380,6 +380,44 @@ class JobService:
             for j in jobs[:limit]
         ]
 
+    def clear_terminal(self) -> Dict[str, int]:
+        """Delete every finished job — registry entry **and** its directory.
+
+        "Finished" is exactly ``done`` / ``failed``: a queued or running job is
+        never touched, because the worker still owns its directory. Terminal jobs
+        never change state again, so the snapshot taken under the lock stays
+        valid while `shutil.rmtree` runs outside it (a 1 Hz poll must not block on
+        disk I/O).
+
+        A directory that cannot be removed keeps its registry entry — the job is
+        still there, and saying otherwise would leave an unreachable results page
+        (SCOPE §4.1). Returns ``{"removed", "skipped"}``, where `skipped` counts
+        both the jobs that were still in flight and the deletions that failed.
+        """
+        with self._lock:
+            terminal = [
+                job for job in self._jobs.values()
+                if job.status in (STATUS_DONE, STATUS_FAILED)
+            ]
+            skipped = len(self._jobs) - len(terminal)
+
+        removed = 0
+        for job in terminal:
+            directory = self.job_dir(job.id)
+            try:
+                if directory.exists():
+                    shutil.rmtree(directory)
+            except OSError as exc:
+                print(f"[webapp] WARNING: could not remove {directory}: {exc}")
+                skipped += 1
+                continue
+            with self._lock:
+                self._jobs.pop(job.id, None)
+                if job.id in self._order:
+                    self._order.remove(job.id)
+            removed += 1
+        return {"removed": removed, "skipped": skipped}
+
     def queue_position(self, job_id: str) -> int:
         """Queued jobs ahead of `job_id` (0 = running, or next in line).
 

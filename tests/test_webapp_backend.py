@@ -23,9 +23,14 @@ from fastapi.testclient import TestClient
 
 from webapp.app import create_app
 from webapp.eta import EtaEstimator
-from webapp.examples_build import build_manifest, load_scores
+from webapp.examples_build import (
+    METRIC_KEYS,
+    build_manifest,
+    compute_metric_set,
+    load_scores,
+)
 from webapp.queue import PipelineRunner, RunnerFailure, job_config
-from webapp.render import peaks
+from webapp.render import DEFAULT_BUCKETS, peaks
 
 STAGES = [
     "diarization", "routing", "enhancement", "separation",
@@ -114,6 +119,41 @@ def write_fake_outputs(pipeline_dir: Path, *, weak_anchor: bool = False,
     (pipeline_dir / "metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def write_gt_eaf(path: Path, tiers: dict[str, list[str]]) -> Path:
+    """A minimal ELAN GT file: one tier per speaker, one annotation per text.
+
+    Only the elements `parse_gt_eaf` (and `asr_pipeline.eval.parse_eaf`) read —
+    TIME_SLOTs, TIERs named ``Speaker_<label>``, ALIGNABLE_ANNOTATIONs — with
+    one non-overlapping second per utterance.
+    """
+    slots, tier_xml = [], []
+    n = 0
+    for label, texts in tiers.items():
+        rows = []
+        for text in texts:
+            n += 1
+            start, end = f"ts{2 * n - 1}", f"ts{2 * n}"
+            slots.append(f'<TIME_SLOT TIME_SLOT_ID="{start}" TIME_VALUE="{1000 * n}"/>')
+            slots.append(f'<TIME_SLOT TIME_SLOT_ID="{end}" TIME_VALUE="{1000 * n + 900}"/>')
+            rows.append(
+                f'<ANNOTATION><ALIGNABLE_ANNOTATION ANNOTATION_ID="a{n}" '
+                f'TIME_SLOT_REF1="{start}" TIME_SLOT_REF2="{end}">'
+                f'<ANNOTATION_VALUE>{text}</ANNOTATION_VALUE>'
+                f'</ALIGNABLE_ANNOTATION></ANNOTATION>'
+            )
+        tier_xml.append(
+            f'<TIER TIER_ID="Speaker_{label}">' + "".join(rows) + "</TIER>"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?><ANNOTATION_DOCUMENT>'
+        "<TIME_ORDER>" + "".join(slots) + "</TIME_ORDER>"
+        + "".join(tier_xml) + "</ANNOTATION_DOCUMENT>",
+        encoding="utf-8",
+    )
+    return path
 
 
 def write_fake_spill(spill_dir: Path, *, truncated: bool = False,
@@ -285,7 +325,7 @@ def test_done_job_matches_api_contract(jobs_root, upload_wav):
     assert result["files"]["stream_A"].endswith("/files/stream_A.wav")
     assert result["files"]["eaf"].endswith("/files/annotation.eaf")
     assert sorted(result["peaks"]) == ["A", "B", "mixture"]
-    assert len(result["peaks"]["mixture"]) == 800
+    assert len(result["peaks"]["mixture"]) == DEFAULT_BUCKETS
     assert len(result["stage_timings"]) == len(STAGES)
 
     segments = result["transcripts"]["A"]["segments"]
@@ -709,6 +749,50 @@ def test_queue_position_counts_jobs_ahead(jobs_root, tmp_path):
         wait_for(client, job_id)
 
 
+def test_clear_jobs_removes_terminal_jobs_from_registry_and_disk(jobs_root, tmp_path):
+    """DELETE /api/jobs drops finished jobs entirely — rows, files, everything."""
+    client = make_client(jobs_root, FakeRunner())
+    done = submit(client, write_wav(tmp_path / "a.wav", 1.0))
+    wait_for(client, done)
+
+    # A second client on the same root rebuilds the registry from disk (so the
+    # done job is there) and adds a failed one.
+    client = make_client(jobs_root, FakeRunner(fail=True))
+    failed = submit(client, write_wav(tmp_path / "b.wav", 1.0))
+    wait_for(client, failed)
+    assert {r["id"] for r in client.get("/api/jobs").json()} == {done, failed}
+
+    assert client.delete("/api/jobs").json() == {"removed": 2, "skipped": 0}
+    assert client.get("/api/jobs").json() == []
+    assert client.get(f"/api/jobs/{done}").status_code == 404
+    assert not (jobs_root / done).exists()
+    assert not (jobs_root / failed).exists()
+
+
+def test_clear_jobs_is_idempotent(jobs_root, tmp_path):
+    client = make_client(jobs_root, FakeRunner())
+    wait_for(client, submit(client, write_wav(tmp_path / "a.wav", 1.0)))
+    assert client.delete("/api/jobs").json()["removed"] == 1
+    assert client.delete("/api/jobs").json() == {"removed": 0, "skipped": 0}
+
+
+def test_clear_jobs_never_touches_jobs_in_flight(jobs_root, tmp_path):
+    """A running job and a queued one survive, and both count as skipped."""
+    gate = threading.Event()
+    client = make_client(jobs_root, FakeRunner(gate=gate))
+    running = submit(client, write_wav(tmp_path / "a.wav", 1.0))
+    queued = submit(client, write_wav(tmp_path / "b.wav", 1.0))
+    wait_for(client, running, statuses=("running",))
+
+    assert client.delete("/api/jobs").json() == {"removed": 0, "skipped": 2}
+    assert (jobs_root / running).exists() and (jobs_root / queued).exists()
+
+    gate.set()
+    for job_id in (running, queued):
+        assert wait_for(client, job_id)["status"] == "done"
+    assert client.delete("/api/jobs").json() == {"removed": 2, "skipped": 0}
+
+
 def test_recent_jobs_listing(jobs_root, tmp_path):
     client = make_client(jobs_root, FakeRunner())
     first = submit(client, write_wav(tmp_path / "a.wav", 1.0))
@@ -771,6 +855,9 @@ def test_registry_rebuild_marks_interrupted_jobs_failed(jobs_root):
 # ---------------------------------------------------------------------------
 
 
+EXAMPLE_METRICS = {key: float(i) for i, key in enumerate(METRIC_KEYS)}
+
+
 def _example_manifest(tmp_path, jobs_root) -> Path:
     frag = tmp_path / "frag" / "demo__seg00"
     write_wav(frag / "demo__seg00.wav", 1.0)
@@ -782,7 +869,10 @@ def _example_manifest(tmp_path, jobs_root) -> Path:
         "examples": [{
             "id": "demo__seg00", "title": "demo__seg00", "duration_s": 1.0,
             "split": "dev", "n_overlap_regions": 1, "cpwer": None, "cpcer": None,
+            "stratum": "MID",
+            "metrics": dict(EXAMPLE_METRICS),
             "gt": {"A": [{"start": 0.1, "end": 0.8, "text": "referencja"}]},
+            "gt_swapped": True,
             "pipeline_dir": str(frag / "sweep" / "v41_merge"),
             "mixture_path": str(frag / "demo__seg00.wav"),
         }],
@@ -800,7 +890,7 @@ def test_examples_listing_and_files(jobs_root, tmp_path):
     assert row["cpwer"] is None
     assert row["job_like"]["files"]["mixture"] == \
         "/api/examples/demo__seg00/files/mixture.wav"
-    assert len(row["job_like"]["peaks"]["A"]) == 800
+    assert len(row["job_like"]["peaks"]["A"]) == DEFAULT_BUCKETS
     assert client.get("/api/examples/demo__seg00/files/stream_A.wav").status_code == 200
     assert client.get("/api/examples/demo__seg00/files/run_meta.json").status_code == 404
     assert client.get("/api/examples/nope/files/mixture.wav").status_code == 404
@@ -817,6 +907,18 @@ def test_examples_light_and_ids_filters(jobs_root, tmp_path):
     full = client.get("/api/examples?ids=demo__seg00").json()
     assert full[0]["job_like"] and full[0]["gt"]
     assert client.get("/api/examples?ids=other").json() == []
+
+
+def test_examples_carry_stratum_metrics_and_swap_flag_in_both_modes(jobs_root, tmp_path):
+    """API.md v1.2 draft: the three small additions ride along even in light mode."""
+    manifest = _example_manifest(tmp_path, jobs_root)
+    client = make_client(jobs_root, FakeRunner(), examples_manifest=manifest)
+    for url in ("/api/examples?light=1", "/api/examples?ids=demo__seg00"):
+        row = client.get(url).json()[0]
+        assert row["stratum"] == "MID", url
+        assert row["gt_swapped"] is True, url
+        assert row["metrics"] == EXAMPLE_METRICS, url
+        assert set(row["metrics"]) == set(METRIC_KEYS), url
 
 
 def test_missing_examples_manifest_is_an_empty_gallery(jobs_root):
@@ -845,40 +947,85 @@ def test_rerun_example_creates_a_plain_job(jobs_root, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-SCORES_HEADER = "frag_id,recid,config,stratum,cp_wer,cp_cer,purity_pct\n"
+# The frozen rescore sheets' header verbatim (`dump_per_fragment` in
+# scripts/rescore_stratified.py), so the fixtures exercise the real layout.
+SCORES_COLUMNS = [
+    "frag_id", "recid", "config", "stratum", "composite",
+    "cp_wer", "cp_cer", "cp_err", "cp_len", "cer_err", "cer_len",
+    "orc_wer", "mimo_wer", "orc_cer", "mix_mimo_wer", "mix_mimo_cer",
+    "purity_pct",
+]
+
+
+def _scores_row(frag: str, config: str = "v41_merge", **cells) -> str:
+    """One sheet row; every column not named comes out blank, as the real ones do."""
+    values = {"frag_id": frag, "recid": frag.split("__")[0], "config": config}
+    values.update(cells)
+    return ",".join(str(values.get(c, "")) for c in SCORES_COLUMNS) + "\n"
 
 
 def _scores_csv(path: Path, rows: str) -> Path:
-    path.write_text(SCORES_HEADER + rows, encoding="utf-8")
+    path.write_text(",".join(SCORES_COLUMNS) + "\n" + rows, encoding="utf-8")
     return path
+
+
+# One fully populated v41_merge row, mirroring the real sheet's 005cba37__seg00.
+_FULL_ROW_CELLS = dict(
+    stratum="HIGH", composite="1.643", cp_wer="54.0", cp_cer="34.44",
+    cp_err="81", cp_len="150", cer_err="280", cer_len="813",
+    orc_wer="52.67", mimo_wer="48.67", orc_cer="36.04",
+    mix_mimo_wer="61.33", mix_mimo_cer="51.23",
+)
 
 
 def test_load_scores_keeps_only_the_frozen_arm(tmp_path):
     """Rows for other sweep arms must never leak into the gallery's numbers."""
     csv_path = _scores_csv(tmp_path / "rescore.csv", (
-        "aaa__seg00,aaa,v41_merge,HIGH,54.0,34.44,\n"
-        "aaa__seg00,aaa,v3_phraseloop,HIGH,99.9,88.8,\n"
-        "bbb__seg00,bbb,v41_merge,LOW,11.95,5.87,\n"
+        _scores_row("aaa__seg00", stratum="HIGH", cp_wer="54.0", cp_cer="34.44")
+        + _scores_row("aaa__seg00", "v3_phraseloop", stratum="HIGH",
+                      cp_wer="99.9", cp_cer="88.8")
+        + _scores_row("bbb__seg00", stratum="LOW", cp_wer="11.95", cp_cer="5.87")
     ))
     scores = load_scores([csv_path], "v41_merge")
-    assert scores == {
-        "aaa__seg00": {"cpwer": 54.0, "cpcer": 34.44},
-        "bbb__seg00": {"cpwer": 11.95, "cpcer": 5.87},
+    assert sorted(scores) == ["aaa__seg00", "bbb__seg00"]
+    assert scores["aaa__seg00"]["cpwer"] == 54.0        # raw, not rounded
+    assert scores["aaa__seg00"]["cpcer"] == 34.44
+    assert scores["aaa__seg00"]["stratum"] == "HIGH"
+    assert scores["bbb__seg00"]["cpwer"] == 11.95
+
+
+def test_load_scores_reads_every_metric_column(tmp_path):
+    """The sheet columns land in `metrics` unrounded — rounding happens on merge."""
+    csv_path = _scores_csv(tmp_path / "rescore.csv",
+                           _scores_row("aaa__seg00", **_FULL_ROW_CELLS))
+    metrics = load_scores([csv_path], "v41_merge")["aaa__seg00"]["metrics"]
+    assert metrics == {
+        "cpwer": 54.0, "cpcer": 34.44, "orcwer": 52.67, "mimower": 48.67,
+        "orccer": 36.04, "floor_mimower": 61.33, "floor_mimocer": 51.23,
     }
 
 
 def test_load_scores_merges_sheets_and_survives_a_missing_one(tmp_path):
-    dev = _scores_csv(tmp_path / "dev.csv", "aaa__seg00,aaa,v41_merge,MID,14.2,9.53,\n")
-    test = _scores_csv(tmp_path / "test.csv", "bbb__seg00,bbb,v41_merge,LOW,11.9,5.8,\n")
+    dev = _scores_csv(tmp_path / "dev.csv",
+                      _scores_row("aaa__seg00", stratum="MID", cp_wer="14.2",
+                                  cp_cer="9.53"))
+    test = _scores_csv(tmp_path / "test.csv",
+                       _scores_row("bbb__seg00", stratum="LOW", cp_wer="11.9",
+                                   cp_cer="5.8"))
     scores = load_scores([dev, test, tmp_path / "absent.csv"], "v41_merge")
     assert sorted(scores) == ["aaa__seg00", "bbb__seg00"]
 
 
 def test_load_scores_handles_blank_cells(tmp_path):
-    csv_path = _scores_csv(tmp_path / "r.csv", "aaa__seg00,aaa,v41_merge,MID,,,\n")
-    assert load_scores([csv_path], "v41_merge") == {
-        "aaa__seg00": {"cpwer": None, "cpcer": None}
+    csv_path = _scores_csv(tmp_path / "r.csv", _scores_row("aaa__seg00", stratum="MID"))
+    row = load_scores([csv_path], "v41_merge")["aaa__seg00"]
+    assert row["cpwer"] is None and row["cpcer"] is None
+    assert row["stratum"] == "MID"
+    assert set(row["metrics"]) == {
+        "cpwer", "cpcer", "orcwer", "mimower", "orccer",
+        "floor_mimower", "floor_mimocer",
     }
+    assert all(v is None for v in row["metrics"].values())
 
 
 def test_build_manifest_joins_scores_onto_examples(tmp_path):
@@ -887,7 +1034,7 @@ def test_build_manifest_joins_scores_onto_examples(tmp_path):
         write_wav(root / frag / f"{frag}.wav", 1.0)
         write_fake_outputs(root / frag / "sweep" / "v41_merge")
     csv_path = _scores_csv(tmp_path / "rescore.csv",
-                           "aaa__seg00,aaa,v41_merge,HIGH,54.0,34.44,\n")
+                           _scores_row("aaa__seg00", **_FULL_ROW_CELLS))
 
     manifest = build_manifest(root, "v41_merge", scores_csvs=[csv_path])
     rows = {r["id"]: r for r in manifest["examples"]}
@@ -896,6 +1043,117 @@ def test_build_manifest_joins_scores_onto_examples(tmp_path):
     # A fragment absent from the sheets keeps null scores rather than a guess.
     assert rows["bbb__seg00"]["cpwer"] is None
     assert rows["bbb__seg00"]["cpcer"] is None
+
+
+def test_build_manifest_carries_stratum_and_the_metric_schema(tmp_path):
+    """The row shape the frontend is built against (API.md v1.2 draft)."""
+    root = tmp_path / "frags"
+    for frag in ("aaa__seg00", "bbb__seg00"):
+        write_wav(root / frag / f"{frag}.wav", 1.0)
+        write_fake_outputs(root / frag / "sweep" / "v41_merge")
+    csv_path = _scores_csv(tmp_path / "rescore.csv",
+                           _scores_row("aaa__seg00", **_FULL_ROW_CELLS))
+
+    rows = {r["id"]: r
+            for r in build_manifest(root, "v41_merge",
+                                    scores_csvs=[csv_path])["examples"]}
+    scored = rows["aaa__seg00"]
+    assert scored["stratum"] == "HIGH"
+    assert set(scored["metrics"]) == set(METRIC_KEYS)
+    # Sheet columns win and are rounded to one decimal.
+    assert scored["metrics"]["cpwer"] == 54.0
+    assert scored["metrics"]["cpcer"] == 34.4
+    assert scored["metrics"]["orcwer"] == 52.7
+    assert scored["metrics"]["floor_mimocer"] == 51.2
+    # attr_gap = cpWER − MIMO-WER, derived from the two shown values.
+    assert scored["metrics"]["attr_gap"] == pytest.approx(54.0 - 48.7)
+    # Nothing the sheet lacks is invented: these fixtures have no GT EAF, so the
+    # recomputation cannot run and those entries stay null.
+    assert scored["metrics"]["tcpwer"] is None
+    assert scored["metrics"]["floor_orcwer"] is None
+    # A fragment with neither sheet row nor computable metrics carries no block.
+    assert rows["bbb__seg00"]["stratum"] is None
+    assert rows["bbb__seg00"]["metrics"] is None
+
+
+# ---------------------------------------------------------------------------
+# examples_build: GT speaker-swap detection (display alignment only)
+# ---------------------------------------------------------------------------
+
+
+def _swap_fixture(tmp_path, tiers: dict) -> Path:
+    """One fragment whose pipeline says A="pierwszy mówca", B="drugi mówca"."""
+    root = tmp_path / "frags"
+    frag = root / "ccc__seg00"
+    write_wav(frag / "ccc__seg00.wav", 1.0)
+    write_fake_outputs(frag / "sweep" / "v41_merge")
+    write_gt_eaf(frag / "annotation.eaf", tiers)
+    return root
+
+
+def test_gt_tiers_are_swapped_when_they_match_crossed(tmp_path):
+    """GT tier B matching pipeline A -> tiers relabelled, flag set."""
+    root = _swap_fixture(tmp_path, {"A": ["drugi mówca"], "B": ["pierwszy mówca"]})
+    row = build_manifest(root, "v41_merge", scores_csvs=[])["examples"][0]
+    assert row["gt_swapped"] is True
+    assert row["gt"]["A"][0]["text"] == "pierwszy mówca"    # now beside stream A
+    assert row["gt"]["B"][0]["text"] == "drugi mówca"
+
+
+def test_gt_tiers_are_left_alone_when_they_match_straight(tmp_path):
+    root = _swap_fixture(tmp_path, {"A": ["pierwszy mówca"], "B": ["drugi mówca"]})
+    row = build_manifest(root, "v41_merge", scores_csvs=[])["examples"][0]
+    assert row["gt_swapped"] is False
+    assert row["gt"]["A"][0]["text"] == "pierwszy mówca"
+
+
+def test_gt_swap_flag_is_false_without_gt(tmp_path):
+    root = tmp_path / "frags"
+    write_wav(root / "ddd__seg00" / "ddd__seg00.wav", 1.0)
+    write_fake_outputs(root / "ddd__seg00" / "sweep" / "v41_merge")
+    row = build_manifest(root, "v41_merge", scores_csvs=[])["examples"][0]
+    assert row["gt"] is None and row["gt_swapped"] is False
+
+
+# ---------------------------------------------------------------------------
+# examples_build: recomputing what the frozen sheets do not carry
+# ---------------------------------------------------------------------------
+
+
+def test_compute_metric_set_uses_the_frozen_eval_code(tmp_path):
+    """The recomputed entries come from asr_pipeline.eval, not a local re-write.
+
+    Deliberately the only test that touches the eval chain: everything else in
+    this file must stay import-free of meeteval/torch, which is why the
+    computation is lazy and skipped whenever a fragment has no GT EAF.
+    """
+    pytest.importorskip("meeteval")
+    frag = tmp_path / "eee__seg00"
+    pipeline_dir = frag / "sweep" / "v41_merge"
+    write_fake_outputs(pipeline_dir)
+    write_gt_eaf(frag / "annotation.eaf",
+                 {"A": ["pierwszy mówca"], "B": ["drugi mówca"]})
+    (pipeline_dir / "transcript_mixture.txt").write_text(
+        "[  0.10 →   1.60]  pierwszy mówca drugi mówca\n", encoding="utf-8"
+    )
+
+    metrics = compute_metric_set(frag, "v41_merge")
+    assert set(metrics) == set(METRIC_KEYS)
+    # Hypothesis == reference, so every rate is 0 and every entry is populated.
+    for key in METRIC_KEYS:
+        if key == "attr_gap":
+            continue                       # derived in merge_metrics, not here
+        assert metrics[key] == 0.0, key
+    assert metrics["attr_gap"] is None
+
+
+def test_compute_metric_set_is_none_without_gt_or_transcripts(tmp_path):
+    """No EAF (or no transcripts) -> nothing to score, and no eval import."""
+    frag = tmp_path / "fff__seg00"
+    write_fake_outputs(frag / "sweep" / "v41_merge")
+    assert compute_metric_set(frag, "v41_merge") is None
+    write_gt_eaf(frag / "annotation.eaf", {"A": ["cokolwiek"]})
+    assert compute_metric_set(frag, "v41_nonexistent") is None
 
 
 # ---------------------------------------------------------------------------
@@ -921,8 +1179,9 @@ def test_html_routes_render(jobs_root, upload_wav):
 
 def test_peaks_shape_and_range(tmp_path):
     wav = write_wav(tmp_path / "tone.wav", seconds=2.0)
-    values = peaks(wav, buckets=800)
-    assert len(values) == 800
+    values = peaks(wav)
+    assert DEFAULT_BUCKETS == 2400                # timeline zooms to 8x (API.md v1.2)
+    assert len(values) == DEFAULT_BUCKETS
     assert all(isinstance(v, int) and 0 <= v <= 100 for v in values)
     assert max(values) == 100                     # normalised to the stream peak
 

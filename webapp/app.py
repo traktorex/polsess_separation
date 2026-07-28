@@ -150,9 +150,9 @@ class ExamplesLibrary:
 
     The manifest holds the light per-example row (built offline by
     `webapp.examples_build`); the heavy ``job_like`` payload — transcripts and
-    ~800-bucket peak envelopes for three wavs — is assembled on demand and
-    cached in memory, optionally warmed in a background thread at startup so the
-    first visitor never waits.
+    the peak envelopes (`render.DEFAULT_BUCKETS` buckets) for three wavs — is
+    assembled on demand and cached in memory, optionally warmed in a background
+    thread at startup so the first visitor never waits.
     """
 
     def __init__(self, manifest_path: Optional[Path]) -> None:
@@ -222,10 +222,19 @@ class ExamplesLibrary:
                 "cpcer": row.get("cpcer"),
                 "n_overlap_regions": row.get("n_overlap_regions"),
                 "gt_available": bool(row.get("gt")),
-                # Addition beyond API.md's row keys: the GT transcript itself.
-                # The design puts GT "only here", and the page has no other
-                # source for it. Omitted (null) in light mode — the gallery
-                # needs only gt_available, and shipping 141 GTs cost ~423 KB.
+                # Additions beyond API.md's row keys (v1.2 draft), all passed
+                # through verbatim from the manifest: the acoustic-complexity
+                # stratum, the full per-fragment metric set, and whether the GT
+                # tiers were relabelled to match the pipeline's A/B. All three
+                # are a few bytes, so unlike `gt` they ride along in light mode
+                # too — the gallery filters and sorts on them.
+                "stratum": row.get("stratum"),
+                "metrics": row.get("metrics"),
+                "gt_swapped": bool(row.get("gt_swapped")),
+                # The GT transcript itself: the design puts GT "only here", and
+                # the page has no other source for it. Omitted (null) in light
+                # mode — the gallery needs only gt_available, and shipping 141
+                # GTs cost ~423 KB.
                 "gt": None if light else row.get("gt"),
                 "job_like": None if light else self.job_like(example_id),
             })
@@ -400,6 +409,18 @@ def create_app(
         Compact rows only — the full state stays at `/api/jobs/{id}`.
         """
         return service.recent(limit)
+
+    @app.delete("/api/jobs")
+    def clear_jobs():
+        """Delete every finished job — registry entry and files on disk.
+
+        Addition beyond API.md's JSON section (v1.2 draft): the demo machine
+        accumulates job directories with no way to tidy them from the UI. Only
+        terminal (done/failed) jobs go; anything queued or running is left
+        untouched and counted as skipped, as is a directory that refuses to be
+        removed.
+        """
+        return service.clear_terminal()
 
     @app.get("/api/jobs/{job_id}")
     def job_state(job_id: str):

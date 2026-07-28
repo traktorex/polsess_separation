@@ -118,3 +118,63 @@ GT transcripts and scores appear ONLY here.
 - No silent substitution anywhere (SCOPE §4.1); job failure = error card, batch semantics (§4.2);
   warnings must surface (§4.3).
 - Polish UI copy; stage names and load/run stay English. Speaker lanes rendered from `speakers` — no hardcoded 2.
+
+## v1.2 ratified deltas (orchestrator, 2026-07-28 — author feedback round 1)
+
+Ratified after live headless-browser verification. The sections above still describe v1.1 verbatim;
+where they conflict (the `~800 buckets` note), this section wins.
+
+### 1. Example rows carry `stratum`, `metrics`, `gt_swapped`
+
+`GET /api/examples` rows gain three fields, served **in both `light=1` and full mode** (they are a few
+bytes each, and the gallery filters/sorts on them — unlike `gt`, which stays nulled under `light=1`):
+
+```jsonc
+{
+  "stratum": "LOW" | "MID" | "HIGH" | null,   // recording-level acoustic-complexity tertile,
+                                              // verbatim from the frozen rescore sheets
+  "gt_swapped": bool,                         // GT tiers were relabelled to line up with the
+                                              // pipeline's stream A/B (display only, see 2.)
+  "metrics": null | {                         // all values percent, 1 decimal; null = not available
+    "cpwer": float|null, "tcpwer": float|null, "orcwer": float|null,
+    "attr_gap": float|null,                   // cpWER − MIMO-WER, in POINTS
+    "cpcer": float|null, "mimower": float|null, "mimocer": float|null, "orccer": float|null,
+    "floor_orcwer": float|null, "floor_mimower": float|null,
+    "floor_cpcer": float|null, "floor_mimocer": float|null
+  }
+}
+```
+
+`floor_*` is the no-pipeline baseline: one Whisper pass over the raw mixture (`transcript_mixture.txt`),
+scored against the same GT. `floor_cpcer` is that floor's **time-ordered** merged-reference CER (the
+review page's `_mixture_metrics["cer"]`); `floor_mimocer` is its order-forgiving MIMO counterpart.
+The whole `metrics` object is `null` for a fragment with no scores at all; individual entries are `null`
+when a fragment trips the eval's ORC/MIMO combinatorial blow-up guard and no sheet column covers it.
+
+Provenance (binding): seven of the twelve values come straight from the frozen per-fragment rescore
+sheets (`cp_wer`, `cp_cer`, `orc_wer`, `mimo_wer`, `orc_cer`, `mix_mimo_wer`, `mix_mimo_cer`) — those are
+the numbers the thesis reports and they always win. The rest are computed at manifest-build time with the
+same `asr_pipeline.eval` functions the sheets were produced with, and every overlapping value is
+recomputed purely to cross-check the sheet (disagreement > 0.05 pt = loud warning, sheet kept).
+Confirmed 0 disagreements over all 141 fragments at the 2026-07-28 rebuild.
+
+### 2. `gt_swapped` is a display alignment, never a score
+
+The pipeline names its two streams without knowing which GT tier is "A", so for 65 of the 141 frozen
+fragments its stream A is the GT-B speaker. The manifest detects this (normalised-text similarity,
+straight vs crossed pairing, `difflib`) and relabels the two GT tiers in the emitted `gt` so tier A sits
+beside stream A. Every metric picks its own optimal speaker assignment and is permutation-invariant, so
+**no number changes** — the flag exists so the UI can say why the reference was re-lettered.
+
+### 3. `DELETE /api/jobs`
+
+Removes every **terminal** job (`done` / `failed`): registry entry and `<jobs_root>/<job_id>/` on disk.
+Queued and running jobs are never touched. A directory that cannot be removed keeps its registry entry.
+
+Response `200 {"removed": int, "skipped": int}` — `skipped` counts jobs still in flight plus failed
+deletions. Idempotent: a second call returns `{"removed": 0, "skipped": 0}`.
+
+### 4. `result.peaks` resolution: 800 → 2400 buckets
+
+`render.DEFAULT_BUCKETS` is now 2400 (the timeline zooms to 8×; 800 buckets read blocky when zoomed).
+Shape is unchanged — still a flat list of 0–100 ints per stream, ~3 KB more per stream.
