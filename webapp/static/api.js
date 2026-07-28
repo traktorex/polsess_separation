@@ -39,6 +39,16 @@ export async function createJob({ file = null, sourceExample = null }) {
   return body.job_id;
 }
 
+/** DELETE /api/jobs — drop finished jobs and their files.
+ *  Returns {removed, skipped}; skipped counts jobs still queued or running. */
+export async function deleteJobs(url = "/api/jobs") {
+  const body = await getJSON(url, { method: "DELETE" });
+  return {
+    removed: Number((body && body.removed) || 0),
+    skipped: Number((body && body.skipped) || 0),
+  };
+}
+
 /** Does this file URL exist? One-byte ranged GET — the file routes are
  *  GET-only (HEAD answers 405), so a Range request is the cheap probe. */
 export async function fileExists(url) {

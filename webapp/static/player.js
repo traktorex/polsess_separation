@@ -1,18 +1,27 @@
-/* Transport: one custom player over N hidden <audio> elements, a 4-way
-   segmented stream selector, and the shared requestAnimationFrame clock that
-   drives the playhead and the transcript karaoke.
+/* Transport: one custom player over N hidden <audio> elements, a segmented
+   stream selector, a 0-300% volume control, and the shared
+   requestAnimationFrame clock that drives the playhead and the karaoke.
 
-   Stream switching is the review page's proven element swap (no Web Audio on
-   the solo paths): pause the old element, copy currentTime to the new one,
-   resume if it was playing. "Oba" plays the two speaker streams through a
-   second, dedicated pair of elements so that panning them A→left / B→right via
-   Web Audio can never affect the solo playback paths; if the AudioContext
-   cannot be built the pair still plays, unpanned, and the button says so. */
+   Two rows: play + clock + seek (the seek gets the whole width), then the
+   stream buttons and the volume. The selector used to share the row with the
+   seek and squeezed it to nothing on a wide layout.
+
+   Stream switching is the review page's proven element swap: pause the old
+   element, copy currentTime to the new one, resume if it was playing.
+
+   Web Audio is opt-in and per element. `createMediaElementSource` may be called
+   only ONCE per element for the lifetime of the page, so every routed element
+   keeps its {source, panner, gain} chain in `routed` and is from then on
+   controlled by its GainNode alone (element.volume pinned to 1). Two things
+   need the graph: "Oba" (A→left / B→right panning) and any volume above 100%,
+   which no HTMLMediaElement can give. Everything else keeps playing straight
+   out of the element, exactly as before. */
 
 import { el, clear } from "./dom.js";
 import { clock } from "./format.js";
 
-const NBSP_SLASH = " / ";
+const NBSP_SLASH = " / ";
+const VOL_MAX = 300;
 
 function audioEl(src) {
   const node = el("audio", { preload: "metadata", src });
@@ -38,7 +47,7 @@ export function createPlayer({ files = {}, labels = [], duration = 0, onModeChan
   };
 
   if (files.mixture) {
-    modes.push({ key: "mixture", text: ["Mieszanina"], media: [single(files.mixture)] });
+    modes.push({ key: "mixture", text: ["Miks"], media: [single(files.mixture)] });
   }
   const soloFor = {};
   streamLabels.forEach((label, index) => {
@@ -61,7 +70,7 @@ export function createPlayer({ files = {}, labels = [], duration = 0, onModeChan
       "→P)",
     ];
     // Insert straight after the first solo stream, matching the accepted layout
-    // Mieszanina | A | Oba | B.
+    // Miks | A | Oba | B.
     const at = modes.findIndex((m) => m.key === `solo:${streamLabels[1]}`);
     const entry = { key: "both", text: bothText, media: [bothA, bothB] };
     if (at >= 0) modes.splice(at, 0, entry);
@@ -80,36 +89,75 @@ export function createPlayer({ files = {}, labels = [], duration = 0, onModeChan
   let mode = modes.find((m) => m.key === "both") || modes[0];
   const primary = () => mode.media[0];
 
-  // -- Web Audio panning for the "Oba" pair (lazy, gesture-time) ----------
+  // -- Web Audio: one lazy graph, one chain per routed element -------------
   let audioCtx = null;
-  let panState = "idle";     // idle -> ready | failed
-  function setupPan() {
-    if (panState !== "idle" || !bothA || !bothB) return;
+  let ctxFailed = false;
+  const routed = new Map();          // media -> {source, panner|null, gain}
+  let panState = "idle";             // idle -> ready | failed
+  let volume = 100;
+
+  function ensureCtx() {
+    if (audioCtx || ctxFailed) return audioCtx;
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) throw new Error("AudioContext unavailable");
       audioCtx = new Ctx();
-      const route = (media, pan) => {
-        const source = audioCtx.createMediaElementSource(media);
-        const panner = audioCtx.createStereoPanner();
-        panner.pan.value = pan;
-        source.connect(panner).connect(audioCtx.destination);
-      };
-      route(bothA, -1);
-      route(bothB, 1);
-      panState = "ready";
     } catch (err) {
-      panState = "failed";
+      ctxFailed = true;
       audioCtx = null;
-      if (bothButton) {
-        clear(bothButton).appendChild(document.createTextNode("Oba"));
-        bothButton.title =
-          "Przeglądarka nie pozwoliła rozdzielić kanałów — oba strumienie grają razem, bez panoramy.";
-      }
     }
+    return audioCtx;
   }
   function resumeCtx() {
     if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  }
+
+  /** The "Oba" pair always gets its panner, whichever need routes it first —
+   *  a source cannot be re-created later to insert one. */
+  const panOf = (media) => (media === bothA ? -1 : media === bothB ? 1 : null);
+
+  /** Route one element through the graph. Returns its chain, or null if the
+   *  browser refused (no AudioContext, or the element is already captured). */
+  function routeMedia(media) {
+    if (routed.has(media)) return routed.get(media);
+    const ctx = ensureCtx();
+    if (!ctx) return null;
+    try {
+      const source = ctx.createMediaElementSource(media);
+      const pan = panOf(media);
+      let tail = source;
+      let panner = null;
+      if (pan !== null && ctx.createStereoPanner) {
+        panner = ctx.createStereoPanner();
+        panner.pan.value = pan;
+        tail = tail.connect(panner);
+      }
+      const gain = ctx.createGain();
+      gain.gain.value = volume / 100;
+      tail.connect(gain).connect(ctx.destination);
+      media.volume = 1;
+      const chain = { source, panner, gain };
+      routed.set(media, chain);
+      return chain;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function setupPan() {
+    if (panState !== "idle" || !bothA || !bothB) return;
+    const a = routeMedia(bothA);
+    const b = routeMedia(bothB);
+    if (a && b && a.panner && b.panner) {
+      panState = "ready";
+      return;
+    }
+    panState = "failed";
+    if (bothButton) {
+      clear(bothButton).appendChild(document.createTextNode("Oba"));
+      bothButton.title =
+        "Przeglądarka nie pozwoliła rozdzielić kanałów — oba strumienie grają razem, bez panoramy.";
+    }
   }
 
   // -- controls ----------------------------------------------------------
@@ -135,8 +183,49 @@ export function createPlayer({ files = {}, labels = [], duration = 0, onModeChan
     segGroup.appendChild(button);
   }
 
-  const node = el("div", { class: "transport" }, [playBtn, timeLabel, seek, segGroup]);
-  const wrapper = el("div", {}, [node, status]);
+  const volRange = el("input", {
+    type: "range", class: "seek volrange", min: "0", max: String(VOL_MAX), step: "5", value: "100",
+    "aria-label": "Głośność",
+  });
+  const volValue = el("span", { class: "volval", text: "100%" });
+  const volBox = el("div", { class: "vol" }, [
+    el("span", { text: "głośność" }), volRange, volValue,
+  ]);
+
+  /** Amplification is impossible here: fall back to the element's own volume
+   *  and say why, instead of leaving a slider that silently does nothing. */
+  function refuseBoost() {
+    volume = 100;
+    volRange.max = "100";
+    volRange.value = "100";
+    volRange.title = "Przeglądarka nie pozwoliła na wzmocnienie ponad 100%.";
+    paintVolume();
+  }
+  function paintVolume() {
+    for (const media of elements) {
+      const chain = routed.get(media);
+      if (chain) { media.volume = 1; chain.gain.gain.value = volume / 100; }
+      else media.volume = Math.min(1, volume / 100);
+    }
+    volValue.textContent = `${volume}%`;
+    volValue.classList.toggle("boost", volume > 100);
+  }
+  function applyVolume(next) {
+    volume = Math.max(0, Math.min(VOL_MAX, Math.round(next)));
+    if (volume > 100) {
+      resumeCtx();
+      for (const media of elements) {
+        if (!routeMedia(media)) { refuseBoost(); return; }
+      }
+      resumeCtx();
+    }
+    paintVolume();
+  }
+  volRange.addEventListener("input", () => applyVolume(parseFloat(volRange.value) || 0));
+
+  const row1 = el("div", { class: "transport" }, [playBtn, timeLabel, seek]);
+  const row2 = el("div", { class: "transport2" }, [segGroup, volBox]);
+  const wrapper = el("div", {}, [row1, row2, status]);
   for (const media of elements) wrapper.appendChild(media);
 
   // -- behaviour ---------------------------------------------------------
@@ -154,7 +243,8 @@ export function createPlayer({ files = {}, labels = [], duration = 0, onModeChan
     playBtn.setAttribute("aria-label", playing ? "Pauza" : "Odtwórz");
   }
   function play() {
-    if (mode.key === "both") { setupPan(); resumeCtx(); }
+    if (mode.key === "both") setupPan();
+    resumeCtx();                       // a routed element is silent while suspended
     const at = primary().currentTime;
     for (const media of mode.media) {
       // Only the paired mode needs a sync assignment; re-assigning an

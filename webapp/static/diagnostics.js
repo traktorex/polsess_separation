@@ -198,7 +198,7 @@ function logPanel(logUrl) {
 
 function enhancementPanel(result) {
   const mixture = (result.files || {}).mixture;
-  if (!mixture) return nodata("brak pliku mieszaniny");
+  if (!mixture) return nodata("brak pliku miksu");
   const enhanced = mixture.replace(/mixture\.wav$/, "enhanced_full.wav");
   const holder = el("div", { class: "nodata", text: "sprawdzanie dostępności…" });
   fileExists(enhanced).then((exists) => {
@@ -210,7 +210,7 @@ function enhancementPanel(result) {
     }
     holder.appendChild(el("div", { class: "abpair" }, [
       el("div", { class: "ab" }, [
-        el("h4", { text: "przed — mieszanina" }),
+        el("h4", { text: "przed — miks" }),
         el("audio", { controls: "", preload: "none", src: mixture }),
       ]),
       el("div", { class: "ab" }, [

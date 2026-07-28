@@ -6,9 +6,15 @@
    touching the timeline or the transport (design §5.3 ELAN future-proofing).
    Segments keep their server-side stable ids in `data-segment-id`.
 
-   The highlighter is driven by the player's shared clock and writes to the DOM
-   only when the current turn or word actually changes — the review page's
-   lesson: change-only updates never fight the user's own scrolling. */
+   Two behaviours are ported verbatim from the clarin_review page, because the
+   author reads transcripts that way:
+   - the scroll ANCHOR is the last segment that started at or before the clock,
+     not the segment containing it. A speaker is silent most of the time; an
+     anchor that vanishes in every gap leaves nothing to scroll to. The `.cur`
+     highlight and the word karaoke still require real containment.
+   - following re-engages at every anchor change. A manual scroll only
+     suppresses it until the next turn starts, so the panel never strands the
+     reader minutes away from the playhead. */
 
 import { el, clear } from "./dom.js";
 import { clock } from "./format.js";
@@ -17,8 +23,19 @@ import { colorVarFor } from "./timeline.js";
 const LOW_SCORE = 0.45;
 const SOFT_VARS = ["--spkA-soft", "--spkB-soft", "--spkC-soft", "--spkD-soft"];
 
-/** Last index with start <= t, provided t is still inside that item. */
-function activeIndex(items, t) {
+/* "rozwiń całość" is global (N3): the columns are read side by side, so one
+   expanded column next to a short one is never what the reader wanted. Every
+   live column registers here and follows the shared flag. */
+const liveColumns = new Set();
+let globalExpanded = false;
+
+function setGlobalExpanded(on) {
+  globalExpanded = on;
+  for (const column of liveColumns) column.setExpanded(on);
+}
+
+/** Last index with start <= t. -1 only before the first segment. */
+function lastAtOrBefore(items, t) {
   let lo = 0;
   let hi = items.length - 1;
   let best = -1;
@@ -26,8 +43,13 @@ function activeIndex(items, t) {
     const mid = (lo + hi) >> 1;
     if (items[mid].start <= t) { best = mid; lo = mid + 1; } else hi = mid - 1;
   }
-  if (best >= 0 && t <= items[best].end) return best;
-  return -1;
+  return best;
+}
+
+/** Last index with start <= t, provided t is still inside that item. */
+function activeIndex(items, t) {
+  const best = lastAtOrBefore(items, t);
+  return best >= 0 && t <= items[best].end ? best : -1;
 }
 
 function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
@@ -102,46 +124,68 @@ function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
     footer,
   ]);
 
-  // Autoscroll that yields to the reader: any scroll we did not cause turns it
-  // off and offers the way back.
-  let follow = true;
+  // -- following ---------------------------------------------------------
+  const state = { anchor: -1, turn: -1, word: null };
+  let userScrolled = false;
+  let expanded = false;
   let lastProgrammatic = 0;
-  body.addEventListener("scroll", () => {
-    if (performance.now() - lastProgrammatic < 150) return;
-    if (!follow) return;
-    follow = false;
-    backBtn.classList.remove("hidden");
-  });
-  const scrollTo = (node) => {
+
+  // Expanded, `.tbody` has no max-height: there is no inner scrollbox left to
+  // return to, so the way-back button would scroll nothing (N4).
+  const updateBack = () => backBtn.classList.toggle("hidden", expanded || !userScrolled);
+
+  // offsetTop is relative to the nearest POSITIONED ancestor, which .tbody was
+  // not — the old math measured against a far ancestor and landed minutes away.
+  // Rects are always container-relative.
+  const offsetIn = (node) =>
+    node.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
+
+  const centerOn = (node) => {
     lastProgrammatic = performance.now();
-    body.scrollTop = node.offsetTop - body.clientHeight / 2 + node.offsetHeight / 2;
+    body.scrollTop = offsetIn(node) - body.clientHeight / 2 + node.offsetHeight / 2;
   };
-  backBtn.addEventListener("click", () => {
-    follow = true;
-    backBtn.classList.add("hidden");
-    if (state.turn >= 0) scrollTo(index[state.turn].node);
+  const centerIfOffscreen = (node) => {
+    const top = offsetIn(node);
+    const bottom = top + node.offsetHeight;
+    if (top < body.scrollTop || bottom > body.scrollTop + body.clientHeight) centerOn(node);
+  };
+
+  body.addEventListener("scroll", () => {
+    // Our own scrollTop writes fire this asynchronously; they are not the user.
+    if (performance.now() - lastProgrammatic < 250) return;
+    if (userScrolled) return;
+    userScrolled = true;
+    updateBack();
   });
-  expandBtn.addEventListener("click", () => {
-    const expanded = column.classList.toggle("expanded");
-    expandBtn.textContent = expanded ? "zwiń ↑" : "rozwiń całość ↓";
+  backBtn.addEventListener("click", () => {
+    userScrolled = false;
+    updateBack();
+    if (state.anchor >= 0) centerOn(index[state.anchor].node);
   });
 
-  const state = { turn: -1, word: null };
+  const setExpanded = (on) => {
+    expanded = on;
+    column.classList.toggle("expanded", on);
+    expandBtn.textContent = on ? "zwiń ↑" : "rozwiń całość ↓";
+    updateBack();
+    if (!on && state.anchor >= 0) centerOn(index[state.anchor].node);
+  };
+  expandBtn.addEventListener("click", () => setGlobalExpanded(!globalExpanded));
 
   function tick(t) {
-    const turnIdx = activeIndex(index, t);
+    const anchorIdx = lastAtOrBefore(index, t);
+    if (anchorIdx !== state.anchor) {
+      state.anchor = anchorIdx;
+      if (anchorIdx >= 0 && !expanded) centerIfOffscreen(index[anchorIdx].node);
+      userScrolled = false;
+      updateBack();
+    }
+
+    const turnIdx = anchorIdx >= 0 && t <= index[anchorIdx].end ? anchorIdx : -1;
     if (turnIdx !== state.turn) {
       if (state.turn >= 0) index[state.turn].node.classList.remove("cur");
       if (state.word) { state.word.classList.remove("w-cur"); state.word = null; }
-      if (turnIdx >= 0) {
-        const node = index[turnIdx].node;
-        node.classList.add("cur");
-        if (follow) {
-          const top = node.offsetTop;
-          const bottom = top + node.offsetHeight;
-          if (top < body.scrollTop || bottom > body.scrollTop + body.clientHeight) scrollTo(node);
-        }
-      }
+      if (turnIdx >= 0) index[turnIdx].node.classList.add("cur");
       state.turn = turnIdx;
     }
     if (turnIdx < 0) return;
@@ -156,7 +200,10 @@ function buildColumn({ label, title, subtitle, colorIndex, segments, onSeek }) {
     }
   }
 
-  return { label, node: column, tick };
+  const entry = { label, node: column, tick, setExpanded };
+  liveColumns.add(entry);
+  setExpanded(globalExpanded);
+  return entry;
 }
 
 /**
@@ -174,7 +221,7 @@ export function createTranscripts({ transcripts = {}, labels = [], speakerIds = 
     const segments = ((transcripts[label] || {}).segments) || [];
     const column = buildColumn({
       label,
-      title: label === "mixture" ? "Mieszanina — jeden strumień" : `${titlePrefix} ${label}`,
+      title: label === "mixture" ? "Miks — jeden strumień" : `${titlePrefix} ${label}`,
       subtitle: speakerIds[label] || "",
       colorIndex: label === "mixture" ? 2 : i,
       segments,
@@ -187,7 +234,11 @@ export function createTranscripts({ transcripts = {}, labels = [], speakerIds = 
   return {
     node: grid,
     tick(t) { for (const column of columns) column.tick(t); },
-    destroy() { clear(grid); },
+    destroy() {
+      for (const column of columns) liveColumns.delete(column);
+      if (!liveColumns.size) globalExpanded = false;
+      clear(grid);
+    },
   };
 }
 

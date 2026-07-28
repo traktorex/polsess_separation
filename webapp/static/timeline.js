@@ -4,7 +4,16 @@
 
    Lane count comes from the data (design §5: "N lanes from metadata — no
    hardcoded 2"). Waveforms are the v1 simple peak envelope: server-computed
-   0-100 buckets mirrored around the midline, zero client-side decode. */
+   0-100 buckets mirrored around the midline, zero client-side decode.
+
+   Zoom (1×/2×/4×/8×) is a pure layout trick: the lanes and the ruler live in a
+   horizontal scrollport whose inner block is `zoom × 100%` wide. Everything
+   inside is positioned in percent of that block, so bars, overlap bands and the
+   playhead stay aligned for free, and the click-to-seek ratio keeps working
+   against the overlay's own rect. The label gutter is a fixed-pixel grid column
+   inside the zoomed block, so it is made sticky while zoomed — its box-shadow
+   covers the grid gap that would otherwise show bars sliding past. At 1× the
+   scrollport has nothing to scroll and the sticky rules are off. */
 
 import { el, clear } from "./dom.js";
 import { clockShort } from "./format.js";
@@ -12,6 +21,12 @@ import { onThemeChange } from "./theme.js";
 
 /** CSS custom properties used for speaker colours, in label order. */
 const SPEAKER_VARS = ["--spkA", "--spkB", "--spkC", "--spkD"];
+
+const ZOOM_LEVELS = [1, 2, 4, 8];
+/** Chromium refuses canvases past 32767 px on an axis; stay clear of it. */
+const MAX_CANVAS_PX = 32000;
+/** A manual pan wins for this long before the playhead may scroll again. */
+const PAN_GRACE_MS = 4000;
 
 export function colorVarFor(index) {
   return SPEAKER_VARS[index % SPEAKER_VARS.length];
@@ -41,7 +56,7 @@ function drawWave(canvas, peaks, color) {
   const rect = canvas.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.max(1, Math.round(rect.width * dpr));
+  canvas.width = Math.max(1, Math.min(Math.round(rect.width * dpr), MAX_CANVAS_PX));
   canvas.height = Math.max(1, Math.round(rect.height * dpr));
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -119,27 +134,120 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
   const playhead = el("div", { class: "playhead", style: "left:0%" });
   overlay.appendChild(playhead);
   field.appendChild(overlay);
-  node.appendChild(field);
 
   // ruler
   const marks = el("div", { class: "marks" });
-  const ruler = el("div", { class: "ruler" }, [el("div"), marks]);
-  node.appendChild(ruler);
+  const ruler = el("div", { class: "ruler" }, [el("div", { class: "rgut" }), marks]);
+
+  // scrollport + zoomed inner block
+  const inner = el("div", { class: "inner" }, [field, ruler]);
+  const port = el("div", { class: "port" }, [inner]);
+
+  // -- zoom control -------------------------------------------------------
+  let zoom = 1;
+  const zoomButtons = ZOOM_LEVELS.map((level) =>
+    el("button", { type: "button", class: level === zoom ? "active" : "", text: `${level}×` })
+  );
+  const zoomCtl = el("div", { class: "zoomctl" }, [
+    el("span", { class: "muted", text: "zoom" }),
+    el("div", { class: "seg", role: "group", "aria-label": "Powiększenie osi czasu" }, zoomButtons),
+  ]);
+  node.appendChild(zoomCtl);
+  node.appendChild(port);
+
   const drawRuler = () => {
     clear(marks);
-    const step = rulerStep(total);
+    // Step from the VISIBLE span, so a zoomed view gets proportionally finer ticks.
+    const step = rulerStep(total / zoom);
     for (let t = 0; t <= total + 1e-6; t += step) {
+      const at = pct(t, total);
       marks.appendChild(el("span", {
-        class: "mk",
-        style: `left:${pct(t, total).toFixed(3)}%`,
+        // A tick landing exactly on the end would poke past the inner block and
+        // give the scrollport something to scroll at 1×; hug the edge instead.
+        class: at > 99.99 ? "mk end" : "mk",
+        style: `left:${at.toFixed(3)}%`,
         text: clockShort(t),
       }));
     }
   };
   drawRuler();
 
+  // -- geometry ----------------------------------------------------------
+  // `gutter` = the fixed label column (plus grid gap) inside the zoomed block;
+  // `axis` = the seekable width the overlay spans. Both only change on zoom or
+  // resize, so the per-frame playhead follow does not re-measure them.
+  let gutter = 0;
+  let axis = 0;
+  let portW = 0;
+  function measure() {
+    const portRect = port.getBoundingClientRect();
+    const axisRect = overlay.getBoundingClientRect();
+    portW = portRect.width;
+    axis = axisRect.width;
+    gutter = axisRect.left - portRect.left + port.scrollLeft;
+  }
+
+  let lastProgrammaticPan = 0;
+  let panSuppressUntil = 0;
+  function panTo(scrollLeft) {
+    lastProgrammaticPan = performance.now();
+    port.scrollLeft = Math.max(0, scrollLeft);
+  }
+  port.addEventListener("scroll", () => {
+    if (performance.now() - lastProgrammaticPan < 250) return;
+    panSuppressUntil = performance.now() + PAN_GRACE_MS;
+  });
+
+  /** Fraction of the time axis under a viewport x, clamped to [0,1]. */
+  function ratioAt(clientX) {
+    const rect = overlay.getBoundingClientRect();
+    if (!rect.width) return 0;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  }
+
+  /**
+   * @param {number} level    one of ZOOM_LEVELS
+   * @param {object} [keep]   {ratio, clientX} — the time to pin under a pixel;
+   *                          without it the current view centre stays centred.
+   */
+  function setZoom(level, keep) {
+    const next = ZOOM_LEVELS.includes(level) ? level : 1;
+    measure();
+    const ratio = keep ? keep.ratio : ratioAt(port.getBoundingClientRect().left + portW / 2);
+    const atPx = keep ? keep.clientX - port.getBoundingClientRect().left : portW / 2;
+
+    zoom = next;
+    inner.style.width = next > 1 ? `${next * 100}%` : "";
+    node.classList.toggle("zoomed", next > 1);
+    zoomButtons.forEach((button, i) => {
+      button.classList.toggle("active", ZOOM_LEVELS[i] === next);
+    });
+
+    drawRuler();
+    measure();
+    panTo(gutter + ratio * axis - atPx);
+    // The canvases are stretched by the new inner width; repaint at that width.
+    scheduleRedraw();
+  }
+
+  zoomButtons.forEach((button, i) => {
+    button.addEventListener("click", () => setZoom(ZOOM_LEVELS[i]));
+  });
+  port.addEventListener("wheel", (event) => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    const at = ZOOM_LEVELS.indexOf(zoom);
+    const next = event.deltaY < 0 ? ZOOM_LEVELS[Math.min(at + 1, ZOOM_LEVELS.length - 1)]
+                                  : ZOOM_LEVELS[Math.max(at - 1, 0)];
+    if (next === zoom) return;
+    setZoom(next, { ratio: ratioAt(event.clientX), clientX: event.clientX });
+  }, { passive: false });
+
   if (onSeek) {
     field.addEventListener("click", (event) => {
+      // While zoomed the gutter is sticky and sits over the axis; a click on a
+      // lane label is not a seek (at 1× the ratio test already rejected it).
+      if (event.target.closest && event.target.closest(".lab")) return;
       const rect = overlay.getBoundingClientRect();
       if (!rect.width) return;
       const ratio = (event.clientX - rect.left) / rect.width;
@@ -160,24 +268,35 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
   };
 
   let observer = null;
-  if (window.ResizeObserver && canvases.length) {
-    observer = new ResizeObserver(scheduleRedraw);
-    observer.observe(node);
-  } else if (canvases.length) {
-    window.addEventListener("resize", scheduleRedraw);
+  const onResize = () => { measure(); scheduleRedraw(); };
+  if (window.ResizeObserver) {
+    // The zoomed inner block is what actually changes width — the outer node
+    // keeps the container's width at every zoom level.
+    observer = new ResizeObserver(onResize);
+    observer.observe(inner);
+  } else {
+    window.addEventListener("resize", onResize);
   }
   const stopThemeWatch = canvases.length ? onThemeChange(scheduleRedraw) : null;
   scheduleRedraw();
+  measure();
 
   return {
     node,
     redraw: scheduleRedraw,
     setPlayhead(t) {
       playhead.style.left = `${pct(t, total).toFixed(3)}%`;
+      if (zoom <= 1) return;                                  // nothing to pan
+      if (performance.now() < panSuppressUntil) return;       // the user is driving
+      if (!axis || !portW) return;
+      const x = gutter + (pct(t, total) / 100) * axis;
+      const view = port.scrollLeft;
+      // The sticky gutter hides the first `gutter` px of the view.
+      if (x < view + gutter + 8 || x > view + portW - 8) panTo(x - portW / 2);
     },
     destroy() {
       if (observer) observer.disconnect();
-      else if (canvases.length) window.removeEventListener("resize", scheduleRedraw);
+      else window.removeEventListener("resize", onResize);
       if (stopThemeWatch) stopThemeWatch();
     },
   };

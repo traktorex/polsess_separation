@@ -8,7 +8,7 @@
 import { el, clear, card, chip } from "./dom.js";
 import { getJSON, createJob } from "./api.js";
 import { clock, num, plural } from "./format.js";
-import { renderResults, scoreChips } from "./results.js";
+import { metricGroups, renderResults, scoreChips, stratumBadge } from "./results.js";
 
 let rows = [];
 let view = null;
@@ -41,6 +41,7 @@ function exampleCard(row, onOpen) {
     el("div", { class: "exid", text: row.id }),
     el("div", { class: "exrow" }, [
       el("span", { class: `badge ${row.split || ""}`, text: String(row.split || "").toUpperCase() }),
+      stratumBadge(row.stratum),
       el("span", { class: "muted", style: "font-size:12.5px", text: clock(row.duration_s) }),
       el("span", {
         class: "muted", style: "font-size:12.5px",
@@ -73,16 +74,24 @@ function renderList(root, onOpen) {
     el("option", { value: "dev", text: "DEV" }),
     el("option", { value: "test", text: "TEST" }),
   ]);
+  const stratum = el("select", { "aria-label": "Trudność akustyczna" }, [
+    el("option", { value: "", text: "trudność: wszystkie" }),
+    el("option", { value: "LOW", text: "LOW" }),
+    el("option", { value: "MID", text: "MID" }),
+    el("option", { value: "HIGH", text: "HIGH" }),
+  ]);
   const count = el("span", { class: "muted", style: "font-size:12.5px" });
   const grid = el("div", { class: "exgrid" });
 
   const paint = () => {
     const needle = search.value.trim().toLowerCase();
     const wanted = split.value;
+    const wantedStratum = stratum.value;
     clear(grid);
     let shown = 0;
     for (const row of rows) {
       if (wanted && row.split !== wanted) continue;
+      if (wantedStratum && row.stratum !== wantedStratum) continue;
       if (needle && !String(row.id).toLowerCase().includes(needle)) continue;
       grid.appendChild(exampleCard(row, onOpen));
       shown += 1;
@@ -92,13 +101,14 @@ function renderList(root, onOpen) {
   };
   search.addEventListener("input", paint);
   split.addEventListener("change", paint);
+  stratum.addEventListener("change", paint);
 
   root.appendChild(card("Przykłady — wyniki zamrożone (v41_merge)", [
     el("p", { class: "lead", style: "margin-top:0" , text:
       "Gotowe wyniki fragmentów CLARIN: te same liczby, które raportuje praca. "
       + "Referencyjna transkrypcja i metryki cpWER/cpCER pokazywane są wyłącznie tutaj. "
       + "„Uruchom ponownie” wysyła to samo nagranie jako zwykłe nowe zadanie — bez GT i bez metryk." }),
-    el("div", { class: "exfilter" }, [search, split, count]),
+    el("div", { class: "exfilter" }, [search, split, stratum, count]),
     grid,
   ]));
   paint();
@@ -140,7 +150,9 @@ async function renderDetail(root, exampleId, onBack) {
     result: row.job_like,
     title: row.title || row.id,
     chips: scoreChips(row),
+    metrics: metricGroups(row),
     gt: row.gt || null,
+    gtSwapped: Boolean(row.gt_swapped),
   });
 }
 
