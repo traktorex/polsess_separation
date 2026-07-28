@@ -30,5 +30,17 @@ if [[ "${1:-}" == "--dev" ]]; then
     EXTRA+=(--reload --reload-dir webapp)
 fi
 
+# Friendly URLs: uvicorn prints its BIND address (0.0.0.0 = "all interfaces"),
+# which is not something a browser can open. Under WSL2, localhost is forwarded
+# to Windows out of the box; the WSL IP is the fallback for phones on the LAN
+# (requires a Windows portproxy / mirrored networking) and for the rare setup
+# where localhost forwarding is off.
+WSL_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+echo "─────────────────────────────────────────────────"
+echo "  Otwórz w przeglądarce:  http://localhost:${PORT}"
+[[ -n "$WSL_IP" ]] && \
+echo "  (fallback / LAN:        http://${WSL_IP}:${PORT})"
+echo "─────────────────────────────────────────────────"
+
 exec venv/bin/python -m uvicorn webapp.app:app \
     --host 0.0.0.0 --port "$PORT" "${EXTRA[@]}"
