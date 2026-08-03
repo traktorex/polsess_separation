@@ -37,9 +37,9 @@ training:
   # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
-  weight_decay: 0.0        # Paper -> pure Adam.
+  weight_decay: 4.885301855720965e-06  
   lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
-  lr_patience: 2          # Paper ReduceLROnPlateau patience.
+  lr_patience: 1          # Paper ReduceLROnPlateau patience.
   grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none.
   num_epochs: 500          # Paper cap; early stopping ends it far sooner.
   early_stopping_patience: 6   # Paper.
