@@ -115,6 +115,17 @@ def per_fragment(cfg, gt, frags):
         mix = _maybe_norm(read_mixture(d))
         m = per_fragment_metrics(gt[fid], hyp, session_id=fid, mix=mix)
         cp, cc, orc, mw, oc = m["cp"], m["cpcer"], m["orc"], m["mimo"], m["orccer"]
+        # The meeteval DP-cap guard (eval/metrics.py) can skip any floor metric
+        # on long recordings (returns None; cpWER/cpCER always computed).
+        # Contribute nothing to that metric's cells rather than crash —
+        # loudly, never silently.
+        skipped = [n for n, v in (("ORC", orc), ("MIMO", mw), ("ORC-CER", oc))
+                   if v is None]
+        if skipped:
+            print(f"[note] {cfg}/{fid}: {'/'.join(skipped)} skipped by DP-cap "
+                  f"guard — those aggregates exclude this fragment")
+            zero = {"errors": 0, "length": 0}
+            orc, mw, oc = orc or zero, mw or zero, oc or zero
         row = dict(cpE=cp["cp_errors"], cpL=cp["cp_length"],
                    cerE=cc["errors"], cerL=cc["length"],
                    ctE=orc["errors"], ctL=orc["length"],
