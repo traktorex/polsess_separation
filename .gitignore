@@ -76,6 +76,9 @@ Thumbs.db
 # - generated thesis artifacts (param-count manifest etc.) written by
 #   scripts under docs/generated/ (see scripts/model_manifest.py).
 !docs/generated/*.csv
+# - frozen W&B curve extracts backing the ch5 figure scripts
+#   (scripts/thesis_figures/) — the figures must be regenerable without W&B.
+!scripts/thesis_figures/data/*.csv
 
 /.cache
 
