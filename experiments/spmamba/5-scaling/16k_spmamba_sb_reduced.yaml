@@ -2,6 +2,11 @@
 # Memory-optimized version for 12GB GPU
 # Reduced model size to fit in memory without AMP
 #
+# ⚠️ SUPERSEDED 2026-08-10, NEVER RUN — use 16k_spmamba_sb_reduced_withoutcr.yaml.
+# Decision A (05_arc.md §6) moves Tabela 5.7's SPMamba rows entirely to the
+# flat/no-curriculum regime, so a progressive 16k baseline has no consumer.
+# Kept only as the record of the original N2 spec.
+#
 # 16k point of the SPMamba baseline trajectory (paper lr 1e-3, progressive
 # curriculum) — recipe identical to 64k_spmamba_sb_reduced.yaml (64k runs
 # l4pln536/87lepmzg) except train_max_samples and the W&B target. The run name
