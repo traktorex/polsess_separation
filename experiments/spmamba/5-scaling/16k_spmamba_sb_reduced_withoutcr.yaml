@@ -11,14 +11,23 @@
 # Supersedes 16k_spmamba_sb_reduced.yaml, whose progressive schedule has no
 # consumer under Decision A.
 #
-# EXACTLY ONE FIELD DIFFERS from the progressive baseline it is derived from:
-# curriculum_learning collapses to the single all-variant stage (the old
-# stage-3 list, promoted to epoch 1). Optimizer recipe (lr 1e-3, wd 1e-5,
-# clip 2.0, factor 0.5/patience 2), num_epochs 30, seed 42 and the validation
-# set are held identical on purpose — the schedule is the only variable, so
-# the difference against l4pln536/87lepmzg is attributable to it alone.
-# Do NOT "modernise" this to the tuned config's 80 epochs / early-stop 15:
-# that would trade the schedule confound for a budget confound.
+# TWO FIELDS DIFFER from the progressive baseline it derives from:
+#   1. curriculum_learning collapses to the single all-variant stage (the old
+#      stage-3 list, promoted to epoch 1);
+#   2. the budget is 80 epochs + early_stopping_patience 15 (author ruling,
+#      2026-08-10), matching the flat TUNED run this row is compared against
+#      (7ifvwekd, 80/15) so the tuned-vs-bazowa pair is budget-matched as well
+#      as schedule-matched. Patience is set explicitly because the dataclass
+#      default is None, i.e. no early stopping at all — without it 80 epochs
+#      would give the baseline a strictly LARGER budget than the tuned run.
+# Optimizer recipe (lr 1e-3, wd 1e-5, clip 2.0, factor 0.5/patience 2), seed 42
+# and the validation set are held identical to the progressive baseline.
+#
+# Consequence to keep in mind: at 80/15 this run is no longer budget-comparable
+# to the 30-epoch progressive l4pln536/87lepmzg, so it does NOT cleanly isolate
+# the schedule effect against them. Its intended comparison is the flat tuned
+# run; the schedule effect itself is carried by the curriculum ablation
+# (Tab 5.8/5.9), which uses its own matched pair.
 
 data:
   dataset_type: polsess
@@ -58,15 +67,16 @@ training:
   lr_patience: 2
 
   # Training configuration
-  num_epochs: 30
+  num_epochs: 80
+  early_stopping_patience: 15
   use_amp: true
 
   # Checkpointing and logging
   save_dir: "checkpoints"
   use_wandb: true
   wandb_project: polsess-separation-real16k
-  # Distinct from the progressive baseline's `64k_baseline` (l4pln536 /
-  # 87lepmzg): W&B display names collide across runs (ch5 arc §7.3), and these
+  # Distinct from the progressive baseline's `16k_spmamba_baseline`:
+  # W&B display names collide across runs (ch5 arc §7.3), and these
   # two runs are precisely the pair a reader must be able to tell apart.
   wandb_run_name: 16k_spmamba_baseline_withoutcr
   wandb_entity: null
