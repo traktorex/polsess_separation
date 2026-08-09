@@ -1,0 +1,33 @@
+model,size,config,params,batch_mode,batch_size,train_samples,warmup_samples,compiled,amp_dtype,train_s,train_samples_per_s,peak_train_mem_mb,projected_s_per_epoch_64k,projected_s_per_epoch_128k,train_sisdr_last_pass,gpu,torch,cuda
+ConvTasNet,sb,experiments/convtasnet/sb_task.yaml,8708672,trained,8,1000,128,True,float16,43.74,22.8641,4936.2,2799.2,5598.3,-1.607,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+ConvTasNet,sb,experiments/convtasnet/sb_task.yaml,8708672,one,1,1000,128,True,float16,60.84,16.4374,737.8,3893.6,7787.1,-1.312,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPRNN (k=16),default,experiments/dprnn/dprnn_baseline.yaml,2609793,trained,16,1000,128,True,float16,23.67,42.2480,6994.0,1514.9,3029.7,-5.736,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPRNN (k=16),default,experiments/dprnn/dprnn_baseline.yaml,2609793,one,1,1000,128,True,float16,55.18,18.1226,510.0,3531.5,7063.0,-2.309,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPRNN (k=2),k2,experiments/dprnn/variants/dprnn_baseline_kernel2.yaml,2608001,trained,2,1000,128,True,float16,173.18,5.7743,6853.9,11083.6,22167.3,-2.007,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPRNN (k=2),k2,experiments/dprnn/variants/dprnn_baseline_kernel2.yaml,2608001,one,1,1000,128,True,float16,200.04,4.9990,3548.2,12802.7,25605.3,-2.031,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SepFormer,default,experiments/sepformer/sepformer_baseline_positionalenc.yaml,25679361,trained,2,1000,128,True,float16,80.75,12.3836,7210.1,5168.1,10336.2,-1.917,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SepFormer,default,experiments/sepformer/sepformer_baseline_positionalenc.yaml,25679361,one,1,1000,128,True,float16,97.15,10.2937,3775.8,6217.4,12434.8,-1.820,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MossFormer2-matched,matched,experiments/mossformer2/mossformer2_matched.yaml,26409022,trained,2,1000,128,True,bfloat16,96.40,10.3731,4867.7,6169.8,12339.7,-1.103,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MossFormer2-matched,matched,experiments/mossformer2/mossformer2_matched.yaml,26409022,one,1,1000,128,True,bfloat16,116.27,8.6006,2674.5,7441.3,14882.6,-0.840,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MossFormer2-full,full,experiments/mossformer2/mossformer2_full.yaml,55735410,trained,1,1000,128,True,bfloat16,238.98,4.1844,5613.4,15295.0,30589.9,-0.627,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MossFormer2-full,full,experiments/mossformer2/mossformer2_full.yaml,55735410,one,1,1000,128,True,bfloat16,237.78,4.2055,5613.1,15218.1,30436.3,-0.627,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,trained,1,1000,128,False,bfloat16,217.07,4.6069,2874.5,13892.2,27784.4,-1.243,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,one,1,1000,128,False,bfloat16,218.33,4.5802,2876.0,13973.3,27946.6,-1.242,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,trained,1,1000,128,False,bfloat16,577.80,1.7307,7766.7,36979.2,73958.4,-1.250,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,one,1,1000,128,False,bfloat16,575.82,1.7366,7764.6,36852.6,73705.1,-1.228,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-XS,xs,experiments/mamba_tasnet/mamba_tasnet_xs.yaml,2210176,trained,8,1000,128,False,bfloat16,26.05,38.3947,2597.9,1666.9,3333.8,-1.643,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-XS,xs,experiments/mamba_tasnet/mamba_tasnet_xs.yaml,2210176,one,1,1000,128,False,bfloat16,85.93,11.6378,360.6,5499.3,10998.6,-1.208,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-S,s,experiments/mamba_tasnet/mamba_tasnet_s.yaml,7926528,trained,8,1000,128,False,bfloat16,50.05,19.9799,5037.5,3203.2,6406.4,-1.433,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-S,s,experiments/mamba_tasnet/mamba_tasnet_s.yaml,7926528,one,1,1000,128,False,bfloat16,83.52,11.9732,738.6,5345.3,10690.6,-1.513,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-M,m,experiments/mamba_tasnet/mamba_tasnet_m.yaml,15647488,trained,4,1000,128,False,bfloat16,99.47,10.0536,4995.9,6365.9,12731.7,-1.116,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-M,m,experiments/mamba_tasnet/mamba_tasnet_m.yaml,15647488,one,1,1000,128,False,bfloat16,156.40,6.3937,1410.3,10009.9,20019.8,-1.193,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-L,l,experiments/mamba_tasnet/mamba_tasnet_l.yaml,58951168,trained,2,1000,128,False,bfloat16,215.98,4.6300,5495.7,13823.0,27646.0,-1.043,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+MambaTasNet-L,l,experiments/mamba_tasnet/mamba_tasnet_l.yaml,58951168,one,1,1000,128,False,bfloat16,208.83,4.7885,3138.1,13365.2,26730.5,-1.018,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-XS,xs,experiments/dpmamba/dpmamba_xs.yaml,2265857,trained,4,1000,128,False,bfloat16,103.03,9.7062,3816.5,6593.7,13187.5,-1.565,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-XS,xs,experiments/dpmamba/dpmamba_xs.yaml,2265857,one,1,1000,128,False,bfloat16,115.39,8.6665,977.1,7384.8,14769.5,-1.346,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-S,s,experiments/dpmamba/dpmamba_s.yaml,8136193,trained,2,1000,128,False,bfloat16,206.61,4.8400,3802.9,13223.2,26446.4,-1.241,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-S,s,experiments/dpmamba/dpmamba_s.yaml,8136193,one,1,1000,128,False,bfloat16,210.18,4.7579,1946.1,13451.4,26902.8,-1.202,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-M,m,experiments/dpmamba/dpmamba_m.yaml,15869441,trained,2,1000,128,False,bfloat16,396.01,2.5252,7393.9,25344.5,50689.0,-1.530,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-M,m,experiments/dpmamba/dpmamba_m.yaml,15869441,one,1,1000,128,False,bfloat16,403.90,2.4758,3776.0,25849.9,51699.8,-1.419,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-L,l,experiments/dpmamba/dpmamba_l.yaml,59788289,trained,1,1000,128,False,bfloat16,837.55,1.1940,7934.0,53603.3,107206.6,-0.851,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8
+DPMamba-L,l,experiments/dpmamba/dpmamba_l.yaml,59788289,one,1,1000,128,False,bfloat16,839.71,1.1909,7934.0,53741.5,107483.0,-0.879,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8

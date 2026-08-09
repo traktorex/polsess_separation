@@ -77,11 +77,12 @@ wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml
 # then run agents against the returned sweep ID
 ```
 
-**Benchmarks (thesis data):**
+**Benchmarks (thesis data — the *objective* axes of the ch5 multi-axis table; quality/epochs/wall-clock-to-convergence are run-result facts and come from W&B, not from here):**
 ```bash
-python scripts/benchmark_inference.py
-python scripts/benchmark_training.py
+python scripts/benchmark_inference.py --cross-check   # MACs, latency+IQR, RTF, peak infer VRAM
+python scripts/benchmark_training.py                  # train-only throughput @ trained bs AND bs=1, peak train VRAM
 ```
+Both read one shared architecture list (`scripts/benchmark_models.py`) and write to `docs/generated/benchmark_{inference,training}.csv` with `gpu/torch/cuda/ptflops` provenance columns; the 2026-04 CSVs in `scripts/` are kept as the provenance of the numbers currently in the chapter. MAC counting needs three corrections ptflops does not make on its own — `nn.MultiheadAttention` double count, invisible `einsum`, Mamba scan FLOPs-vs-MACs — all documented in the inference script's docstring and audited in `thesis/thesis-log/sweep_plan/ch5_test_evals/BENCHMARK_AUDIT.md`. Counting is device-independent (`--device cpu` works for non-Mamba models); everything timed must run on one machine in one session.
 
 **Thesis audit artifacts (citable, CPU-only):**
 ```bash
