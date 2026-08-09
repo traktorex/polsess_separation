@@ -255,7 +255,7 @@ MM-IPC works by subtracting layers from the full mix using inverted phase cancel
 
 ## Cloud Setup
 
-`setup.sh` automates fresh cloud GPU instance setup (Vast.ai / RunPod): clones repo, installs deps, downloads PolSESS from Google Drive, configures env vars. Use `--no-data` if dataset is already mounted.
+`setup.sh` provisions a fresh cloud GPU instance (Vast.ai / RunPod): clones the repo (`REPO_BRANCH`/`REPO_URL` env-overridable), installs deps, sets env vars; `--rclone` additionally configures the Google Drive remote (headless token flow). Start from a cu128 PyTorch image (`pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel`) — Blackwell GPUs (sm_120) need exactly that; the `-devel` variant has nvcc for a from-source `MAMBA_FORCE_BUILD=TRUE` fallback if the mamba-ssm wheel lacks the arch. `download_dataset.sh` fetches one corpus by name — `DATASET_NAME=PolSESS_C_new_64 ./download_dataset.sh` (default `PolSESS_C_final_128_v2`; pilot `PolSESS_C_both` is a .tar.gz) — and wires `POLSESS_DATA_ROOT` to the directory containing `train/` (auto-detects the double-nested layouts of C_new_64/C_both vs the flat 128_v2). With several corpora on one box, pass `--data-root` per launch rather than trusting the env var. Neither script logs into W&B — run `wandb login` before training (setup.sh's verification warns if credentials are missing).
 
 ## Environment Variables
 
