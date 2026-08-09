@@ -18,9 +18,10 @@ set -euo pipefail
 # Configuration — edit these before running
 # ============================================================================
 
-# Git repository (HTTPS — no SSH keys needed on cloud instances)
-REPO_URL="https://github.com/traktorex/polsess_separation.git"
-REPO_BRANCH="main"
+# Git repository (HTTPS — no SSH keys needed on cloud instances).
+# Both env-overridable: REPO_BRANCH=feature/foo ./setup.sh
+REPO_URL="${REPO_URL:-https://github.com/traktorex/polsess_separation.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
 
 # Where to install
 PROJECT_DIR="$HOME/polsess_separation"
@@ -97,14 +98,14 @@ python3 -c "import mamba_ssm; print(f'mamba-ssm {mamba_ssm.__version__}')" 2>/de
 
 info "Configuring environment variables..."
 
-export POLSESS_DATA_ROOT="$DATASETS_DIR/PolSESS_C_both/PolSESS_C_both"
+# POLSESS_DATA_ROOT is wired by download_dataset.sh (it knows which corpus it
+# fetched and where the train/ root landed) — not here.
 export TF_ENABLE_ONEDNN_OPTS=0
 
 # Persist for future shell sessions
-grep -q "POLSESS_DATA_ROOT" ~/.bashrc 2>/dev/null || cat >> ~/.bashrc << ENVEOF
+grep -q "TF_ENABLE_ONEDNN_OPTS" ~/.bashrc 2>/dev/null || cat >> ~/.bashrc << ENVEOF
 
 # PolSESS separation project
-export POLSESS_DATA_ROOT="$DATASETS_DIR/PolSESS_C_both/PolSESS_C_both"
 export TF_ENABLE_ONEDNN_OPTS=0
 ENVEOF
 
@@ -180,10 +181,17 @@ if torch.cuda.is_available():
     print(f'VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 "
 
-if [ -d "$POLSESS_DATA_ROOT" ]; then
+if [ -n "${POLSESS_DATA_ROOT:-}" ] && [ -d "${POLSESS_DATA_ROOT}" ]; then
     ok "PolSESS dataset found at $POLSESS_DATA_ROOT"
 else
-    warn "PolSESS dataset not found at $POLSESS_DATA_ROOT — run ./download_dataset.sh"
+    warn "No PolSESS dataset wired — run ./download_dataset.sh (DATASET_NAME=PolSESS_C_new_64 for the scaling corpus)"
+fi
+
+# W&B credentials — the experiment configs all set use_wandb: true
+if [ -n "${WANDB_API_KEY:-}" ] || grep -qs "api.wandb.ai" ~/.netrc; then
+    ok "W&B credentials found"
+else
+    warn "No W&B credentials — run 'wandb login' (or export WANDB_API_KEY) before training"
 fi
 
 # ============================================================================
@@ -197,7 +205,10 @@ echo "============================================"
 echo ""
 echo "Next:"
 echo "  ./download_dataset.sh           # fetch PolSESS into $DATASETS_DIR"
+echo "                                  # (DATASET_NAME=PolSESS_C_new_64 for the scaling corpus,"
+echo "                                  #  DATASET_NAME=PolSESS_C_both for the pilot corpus)"
 echo "  source ~/.bashrc                # pick up POLSESS_DATA_ROOT"
+echo "  wandb login                     # if the verification above warned about W&B"
 echo ""
 echo "Quick start:"
 echo "  cd $PROJECT_DIR"
