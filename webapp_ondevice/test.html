@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Road 2 engine parity test</title>
+<!--
+  Dev-only proof page for webapp_ondevice/site/js/ — deliberately OUTSIDE site/,
+  so it never ships. Serve the webapp_ondevice/ ROOT (it needs both site/ and
+  reference/vectors/):
+
+    python3 webapp_ondevice/devcheck/serve.py webapp_ondevice --port 8123
+    ~/playwright_venv/bin/python webapp_ondevice/devcheck/check_page.py \
+        http://127.0.0.1:8123/test.html --js "window.__done"
+
+  `--js "window.__done"` waits for the run to finish however long it takes
+  (Playwright awaits a returned promise); `#done` and `window.__verdict` are
+  there for a --wait-selector / --js "window.__verdict" drive when the run is
+  known to fit inside Playwright's 30 s default selector timeout.
+-->
+<style>
+  body { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 1.5rem; max-width: 70rem; }
+  h1 { font-size: 1.1rem; }
+  #status { font-weight: 700; }
+  .pass { color: #0a7d38; }
+  .fail { color: #b3261e; }
+  pre { background: #f4f4f5; padding: .75rem; overflow-x: auto; border-radius: 4px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #17171a; color: #e6e6e6; }
+    pre { background: #232327; }
+    .pass { color: #4ade80; }
+    .fail { color: #f87171; }
+  }
+</style>
+</head>
+<body>
+<h1>Road 2 engine parity test — <span id="status">running…</span></h1>
+<p>OSD vectors, routing port, chunker (permutation + COLA), separator smoke, timing.
+   Single-threaded WASM on the main thread, so the page is unresponsive while it runs.</p>
+<pre id="results">running…</pre>
+<script type="module" src="./test.js"></script>
+</body>
+</html>

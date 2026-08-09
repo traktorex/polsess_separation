@@ -97,3 +97,16 @@ Thumbs.db
 
 # webapp build artifact (regenerable via webapp/examples_build.py; machine-absolute paths)
 webapp/examples_manifest.json
+
+# On-device demo (webapp_ondevice/): everything is tracked EXCEPT the heavy,
+# fully regenerable model/runtime blobs. Provenance + regeneration commands for
+# all three live in webapp_ondevice/build/NOTES.md.
+#   - site/models/  ~67 MB of exported/downloaded ONNX
+#   - site/vendor/  ~12 MB of vendored ONNX Runtime Web
+#   - build/_fp32/  fp32 intermediates kept only as export references
+# The `build/` rule near the top of this file (a Python packaging convention)
+# would otherwise swallow webapp_ondevice/build/ whole, so un-ignore it first.
+!webapp_ondevice/build/
+webapp_ondevice/site/models/
+webapp_ondevice/site/vendor/
+webapp_ondevice/build/_fp32/
