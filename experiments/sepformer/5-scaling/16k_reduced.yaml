@@ -1,0 +1,83 @@
+# SepFormer-reduced (4.86M) @ 16k — CAPACITY-vs-DATA CURVE for RQ4 (§5.7).
+#
+# Sibling of 64k_reduced.yaml (run 8eyit3bu, 7.04 dB {SER,SE} val). That run was
+# commissioned as a single-point control; this file and its 16k/32k partner
+# extend it to the full 16k/32k/64k curve so the SepFormer full-vs-reduced pair
+# can be read at every data scale, like the MossFormer2 depth pair already can.
+#
+# Why the pair matters (author ruling 2026-08-10): SepFormer-reduced is the only
+# CLEAN capacity cut at the 5.3x ratio. The SPMamba full-vs-reduced pair changes
+# n_layers, emb_ks (4->8, worth ~0.7-1.5 dB on PolSESS on its own) and the
+# optimizer all at once, so it confounds capacity with kernel size and recipe.
+# Here the recipe is byte-identical to the full-size arm, so capacity is the only
+# variable — see the parent's header for the sizing derivation (0.189x of full
+# SepFormer's 25,679,361 params, the same fraction SPMamba-reduced is of
+# SPMamba-full) and for why the optimizer must NOT be re-tuned for the small model.
+#
+# DERIVED MECHANICALLY from 64k_reduced.yaml: everything below the header is
+# byte-identical except train_max_samples and the two W&B target lines. Do not
+# hand-edit the body — regenerate from the parent if the recipe ever changes.
+#
+# Expected cost: the parent did 56 epochs in 30.6 h at 64k (0.55 h/epoch), so
+# this arm is ~8 h.
+#
+# Read together with the parent: if reduced flattens 32k -> 64k the way
+# reduced-SPMamba did, the ceiling is capacity rather than an SSM family trait;
+# if the reduced transformer instead LEADS the full one at 16k and trails it at
+# 64k, the pair reproduces the SPMamba sign change on a clean cut, and the
+# crossover scale becomes the actual RQ4 answer.
+
+data:
+  dataset_type: polsess
+  batch_size: 4       # Same as the full-size 64k arm — comparability over speed.
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 128          # Encoder channels      (full: 256)
+    kernel_size: 16
+    stride: 8
+    C: 2            # Number of speakers
+    causal: false
+    num_blocks: 2   # Number of times to repeat SepFormer block (unchanged)
+    num_layers: 6   # Transformer layers in both IntraT and InterT (full: 8)
+    d_model: 128    # Transformer dimension (full: 256)
+    nhead: 4        # Attention heads       (full: 8; head dim stays 32)
+    d_ffn: 512      # Feed-forward dimension (full: 1024; stays 4 * d_model)
+    dropout: 0.0
+    chunk_size: 250 # Dual-path chunk size (unchanged — data-path, not capacity)
+    hop_size: 125   # Unused by SpeechBrain's Dual_Path_Model; kept for config parity
+    use_positional_encoding: True
+
+training:
+  # ---- Identical to 64k_baseline_posenc.yaml; do not tune for the smaller model ----
+  seed: 42
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_sepformer_reduced_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  # No curriculum: all seven non-C variants from epoch 1 — the 64k scaling
+  # protocol, matching 64k_baseline_posenc.yaml.
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start
