@@ -1,0 +1,62 @@
+# SepFormer baseline (corrected posenc build) @ 2k samples on the pilot corpus.
+# Purpose: low-end learnability probe -- can SepFormer+posenc learn from ~2k items?
+# Recipe is byte-identical to {16,32,64}k_baseline_posenc.yaml; only the data size,
+# W&B naming, and corpus differ.
+#
+# CORPUS: PolSESS_C_both (pilot corpus, same as the 8k column) -- ALWAYS launch with
+#   --data-root .../PolSESS_C_both/PolSESS_C_both   (config sets none; env-var
+#   inheritance caused the 8fi21rue corpus trap) and check the printed `Root:` line.
+# NB corpus_PolSESS_C_both_train_final.csv has interleaved duplicates: the first
+# 2000 rows contain ~1861 unique items (~7% dupes). Nominal 2k, effective ~1.86k.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 2000
+
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256          # Encoder channels
+    kernel_size: 16
+    stride: 8
+    C: 2            # Number of speakers
+    causal: false
+    num_blocks: 2   # Number of times to repeat SepFormer block
+    num_layers: 8   # Transformer layers in both IntraT and InterT
+    d_model: 256    # Transformer dimension
+    nhead: 8        # Attention heads
+    d_ffn: 1024     # Feed-forward dimension
+    dropout: 0.0
+    chunk_size: 250 # Dual-path chunk size
+    hop_size: 125   # Dual-path hop size
+    use_positional_encoding: True
+
+training:
+  lr: 0.00015
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_run_name: 2k_cboth_baseline_posenc
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

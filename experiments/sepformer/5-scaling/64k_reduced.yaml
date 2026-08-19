@@ -36,7 +36,7 @@
 
 data:
   dataset_type: polsess
-  batch_size: 4       # Same as the full-size 64k arm — comparability over speed.
+  batch_size: 4
   num_workers: 1
   prefetch_factor: 2
   task: SB
