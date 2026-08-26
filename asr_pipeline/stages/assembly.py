@@ -503,18 +503,53 @@ def _compute_anchors(
     return anchors, solo_durations
 
 
+def _longest_turn_speaker(
+    start_s: float, end_s: float, turns_df, speakers: list[str],
+) -> Optional[str]:
+    """Speaker whose pass-1 diarization turn overlapping [start_s, end_s] is the
+    LONGEST (turn duration, not overlap share — the floor holder; the
+    interjector is usually the short turn). Ties → larger overlap share. None
+    when no turn of a known speaker touches the region.
+    """
+    if turns_df is None or len(turns_df) == 0:
+        return None
+    best, best_key = None, None
+    for row in turns_df.itertuples(index=False):
+        spk = str(row.speaker)
+        if spk not in speakers:
+            continue
+        ov = min(float(row.end), end_s) - max(float(row.start), start_s)
+        if ov <= 0:
+            continue
+        key = (float(row.end) - float(row.start), ov)
+        if best_key is None or key > best_key:
+            best, best_key = spk, key
+    return best
+
+
 def _mixture_fill_overlaps(
     overlap_regions: list[Interval],
     speakers: list[str],
     audio: np.ndarray,
     sr: int,
+    *,
+    policy: str = "all",
+    turns_df=None,
 ) -> list[dict]:
     """No-separation mode: fill overlap regions with the (enhanced) mixture.
 
     Used when ``separation.enabled: false`` (or when stage 3b otherwise
-    produced no separated streams). The same audio slice is attributed to
-    every speaker — Whisper will double-transcribe the overlapping content,
-    and cpWER pays the cost honestly via the per-speaker GT.
+    produced no separated streams). ``policy`` (``AssemblyConfig.
+    nosep_overlap_policy``) decides who receives each slice:
+
+    * ``"all"`` (default, historical): the same slice is attributed to every
+      speaker — Whisper will double-transcribe the overlapping content, and
+      cpWER pays the cost honestly via the per-speaker GT.
+    * ``"longest_turn"``: the slice goes only to the speaker whose pass-1
+      diarization turn overlapping the region is the longest (``turns_df`` =
+      ``ctx.diarization.segments_df``); the other speaker's overlapped words are
+      lost instead of duplicated. Falls back to ``"all"`` for a region no known
+      speaker's turn touches (logged via ``pairing``), never drops audio.
 
     Returns assignments with the same shape as :func:`_assign_overlaps`.
     """
@@ -529,11 +564,21 @@ def _mixture_fill_overlaps(
         if hi <= lo:
             continue
         clip = audio[lo:hi].astype(np.float32)
-        emit_pieces = {spk: clip.copy() for spk in speakers}
+        pairing = "no_separation"
+        if policy == "longest_turn":
+            spk = _longest_turn_speaker(float(start_s), float(end_s), turns_df, speakers)
+            if spk is not None:
+                emit_pieces = {spk: clip.copy()}
+                pairing = f"no_separation:longest_turn={spk}"
+            else:
+                emit_pieces = {s: clip.copy() for s in speakers}
+                pairing = "no_separation:longest_turn_fallback_all"
+        else:
+            emit_pieces = {spk: clip.copy() for spk in speakers}
         assignments.append({
             "orig_start": float(start_s),
             "orig_end": float(end_s),
-            "pairing": "no_separation",
+            "pairing": pairing,
             "emit_pieces": emit_pieces,
         })
     return assignments
@@ -1010,13 +1055,20 @@ class AssemblyStage(Stage):
             # — io.write_pipeline_outputs writes it verbatim into metadata.json.
             ctx.assembly_diag = [a["diag"] for a in assignments]
         elif ctx.overlap_regions:
+            ovl_audio, ovl_src = assembly_audio, audio_source
+            if (cfg.nosep_overlap_source == "raw" and ctx.audio is not None
+                    and assembly_audio is not ctx.audio):
+                ovl_audio, ovl_src = ctx.audio, "raw mixture (nosep_overlap_source=raw)"
             _log(
                 f"no separated streams; filling "
                 f"{len(ctx.overlap_regions)} overlap region(s) from the "
-                f"{audio_source} (all speakers)"
+                f"{ovl_src} (policy={cfg.nosep_overlap_policy})"
             )
             assignments = _mixture_fill_overlaps(
-                ctx.overlap_regions, speakers, assembly_audio, sr,
+                ctx.overlap_regions, speakers, ovl_audio, sr,
+                policy=cfg.nosep_overlap_policy,
+                turns_df=(ctx.diarization.segments_df
+                          if ctx.diarization is not None else None),
             )
         else:
             assignments = []

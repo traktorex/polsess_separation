@@ -28,6 +28,7 @@ MODELS = [
     ("DPRNN (k=16)",    "default", "experiments/dprnn/dprnn_baseline.yaml"),
     ("DPRNN (k=2)",     "k2",      "experiments/dprnn/variants/dprnn_baseline_kernel2.yaml"),
     ("SepFormer",       "default", "experiments/sepformer/sepformer_baseline_positionalenc.yaml"),
+    ("SepFormer-reduced", "reduced", "experiments/sepformer/5-scaling/64k_reduced.yaml"),
     ("MossFormer2-matched", "matched", "experiments/mossformer2/mossformer2_matched.yaml"),
     ("MossFormer2-full",    "full",    "experiments/mossformer2/mossformer2_full.yaml"),
     ("SPMamba (reduced)",   "reduced", "experiments/spmamba/spmamba_sb_reduced.yaml"),

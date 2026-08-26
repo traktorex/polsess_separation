@@ -1388,3 +1388,39 @@ def test_parse_then_apply_end_to_end():
     ]))
     assert cfg.enhancement.observation_mix_ratio == 0.5
     assert cfg.transcription.condition_on_previous_text is True
+
+
+# ---------------------------------------------------------------------------
+# input_bandlimit_hz — the "what if the recordings were 8 kHz" ablation knob
+# ---------------------------------------------------------------------------
+
+
+def test_input_bandlimit_defaults_off_and_validates():
+    """Off by default; accepts a sub-Nyquist bandwidth; rejects the rest loudly."""
+    assert PipelineConfig().input_bandlimit_hz == 0
+    assert PipelineConfig(input_bandlimit_hz=4000).input_bandlimit_hz == 4000
+    for bad in (8000, 9000, -1):
+        with pytest.raises(ValueError, match="input_bandlimit_hz"):
+            PipelineConfig(input_bandlimit_hz=bad)
+
+
+def test_bandlimit_removes_the_upper_band_and_preserves_length():
+    """Pass-band tones survive, above-band tones are gone, length is exact."""
+    import numpy as np
+
+    from asr_pipeline.pipeline import _bandlimit
+
+    sr = 16_000
+    t = np.arange(sr, dtype=np.float32) / sr
+
+    def rms(x):
+        return float(np.sqrt(np.mean(x ** 2)))
+
+    for freq, keep in ((300, True), (2_000, True), (6_000, False)):
+        tone = np.sin(2 * np.pi * freq * t).astype(np.float32)
+        out = _bandlimit(tone, sr, 4_000)
+        assert len(out) == len(tone)
+        if keep:
+            assert rms(out) > 0.9 * rms(tone)
+        else:
+            assert rms(out) < 0.05 * rms(tone)

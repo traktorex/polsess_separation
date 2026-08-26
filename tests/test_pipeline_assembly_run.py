@@ -789,3 +789,42 @@ def test_run_solo_onset_pad_clamped_by_overlap_region():
     assert len(solo_entries) == 1
     assert solo_entries[0].orig_start == pytest.approx(0.9)   # not 0.5
     assert solo_entries[0].orig_end == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# _mixture_fill_overlaps — `assembly.nosep_overlap_policy` (fairness knob for
+# the no-separation comparator: "all" = historical duplicate-to-every-speaker,
+# "longest_turn" = floor holder only)
+# ---------------------------------------------------------------------------
+
+
+def test_mixture_fill_longest_turn_gives_slice_to_floor_holder_only():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    # SPK_A holds the floor 0-8 s; SPK_B interjects 2.5-3.5 s → overlap 2.5-3.5.
+    turns = _seg_df([("SPK_A", 0.0, 8.0), ("SPK_B", 2.5, 3.5)])
+    out = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR,
+                                 policy="longest_turn", turns_df=turns)
+    assert len(out) == 1
+    assert list(out[0]["emit_pieces"]) == ["SPK_A"]
+    assert out[0]["pairing"] == "no_separation:longest_turn=SPK_A"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"],
+                                  audio[int(2.5 * SR): int(3.5 * SR)])
+
+
+def test_mixture_fill_longest_turn_falls_back_to_all_when_no_turn_touches():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    turns = _seg_df([("SPK_A", 0.0, 1.0)])          # nothing touches 5-6 s
+    out = _mixture_fill_overlaps([(5.0, 6.0)], ["SPK_A", "SPK_B"], audio, SR,
+                                 policy="longest_turn", turns_df=turns)
+    assert set(out[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}
+    assert out[0]["pairing"] == "no_separation:longest_turn_fallback_all"
+
+
+def test_mixture_fill_default_policy_is_byte_identical_to_all():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    turns = _seg_df([("SPK_A", 0.0, 8.0), ("SPK_B", 2.5, 3.5)])
+    a = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR)
+    b = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR,
+                               policy="all", turns_df=turns)
+    assert a[0]["pairing"] == b[0]["pairing"] == "no_separation"
+    assert set(a[0]["emit_pieces"]) == set(b[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}

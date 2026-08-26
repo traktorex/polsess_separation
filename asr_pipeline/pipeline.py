@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
+import numpy as np
 import torch
 
 from asr_pipeline.config import PipelineConfig
@@ -50,6 +51,27 @@ def _log(msg: str) -> None:
     own `_log` keeps `to_stdout=True` so user-facing progress stays visible.
     """
     dlog("pipeline", msg, to_stdout=False)
+
+
+def _bandlimit(audio: np.ndarray, sr: int, bandlimit_hz: int) -> np.ndarray:
+    """Remove everything above `bandlimit_hz` by a resample round-trip.
+
+    Decimate to ``2 * bandlimit_hz`` (torchaudio's sinc resampler applies the
+    anti-alias filter) and interpolate straight back to `sr`, so downstream
+    stages keep their trained sample rate but see telephone-band material.
+    Length is preserved to the sample; the round-trip can drift by one, so the
+    result is trimmed/padded back to the input length.
+    """
+    import torchaudio.functional as AF
+
+    x = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
+    lo = AF.resample(x, sr, 2 * bandlimit_hz)
+    out = AF.resample(lo, 2 * bandlimit_hz, sr).squeeze(0).numpy().astype(np.float32)
+    if len(out) > len(audio):
+        return out[: len(audio)]
+    if len(out) < len(audio):
+        return np.pad(out, (0, len(audio) - len(out)))
+    return out
 
 
 class Pipeline:
@@ -161,6 +183,14 @@ class Pipeline:
         ctx.audio = load_audio_as_mono(
             audio_path, target_sr=self.config.sample_rate
         )
+        if self.config.input_bandlimit_hz:
+            ctx.audio = _bandlimit(
+                ctx.audio, self.config.sample_rate, self.config.input_bandlimit_hz
+            )
+            _log(
+                f"load_audio: band-limited to {self.config.input_bandlimit_hz} Hz "
+                f"(decimate to {2 * self.config.input_bandlimit_hz} Hz and back)"
+            )
         _log(f"load_audio: loaded {len(ctx.audio)/ctx.sample_rate:.2f}s audio")
         return ctx
 

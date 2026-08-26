@@ -4,8 +4,13 @@
 # 18.5 dB WHAMR SI-SDRi (the paper's headline model; no larger WHAMR build
 # was published). checkpoint_path = LOCAL .pth (download recipe in
 # asr_pipeline/vendor/tf_locoformer/__init__.py).
-# DISCIPLINE: dev-first (23 frags); any CLARIN test exposure needs a fresh
-# prereg — the test budget is spent (2026-07-04).
+# DISCIPLINE: superseded 2026-08-25. This header used to read "any CLARIN test
+# exposure needs a fresh prereg — the test budget is spent (2026-07-04)". The
+# author ruled that a swapped separator is a PIPELINE-SIDE arm and so inherits
+# ruling 1 of FAIR_NOSEP_COMPARISON §4.4 (no prereg for the instrument), the same
+# licence the whole separator quality ladder has run under since 08-20; dev and
+# test were both approved. Scored as its own contrast family so the frozen 19/22-arm
+# ladder tables are untouched. Run as sweep arm `v41_b1_tflocoformer` (queue 10).
 # Integration + verification log: docs/fable_plans/b1_external_separator_swap.md
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
