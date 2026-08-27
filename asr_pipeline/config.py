@@ -468,10 +468,11 @@ class PostSeparationProcessingConfig:
     as-is.
 
     ``naive`` is REQUIRED, not merely allowed, whenever the separator is
-    16 kHz-native (``separator_sample_rate: 16000`` — B1's TIGER and
-    SPMamba-Echo2Mix arms): ``ap_bwe`` decimates its input to 8 kHz and
-    interpolates back before its generator runs, so on a full-band input it
-    destroys the genuine 4-8 kHz band and replaces it with synthesis.
+    16 kHz-native (``separator_sample_rate: 16000`` — B1's TIGER,
+    SPMamba-Echo2Mix and SepFormer-WHAMR16k arms): ``ap_bwe`` decimates its
+    input to 8 kHz and interpolates back before its generator runs, so on a
+    full-band input it destroys the genuine 4-8 kHz band and replaces it with
+    synthesis.
     """
 
     # Backend selector:

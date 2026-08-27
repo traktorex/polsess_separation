@@ -1788,6 +1788,17 @@ CONFIGS: dict[str, dict] = {
                            "separation.checkpoint_path": "speechbrain/sepformer-whamr16k",
                            "separation.separator_sample_rate": 16000,
                            "post_separation_processing.backend": "naive"},  # SepFormer on WHAMR! at 16 kHz (HF speechbrain/sepformer-whamr16k, Apache-2.0; card: SI-SNRi 13.5 dB / SDRi 13.0 dB). THE DRY-TARGET 16 kHz ARM — the control that stops this family confounding "16 kHz" with "reverberant targets". TARGET CONVENTION **CONFIRMED DRY** (2026-08-26, two independent sources): Asteroid's canonical WHAMR task table uses s1_anechoic/s2_anechoic as targets for ALL FOUR tasks incl. sep_reverb/sep_reverb_noisy, and SpeechBrain's own recipes/WHAMandWHAMR/prepare_data.py pairs the reverberant mixture (mix_both_reverb/) with anechoic targets (s1_anechoic/, s2_anechoic/) for training — so the model separates AND dereverberates, exactly PolSESS SB's convention (matches §4.5.38's classification of the 8 kHz WHAMR arms). Also SepFormer = one of the thesis's own architectures. NB SpeechBrain separators emit HOT unnormalised streams: separation.volume_normalization=sum_equals_mix is LOAD-BEARING here (inherited from the base, not overridden). NOT cached locally as of 2026-08-26 — prefetch once WITHOUT HF_HUB_OFFLINE before any offline eval run.
+    # See GROUPS["b1band"] — the rate-only contrast against v41_b1_sb_whamr16k.
+    "v41_b1_sb_whamr": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.separator_backend": "speechbrain",
+                        "separation.checkpoint_path": "speechbrain/sepformer-whamr"},  # SepFormer on WHAMR! at 8 kHz (HF speechbrain/sepformer-whamr, Apache-2.0; home-set SI-SNRi 13.7 dB vs the 16 kHz sibling's 13.5 — as near a quality tie as this family offers). Deliberately does NOT override separator_sample_rate or post_separation_processing: it rides the deployed 8 kHz chain (8000 + ap_bwe), which is exactly what makes it the rate-only twin of v41_b1_sb_whamr16k AND a one-knob swap against v41_merge. Same HOT-stream caveat as every speechbrain arm: separation.volume_normalization=sum_equals_mix is load-bearing, inherited from the base.
     "v41_mf2_e23": {"enhancement.observation_mix_ratio": 0.50,
                   "diarization.backend": "sortformer",
                   "diarization.sortformer_head_policy": "merge",
@@ -2166,13 +2177,36 @@ GROUPS: dict[str, list[str]] = {
     # round 3: peer SPMamba + MF2-dp librimix sibling (all 8 kHz). DEV-first.
     "b1d": ["v41_b1_spmamba_librimix", "v41_b1_mf2dp_librimix"],
     # the 16 kHz arms — the first B1 separators that are not 8 kHz, so AP-BWE is
-    # necessarily OFF (it would narrowband their own output). Rescore with
-    # --anchor v41_bweoff (matched post-processing; already decoded on all 141)
-    # and again with --anchor v41_merge (as-deployed). v41_b1_tiger_bwe is the
-    # band-matched control that bounds the band effect for the whole family.
-    # v41_b1_spmamba_echo2mix pairs with v41_b1_spmamba_librimix in "b1d" as a
-    # within-architecture, capacity-fixed 8k-vs-16k + corpus contrast. DEV-first.
-    "b1t": ["v41_b1_tiger", "v41_b1_tiger_bwe", "v41_b1_spmamba_echo2mix"],
+    # necessarily OFF (it would narrowband their own output; author 2026-08-26
+    # rules that a feature of the arms, not a confound needing a band-matched
+    # twin). Rescore with --anchor v41_bweoff (matched post-processing; already
+    # decoded on all 141) and again with --anchor v41_merge (as-deployed).
+    # Deliberate structure: TWO reverberant-target arms (tiger = EchoSet,
+    # verified; spmamba_echo2mix = Echo2Mix, presumed-by-lineage and disclosed)
+    # + ONE dry-target arm (sb_whamr16k, WHAMR anechoic targets CONFIRMED — the
+    # PolSESS SB convention), so "16 kHz" is not confounded with "reverberant
+    # targets". v41_b1_spmamba_echo2mix additionally pairs with
+    # v41_b1_spmamba_librimix in "b1d" as a within-architecture, capacity-fixed
+    # 8k-vs-16k + corpus contrast. sb_whamr16k needs a one-off ONLINE prefetch
+    # (not cached as of 2026-08-26). DEV-first.
+    "b1t": ["v41_b1_tiger", "v41_b1_spmamba_echo2mix", "v41_b1_sb_whamr16k"],
+    # THE BAND-ISOLATION ARM (2026-08-27). Every other B1 contrast moves the
+    # sampling rate and the training corpus together, so none of them can say
+    # which one the 16 kHz arms' win belongs to. This one holds architecture
+    # (SepFormer), corpus (WHAMR!) and home-set quality (13.7 vs 13.5 dB SI-SNRi)
+    # fixed and moves the RATE AXIS AS DEPLOYED: speechbrain/sepformer-whamr at
+    # 8 kHz against its own 16 kHz sibling v41_b1_sb_whamr16k. Not a single-
+    # variable isolate and must not be quoted as one — the two siblings are
+    # independently trained weights, and the 8 kHz arm necessarily carries the
+    # deployed 8 kHz chain's ap_bwe where the 16 kHz one runs naive. That bundle
+    # IS the deployed rate axis, which is the axis the thesis argues about. Inherits the deployed 8 kHz
+    # chain unchanged (separator_sample_rate 8000 + ap_bwe from the base), so it
+    # is also a pure one-knob swap against v41_merge and therefore eligible for
+    # the ch6 ladder under the author's "8 kHz only" rule. Weights already cached
+    # (checkpoints/external/speechbrain/speechbrain__sepformer-whamr). Pincers
+    # queue 17's band re-decode from the opposite direction: q17 removes the band
+    # from a good model, this adds the band to a weak one.
+    "b1band": ["v41_b1_sb_whamr"],
     "ladder16k": ["v41_lad16k_e01", "v41_lad16k_e02", "v41_lad16k_e03",
                  "v41_lad16k_e05", "v41_lad16k_e09", "v41_lad16k_e14",
                  "v41_lad16k_e21", "v41_lad16k_e30"],
