@@ -59,10 +59,7 @@ post_separation_processing:
   # so there's no `enabled` knob. Set `backend: naive` to apply only
   # the mask (no neural BWE).
   backend: ap_bwe                       # naive | ap_bwe
-  # PyTorch .pt files are zip archives — point at the file itself, NOT at
-  # the extracted directory. Both `g_8kto16k` and `g_8kto16k.zip` work
-  # (extension is ignored by torch.load).
-  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
 
 assembly:
   enabled: true
