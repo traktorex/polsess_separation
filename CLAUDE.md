@@ -119,13 +119,13 @@ pytest tests/test_webapp_backend.py              # backend suite (no GPU, no asr
 ```
 FastAPI + vanilla ES modules (no build step, no CDN); a pure READ-ONLY consumer of `asr_pipeline` (SCOPE §1 — the job queue lives here, never in the package). One worker thread, one job at a time (12 GB GPU, phase-major). Every job runs with per-job `spill_intermediate` → `<job>/spill` (source of mid-run `partial` results + the enhancement A/B panel). Contract = `webapp/API.md` (binding). Jobs land in `$WEBAPP_JOBS_ROOT` (default `~/webapp_jobs`). Polish UI, English technical terms; GT/scores appear ONLY on the examples page.
 
-**On-device demo (`webapp_ondevice/` — Road 2: OSD-gated separation fully client-side, GitHub Pages-ready):**
-```bash
-python3 webapp_ondevice/devcheck/serve.py webapp_ondevice --port 8123    # dev: serve the ROOT (test assets reachable); deploy publishes site/ alone
-~/playwright_venv/bin/python webapp_ondevice/devcheck/check_page.py <url> --shot s.png   # headless verify: screenshots + console errors + exit codes
-CUDA_VISIBLE_DEVICES="" venv/bin/python webapp_ondevice/build/export_separators.py && CUDA_VISIBLE_DEVICES="" venv/bin/python webapp_ondevice/build/verify_models.py   # regenerate site/models/
-```
-Static site, zero server: pyannote-seg-3.0 fp16 ONNX (3 MB) detects overlap in-browser, routing (ported from `asr_pipeline/stages/routing.py`, expand-to-4 s like the shipped configs) sends ONLY overlap regions to the separator; "Separuj mimo wszystko" override makes the ch6 M2 phantom-stream failure audible. Separators: SepFormer-128k int8 (default — WASM gate: RTF 1.46 vs MF2's 22.4 single-threaded) + MF2-128k **e46** int8 MatMul-only ("safe" recipe transparent on e23 degrades to 23 dB on e46 — `build/NOTES.md`). Gotchas: ORT graph-opt level `'all'` **segfaults** on the fp16 pyannote model (use `'extended'`); OSD sliding-window hop must be 79920 samples (whole frames), not 80000; Chromium's AudioBuffer resampling does NO anti-alias filtering on decimation (hand-rolled sinc in `resample.js`); `site/models/` + `site/vendor/` are gitignored but MUST ship on deploy (~90 MB). Engine parity proof page: `webapp_ondevice/test.html` (drive with `--js "window.__done"`, ~6.5 min). OSD Python reference + JS-parity vectors: `reference/`.
+**On-device demo (`webapp_ondevice/`) — MOVED OFF `main` 2026-09-04.** The Road-2 client-side
+demo (pyannote-seg-3.0 ONNX OSD → routing → int8 separator, all in-browser) was an experiment that
+nothing else in the repository depends on and that the thesis deliberately does not describe
+(ch7 Q2 ruling). The full tree, its `build/NOTES.md` provenance and the JS-parity reference vectors
+live on branch `experiment/webapp-ondevice`; `git checkout experiment/webapp-ondevice` restores it
+(the gitignored `site/models/` + `site/vendor/` blobs are still on disk here, so it runs after a
+checkout without re-exporting). Don't re-add it to `main`.
 
 ## Architecture Overview
 

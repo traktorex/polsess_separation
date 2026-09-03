@@ -48,8 +48,7 @@ polsess_separation/
 ├── scripts/                   # Benchmarks, audits, CLARIN helpers, thesis_figures/
 ├── asr_pipeline/              # Pipeline package: stages/, eval/, configs/, vendor/, SCOPE.md
 ├── asr/                       # Notebooks driving asr_pipeline/ (explore, evaluate, CLARIN)
-├── webapp/                    # FastAPI showcase UI over asr_pipeline (read-only consumer)
-└── webapp_ondevice/           # Static in-browser demo: OSD → routing → separation (ONNX)
+└── webapp/                    # FastAPI showcase UI over asr_pipeline (read-only consumer)
 ```
 
 Registries are dict-based: `get_model("sepformer")`, `get_dataset("polsess")`.
@@ -138,19 +137,18 @@ cpCER via `meeteval`). An earlier one-shot REAL-M / LibriMix evaluation flow was
 removed; this pipeline supersedes it. The notebooks in `asr/` drive it
 interactively and score its output.
 
-## Front-ends
+## Front-end
 
 ```bash
 ./webapp/run.sh                                   # FastAPI showcase UI, port ${WEBAPP_PORT:-8871}
 venv/bin/python -m webapp.dev_server --port 8899  # GPU-free dev harness (replays a fake run)
-python3 webapp_ondevice/devcheck/serve.py webapp_ondevice --port 8123   # static on-device demo
 ```
 
-Both are read-only consumers of the pipeline. `webapp/` runs it server-side, one
-job at a time; its HTTP contract is `webapp/API.md`. `webapp_ondevice/` runs
-overlap detection, routing and separation entirely in the browser via ONNX
-Runtime Web; its models and vendored runtime are git-ignored and must be
-regenerated (see `webapp_ondevice/README.md`).
+`webapp/` is a read-only consumer of the pipeline: it runs it server-side, one
+job at a time, and its HTTP contract is `webapp/API.md`. A second, experimental
+front-end that ran overlap detection, routing and separation entirely in the
+browser (ONNX Runtime Web) is not part of this branch — nothing depends on it and
+it is kept on branch `experiment/webapp-ondevice`.
 
 ## Technical notes
 
