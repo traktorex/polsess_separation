@@ -22,7 +22,15 @@ the kernel_size//2 lock does not apply to it.
 
 import pytest
 
-from models import ConvTasNet, DPRNN, SepFormer, MambaTasNet, DPMamba, SPMamba
+from models import ConvTasNet, DPRNN, SepFormer
+from models.mamba import MAMBA_AVAILABLE
+
+if MAMBA_AVAILABLE:
+    from models import MambaTasNet, DPMamba, SPMamba
+else:  # CPU-only checkout without mamba-ssm: the Mamba cases below are skipped
+    MambaTasNet = DPMamba = SPMamba = None
+
+needs_mamba = pytest.mark.skipif(not MAMBA_AVAILABLE, reason="requires mamba-ssm")
 
 # (model_class, kwargs with a *valid* stride == kernel_size // 2, sized small
 # to keep construction fast). Only construction is exercised — never forward()
@@ -52,11 +60,13 @@ STRIDE_GUARD_CASES = [
         MambaTasNet,
         dict(N=8, C=1, bot_dim=8, n_mamba=1, d_state=4, kernel_size=16),
         id="mamba_tasnet",
+        marks=needs_mamba,
     ),
     pytest.param(
         DPMamba,
         dict(N=8, C=1, num_layers=1, chunk_size=10, n_mamba_dp=1, d_state=4, kernel_size=16),
         id="dpmamba",
+        marks=needs_mamba,
     ),
 ]
 
@@ -78,6 +88,7 @@ def test_default_stride_constructs_without_error(model_class, kwargs):
     assert model is not None
 
 
+@needs_mamba
 def test_spmamba_non_hann_window_raises():
     """SPMamba.forward() hardcodes torch.hann_window regardless of `window`."""
     with pytest.raises(AssertionError, match="hann"):

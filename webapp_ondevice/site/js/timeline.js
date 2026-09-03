@@ -1,7 +1,7 @@
 /**
  * The timeline: waveform canvas + percent-positioned band overlays.
  *
- * Ported from the accepted mockup's rendering code (`design/road2_mockup.html`)
+ * Ported from the accepted mockup's rendering code
  * with one change: the mockup synthesised its peaks, this reads them from a
  * pre-computed peak array. Everything is laid out in **percent of clip
  * duration**, so a resize needs no re-layout — only the canvas is repainted

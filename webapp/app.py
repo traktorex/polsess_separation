@@ -45,7 +45,7 @@ _REPO_ROOT = _HERE.parent
 DEFAULT_CONFIG_PATH = (
     _REPO_ROOT / "asr_pipeline" / "configs" / "sweep_best_e31_refineplus.yaml"
 )
-DEFAULT_JOBS_ROOT = Path(os.environ.get("WEBAPP_JOBS_ROOT", "/home/user/webapp_jobs"))
+DEFAULT_JOBS_ROOT = Path(os.environ.get("WEBAPP_JOBS_ROOT", str(Path.home() / "webapp_jobs")))
 DEFAULT_EXAMPLES_MANIFEST = _HERE / "examples_manifest.json"
 
 # Uploads are normalised to the pipeline's working sample rate. The pipeline

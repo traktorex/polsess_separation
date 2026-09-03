@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="./app.css">
 <!--
   Road 2 — demonstrator OSD-gated. Struktura i teksty pochodzą z zaakceptowanej
-  makiety (design/road2_mockup.html); logika mieszka w ./js/ i korzysta z
+  makiety; logika mieszka w ./js/ i korzysta z
   przetestowanej warstwy silnika (osd.js / routing.js / separate.js /
   resample.js / wav.js / ortEnv.js). Strona nie odwołuje się do niczego spoza
   site/ — cały katalog jest tym, co się publikuje.
@@ -350,7 +350,6 @@
         <p><b>Runtime</b> — <span class="mono">onnxruntime-web 1.23.2</span> (WASM, jeden wątek), licencja <span class="mono">MIT</span> (Microsoft). Pliki <span class="mono">.wasm</span> leżą razem ze stroną, bez CDN.</p>
         <p><b>Separatory</b> — SepFormer-128k int8 ONNX oraz MossFormer2-matched-128k (e46) int8 ONNX. Oba checkpointy wytrenowano w ramach tej pracy na korpusie PolSESS; do przeglądarki trafia eksport tych samych wag, które wdraża pełny pipeline serwerowy.</p>
         <p><b>Klipy przykładowe</b> — „Rozmowa z przeplotem”: fragment nagrania konwersacyjnego z korpusu CLARIN-PL. „Pełne nakładanie”: mikstura z korpusu PolSESS zbudowana na mowie CLARIN-EMU, natywne 8 kHz. Oba pliki bez normalizacji poziomu — głośność wyrównuje dopiero odtwarzanie.</p>
-        <!-- TODO(author): repo/thesis link -->
       </div>
     </details>
   </footer>

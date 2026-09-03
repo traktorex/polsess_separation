@@ -1,6 +1,7 @@
 # SepFormer 2-Stage Hyperparameter Optimization
 # Stage 2: Refined search on 8K samples
-# NOTE: Update ranges after Stage 1 completes!
+# Stage 1 produced no usable refinement signal, so this sweep was run with the
+# Stage-1 ranges unchanged (see the note on the parameter block below).
 
 program: train_sweep.py
 method: bayes
@@ -28,33 +29,35 @@ parameters:
     value: 15
   
   # ========================================
-  # REFINED RANGES (from Stage 1 analysis)
+  # SEARCH RANGES (unchanged from Stage 1)
   # ========================================
-  # TODO: Update these ranges after Stage 1 completes!
-  # Placeholder ranges copied from Stage 1, narrow after analysis.
+  # Stage 1 was uninformative — SepFormer overfits 2K samples and every run
+  # finished below 0 dB — so there was nothing to narrow towards. Stage 2 was
+  # therefore run with the Stage-1 ranges as-is; the move to 8K samples is what
+  # resolved the overfitting.
   
   lr:
     distribution: log_uniform_values
-    min: 5e-5    # TODO: Narrow based on Stage 1 top-5
-    max: 3e-3    # TODO: Narrow based on Stage 1 top-5
+    min: 5e-5
+    max: 3e-3
   
   weight_decay:
     distribution: log_uniform_values
-    min: 1e-6    # TODO: Narrow based on Stage 1 top-5
-    max: 1e-4    # TODO: Narrow based on Stage 1 top-5
+    min: 1e-6
+    max: 1e-4
   
   grad_clip_norm:
     distribution: uniform
-    min: 0.5     # TODO: Narrow based on Stage 1 top-5
-    max: 15.0    # TODO: Narrow based on Stage 1 top-5
+    min: 0.5
+    max: 15.0
   
   lr_factor:
     distribution: uniform
-    min: 0.3     # TODO: Narrow based on Stage 1 top-5
+    min: 0.3
     max: 0.95
     
   lr_patience:
-    values: [1, 2, 3, 4]  # TODO: Narrow based on Stage 1 top-5
+    values: [1, 2, 3, 4]
 
 
 project: polsess-thesis-experiments

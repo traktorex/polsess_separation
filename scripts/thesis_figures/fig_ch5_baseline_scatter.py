@@ -7,9 +7,9 @@ circular markers, one color per architecture, identity carried by direct labels
 Scatter of validation SI-SDR ({SER,SE}, pilot corpus, 3 seeds where available)
 against parameter count (log x). SI-SDR values embedded with provenance
 comments: the Series-1 baseline runs were deleted from W&B (early Feb 2026), so
-numbers are sourced from the verified evidence pack
-(thesis/claude-writing/ch05/05_arc_evidence.md, re-pulled 2026-07-29) and
-thesis-log/01_baselines.md. Parameter counts follow
+numbers are sourced from the verified evidence pack in the author's thesis
+notes (re-pulled 2026-07-29) and thesis-log/01_baselines.md. Parameter counts
+follow
 docs/generated/model_manifest.md (NB Mamba-TasNet-L = 58.95M there; the older
 59.6M in logs is stale).
 

@@ -1,6 +1,7 @@
 # Vendored from ClearerVoice-Studio (modelscope/ClearerVoice-Studio):
 # train/speech_separation/models/mossformer2/mossformer2.py — fetched 2026-06-02.
-# Local edits: in-package import made relative.
+# Local edits: in-package import made relative. Licence: Apache-2.0 (see LICENSE
+# in this directory, copied from the upstream repository).
 """
 modified from https://github.com/speechbrain/speechbrain/blob/develop/speechbrain/lobes/models/dual_path.py
 #Author: Shengkui Zhao

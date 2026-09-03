@@ -3,7 +3,7 @@
 # Reduced model size to fit in memory without AMP
 #
 # ⚠️ SUPERSEDED 2026-08-10, NEVER RUN — use 16k_spmamba_sb_reduced_withoutcr.yaml.
-# Decision A (05_arc.md §6) moves Tabela 5.7's SPMamba rows entirely to the
+# Decision A (see thesis ch5) moves Tabela 5.7's SPMamba rows entirely to the
 # flat/no-curriculum regime, so a progressive 16k baseline has no consumer.
 # Kept only as the record of the original N2 spec.
 #

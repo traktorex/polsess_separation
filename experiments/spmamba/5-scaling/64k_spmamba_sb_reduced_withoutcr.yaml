@@ -1,7 +1,7 @@
 # SPMamba-reduced BASELINE config, flat/no-curriculum — 64k.
 # Based on: 64k_spmamba_sb_reduced.yaml (as-run for l4pln536 / 87lepmzg, 6.28).
 #
-# THE LOAD-BEARING ARM of N2 as respecced under Decision A (05_arc.md §6,
+# THE LOAD-BEARING ARM of N2 as respecced under Decision A (see thesis ch5,
 # 2026-08-10). Tabela 5.7 moves both SPMamba rows to the flat regime; the
 # "po strojeniu" row then reads 5.94 / N1@16k / N1@32k / 8.04 (`7ifvwekd`,
 # flat). Without a flat BASELINE at 64k the tuned-vs-bazowa comparison — the
@@ -73,7 +73,7 @@ training:
   use_wandb: true
   wandb_project: polsess-separation-64k
   # Distinct from the progressive baseline's `64k_baseline` (l4pln536 /
-  # 87lepmzg): W&B display names collide across runs (ch5 arc §7.3), and these
+  # 87lepmzg): W&B display names collide across runs, and these
   # two runs are precisely the pair a reader must be able to tell apart.
   wandb_run_name: 64k_baseline_withoutcr
   wandb_entity: null

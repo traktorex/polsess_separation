@@ -1,4 +1,5 @@
-# Covers venv/ (main training/eval) only — see CLAUDE.md's "Virtual Environments" section for the asr_pipeline/ isolated venvs (Sortformer, CohereX, Brouhaha) and the SPMamba3-only venv_mamba3/.
+# Core dependencies of venv/ (training, evaluation, tests, figure scripts, webapp).
+# Exact versions used for the thesis experiments: requirements-freeze.txt.
 speechbrain>=1.0.3
 torch>=2.8.0
 torchaudio>=2.8.0
@@ -21,7 +22,22 @@ rapidfuzz>=3.0.0   # ASR-eval: fast char edit distance for CER under cpWER assig
 pyannote.audio>=3.1,<5  # ASR-pipeline: diarization stage; <5 pins the 3.x/4.x output shape the stage duck-types
 onnxruntime>=1.16.0  # fragment-acoustics: DNSMOS sig_bak_ovr ONNX inference (CPU)
 pyloudnorm>=0.2.0    # fragment-acoustics: integrated LUFS in score_fragment_acoustics.py
-sr-corrnet-ss @ git+https://github.com/dmlguq456/SR_CorrNet_SS  # B1 sr_corrnet separator backend (MIT)
-loguru>=0.7.0        # sole new transitive need of sr-corrnet-ss (its other deps already above)
+soundfile>=0.12.0    # audio I/O across asr_pipeline/, scripts/, webapp/, tests/
+pesq>=0.0.4          # torchmetrics PESQ backend used by evaluate.py (default metrics)
+pystoi>=0.4.0        # torchmetrics STOI backend used by evaluate.py (default metrics)
+matplotlib>=3.7.0    # scripts/thesis_figures/ and sweep analysis plots
+seaborn>=0.13.0      # sweep analysis plots
+huggingface_hub>=0.20.0  # asr_pipeline preflight + vendored model downloads
+fastapi>=0.110.0     # webapp/ showcase backend
+uvicorn>=0.27.0      # webapp/ server (webapp/run.sh)
 
-mamba-ssm>=2.3.1; platform_system=="Linux"
+# --- Optional, not installed by default ---------------------------------------
+# Mamba-family models (SPMamba, Mamba-TasNet, DPMamba) need Linux + CUDA and a
+# from-source build (nvcc). Install separately; the model registry skips the
+# Mamba models when this import is missing:
+#   pip install mamba-ssm>=2.3.1
+# ASR pipeline (chapter 6) extras, installed on demand — see CLAUDE.md for the
+# isolated venvs (Sortformer/NeMo, CohereX, Brouhaha) that must NOT share this env:
+#   whisperx meeteval librosa clearvoice ptflops
+# B1 external-separator arm `sr_corrnet` (git dependency, MIT):
+#   pip install "sr-corrnet-ss @ git+https://github.com/dmlguq456/SR_CorrNet_SS" loguru

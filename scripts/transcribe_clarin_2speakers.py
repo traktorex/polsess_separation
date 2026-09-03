@@ -1,7 +1,7 @@
 """WhisperX-transcribe every CLARIN 2-speaker recording, raw and enhanced.
 
 Drives two parallel transcript sets over
-`/home/user/datasets/clarin_all_2speakers/clarin_download/*.wav`:
+`~/datasets/clarin_all_2speakers/clarin_download/*.wav`:
 
     auto_transcription_raw/                 — WhisperX on the raw download
     auto_transcription_enhanced_mossformer/ — WhisperX on MossFormerGAN_SE_16K-enhanced audio
@@ -59,7 +59,7 @@ from asr_pipeline.stages.transcription import _WhisperXBackend           # noqa:
 from asr_pipeline.transcript_format import format_transcript, to_jsonable  # noqa: E402
 
 
-ROOT = Path("/home/user/datasets/clarin_all_2speakers")
+ROOT = Path.home() / "datasets/clarin_all_2speakers"
 RAW_DIR = ROOT / "clarin_download"
 ENH_DIR = ROOT / "enhanced_mossformer"
 TX_RAW = ROOT / "auto_transcription_raw"

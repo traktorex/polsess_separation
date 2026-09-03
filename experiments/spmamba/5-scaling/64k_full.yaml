@@ -8,7 +8,8 @@
 # threshold = the curriculum-matched 7.72 dB {SER,SE} (io29fz27); 8.04 (7ifvwekd) is
 # the flat-variants secondary reference (~0.3 dB curriculum tax). NB: two launch
 # attempts crashed at epoch 0 on the 4070 (a65bq3r0, mlckytbm; cause unknown, suspect
-# VRAM) — diagnose before relaunching. Cost: ~10.8 h/ep (4070-extrapolated); realistic
+# VRAM) and the arm was never completed — the only artefact is the empty checkpoint dir
+# 64k_spmamba_full_42_CRASHED_ep0_DO_NOT_EVAL. Cost: ~10.8 h/ep (4070-extrapolated); realistic
 # budget ~56 epochs ≈ 25 days, but an above-7.72-and-climbing partial readout decides
 # the attribution much earlier (~ep 25-40).
 
@@ -39,7 +40,7 @@ model:
     eps: 1.0e-5
 
 training:
-  # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
+  # ---- Paper recipe (verbatim from 6-final-training/128k_full_final.yaml / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
   weight_decay: 4.885301855720965e-06   

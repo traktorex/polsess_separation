@@ -52,7 +52,7 @@ training:
   wandb_project: polsess-separation
   wandb_entity: null
   # Renamed off the original's `dpmamba-m`: both runs target the same project,
-  # and W&B display names collide across runs (ch5 arc §7.3 hazard) — a shared
+  # and W&B display names collide across runs — a shared
   # name would make the lr pair indistinguishable in the very table it feeds.
   wandb_run_name: dpmamba-m-lr3e4
   log_file: null

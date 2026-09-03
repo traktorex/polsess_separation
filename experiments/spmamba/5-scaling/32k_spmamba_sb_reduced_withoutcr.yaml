@@ -3,7 +3,7 @@
 # train_max_samples and the W&B target), which in turn derives from the
 # progressive 32k_spmamba_sb_reduced.yaml.
 #
-# Trajectory-filler arm of N2 as respecced under Decision A (05_arc.md §6,
+# Trajectory-filler arm of N2 as respecced under Decision A (see thesis ch5,
 # 2026-08-10) — OPTIONAL. The load-bearing arm is the 64k one; this fills
 # Tabela 5.7's "SPMamba — bazowa" 32k cell so the row reads as a trajectory
 # rather than two endpoints. Dropping it costs only a "–" cell.
@@ -76,7 +76,7 @@ training:
   use_wandb: true
   wandb_project: polsess-separation-32k
   # Distinct from the progressive baseline's `32k_spmamba_baseline`:
-  # W&B display names collide across runs (ch5 arc §7.3), and these
+  # W&B display names collide across runs, and these
   # two runs are precisely the pair a reader must be able to tell apart.
   wandb_run_name: 32k_spmamba_baseline_withoutcr
   wandb_entity: null

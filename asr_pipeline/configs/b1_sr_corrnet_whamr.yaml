@@ -8,7 +8,6 @@
 # dev and test both author-approved. Run as sweep arm `v41_b1_srcorrnet` (queue 10).
 # LICENCE: the HF repo `shinuh/sr-corrnet-ss-1ch-whamr` declares no licence. Fine
 # for measuring; if a number from this arm is cited, say so explicitly.
-# Integration + verification log: docs/fable_plans/b1_external_separator_swap.md
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
 # verbatim — the per-knob rationale comments live there.
@@ -58,7 +57,7 @@ separation:
 
 post_separation_processing:
   backend: ap_bwe
-  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
 
 relabel:
   enabled: true

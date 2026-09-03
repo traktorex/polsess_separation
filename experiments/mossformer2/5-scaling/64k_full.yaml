@@ -7,7 +7,8 @@
 #
 # 64k is the DECISIVE point: the matched curve flattened here (this is where the
 # "architectural ceiling" reading comes from), so full-vs-matched at 64k is the headline
-# capacity comparison. Cost: ~2x matched per-epoch (ESTIMATE) — run last of the three.
+# capacity comparison. Cost: ~2x matched per-epoch (estimate); it was run last of the three
+# (as-run checkpoint: 64k_mossformer2_full_42_f0pt0kly).
 
 data:
   dataset_type: polsess

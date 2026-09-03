@@ -77,7 +77,7 @@ separation:
 post_separation_processing:
   # ap_bwe (NOT naive): on e31, naive BWE was worse than ap_bwe.
   backend: ap_bwe                          # naive | ap_bwe
-  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
 
 assembly:
   enabled: true

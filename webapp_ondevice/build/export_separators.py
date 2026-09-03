@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export the two shipping separators of the Road-2 on-device demo to ONNX (INT8).
 
-Promoted from the B9 export spike (2026-08-05). The spike answered "can
+Promoted from the 2026-08-05 export experiment, which answered "can
 MossFormer2 ship in a browser?" (yes) and "which INT8 recipe survives?" (a
 hand-tuned one); this script is the reproducible, documented form of that
 answer, with both shipping artifacts built by one command.
@@ -27,7 +27,7 @@ Shapes are STATIC — no `dynamic_axes`. Two reasons:
      then silently wrong for other lengths.
 
 --------------------------------------------------------------------------
-INT8 recipes  (B9 spike §5 — measured, not guessed)
+INT8 recipes  (measured in the 2026-08-05 export experiment, not guessed)
 --------------------------------------------------------------------------
 `quantize_dynamic` with its defaults (all Conv + MatMul) DESTROYS
 MossFormer2: 0.9964 corr / 21.4 dB self-SI-SDR, and it is also 3x SLOWER
@@ -36,9 +36,9 @@ Bisecting showed the culprit is not the depthwise convs (the usual suspect)
 but the group-1 pointwise convs — above all the waveform encoder
 (`/model/model/enc/conv1d/Conv`, 1->512, k=16, fed raw audio) and the mask
 decoder. Per-tensor uint8 activation quantization of a raw waveform is
-hopeless; consistent with the known fp16 fragility of this architecture
-(CLAUDE.md: "MossFormer2's squared-ReLU attention overflows fp16 once
-activations sharpen").
+hopeless; consistent with the known fp16 fragility of this architecture —
+its squared-ReLU attention overflows fp16 once activations sharpen, which is
+why it is trained in bf16.
 
   "safe"    uint8 weights on MatMul + Conv, EXCLUDING the encoder/decoder
             convs and every grouped (depthwise) conv.  MF2: 33.6 MB,
@@ -114,7 +114,7 @@ SEPARATORS = (
         # The SAME checkpoint the ASR pipeline deploys (asr_pipeline/config.py
         # + configs/{default,sweep_best_e31_refineplus}.yaml) — the demo's
         # narrative is "we ship the deployed separator", so this must track it.
-        # The B9 spike measured export + INT8 parity on the earlier e23 sibling
+        # The first export pass measured export + INT8 parity on the e23 sibling
         # (.../mossformer2_matched_128k_final_42/mossformer2_SB_best_e23.pt,
         # val_sisdr 16.37); e46 re-verified 2026-08-05 with the same harness.
         ckpt="checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt",

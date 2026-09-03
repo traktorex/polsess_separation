@@ -499,7 +499,7 @@ CONFIGS: dict[str, dict] = {
                          "transcription.model_name": "bardsai/whisper-large-v2-pl-v2"},
 
     # ======================================================================
-    # DEFINITIVE SWEEP arms (docs/sweep_plan/SWEEP_DESIGN.md §3.2, pre-flight
+    # DEFINITIVE SWEEP arms (thesis-log/sweep_plan/SWEEP_DESIGN.md §3.2, pre-flight
     # §6.4). All anchored on the `dr_refineplus` knob set (= the fixed anchor):
     # OA-0.3 + ECAPA2 diar + B+ global relabel (enhanced). Each row is a flat
     # dotted dict that takes the dr_refineplus base and changes ONE thing (or one
@@ -594,7 +594,7 @@ CONFIGS: dict[str, dict] = {
     # = dr_refineplus_v3 (already defined above); aliased here only via the GROUP.
 
     # ======================================================================
-    # HOLES-BUNDLE arms (docs/sweep_plan/04_HOLES.md DECISION: EVERYTHING).
+    # HOLES-BUNDLE arms (thesis-log/sweep_plan/04_HOLES.md DECISION: EVERYTHING).
     # All anchored on the same `dr_refineplus` base as the definitive block
     # (OA-0.3 + ECAPA2 diar + B+ global relabel, enhanced), inlined per row.
     # Two classes:
@@ -1010,7 +1010,7 @@ CONFIGS: dict[str, dict] = {
     # Campaign v2 FINALIST — dr_oa050 + the two levers that survived round 2
     # (rescue: fires only on duration-degenerate solo partitions; loop_retry:
     # touches only detector-flagged windows, min-repeat gate 12). Pre-registered
-    # for the ONE held-out test re-eval: docs/sweep_plan/V2_TEST_PREREG.md.
+    # for the ONE held-out test re-eval: thesis-log/sweep_plan/V2_TEST_PREREG.md.
     "v2_finalist": {"enhancement.observation_mix_ratio": 0.50,
                     "diarization.embedding": "ecapa2",
                     "relabel.enabled": True, "relabel.source": "global",
@@ -1019,7 +1019,7 @@ CONFIGS: dict[str, dict] = {
                     "transcription.loop_retry": True},
     # Campaign v3 — phrase-loop mirror of loop_retry: = v2_finalist + the
     # multi-token phrase-loop detect-and-retry (2 known test sites; see
-    # docs/sweep_plan/V3_TEST_PREREG.md).
+    # thesis-log/sweep_plan/V3_TEST_PREREG.md).
     "v3_phraseloop": {"enhancement.observation_mix_ratio": 0.50,
                       "diarization.embedding": "ecapa2",
                       "relabel.enabled": True, "relabel.source": "global",
@@ -1063,7 +1063,7 @@ CONFIGS: dict[str, dict] = {
     # Campaign v4 — EEND diarizer arm off the v3_phraseloop finalist. Swaps the
     # pyannote+ECAPA2 clustering diarizer for NVIDIA Sortformer-v1 offline EEND
     # (clustering-free), which the probe showed un-fuses the two speakers pyannote
-    # physically merged on the fused fragments (docs/sweep_plan/eend_probe.py +
+    # physically merged on the fused fragments (thesis-log/sweep_plan/eend_probe.py +
     # _forensics/EEND_PROBE.md: trio purity 0.790 -> 0.907). = v3_phraseloop MINUS
     # diarization.embedding (pyannote-only; ignored on the EEND path) PLUS
     # diarization.backend=sortformer. Needs $SORTFORMER_VENV_PY (isolated NeMo
@@ -1076,7 +1076,7 @@ CONFIGS: dict[str, dict] = {
                 "relabel.solo_clustering_init": "rescue",
                 "transcription.loop_retry": True,
                 "transcription.loop_retry_phrase": True},
-    # Campaign v4.1 — Sortformer rehabilitation levers (docs/sweep_plan/V41_PREREG.md).
+    # Campaign v4.1 — Sortformer rehabilitation levers (thesis-log/sweep_plan/V41_PREREG.md).
     # Base = v4_eend (its exact override set, copied per row); each arm turns on one
     # or more of the four config-gated, default-OFF levers:
     #   L1 merge-not-discard   (diarization.sortformer_head_policy=merge)
@@ -1925,7 +1925,7 @@ CONFIGS: dict[str, dict] = {
                          "checkpoints/mossformer2/SB/mossformer2_matched_128k_Conly_cval_42/"
                          "mossformer2_SB_epoch31.pt"},
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms
-    # (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Base = v4_eend's exact
+    # (thesis-log/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Base = v4_eend's exact
     # override set (OA 0.5 + sortformer + relabel B+/global/ecapa2/enhanced/rescue
     # + both loop retries), copied per row, with the diarizer model swapped to the
     # streaming v2.1 checkpoint (NVIDIA Open Model License — the Life-2 commercial
@@ -2167,7 +2167,7 @@ GROUPS: dict[str, list[str]] = {
     # Campaign v4 — EEND (Sortformer) diarizer arm off v3_phraseloop. Needs
     # $SORTFORMER_VENV_PY. Rescore with --anchor v3_phraseloop. Prereg pending.
     "v4": ["v4_eend"],
-    # Campaign v4.1 — Sortformer rehabilitation levers (docs/sweep_plan/V41_PREREG.md).
+    # Campaign v4.1 — Sortformer rehabilitation levers (thesis-log/sweep_plan/V41_PREREG.md).
     # v41_full = the test candidate (L1+L2+L3+L4); v41_merge/v41_hyst/v41_fallback
     # decompose the levers. All off the v4_eend base. Needs $SORTFORMER_VENV_PY;
     # rescore with --anchor v3_phraseloop (report vs v4_eend too).
@@ -2246,7 +2246,7 @@ GROUPS: dict[str, list[str]] = {
     "ladder_v2": ["v41_mf2_sw_glad9", "v41_mf2_sw_swept8", "v41_mf2_sw_floral4", "v41_mf2_e23",
                   "v41_mf2_e31", "v41_mf2_sw_lemon2", "v41_sep_sw_vivid7", "v41_sep_sw_ancient3", "v41_sep128k"],
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms off the v4_eend
-    # base (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
+    # base (thesis-log/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
     # $SORTFORMER_VENV_PY; rescore with --anchor v3_phraseloop (report vs v4_eend).
     "v2p1": ["v2p1_eend", "v2p1_merge", "v2p1_merge_th040"],
 }

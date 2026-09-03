@@ -1,5 +1,13 @@
 # Thesis Experiment Log
 
+> [!IMPORTANT]
+> **Historical working log — frozen.** This is the earliest working log of the
+> campaign; it was last edited on 2026-02-11 and is no longer maintained. It is
+> superseded by [`EXPERIMENT_LOG_monolithic.md`](EXPERIMENT_LOG_monolithic.md)
+> and, for the final account of these results, by chapters 5–6 of the thesis.
+> Links into the `polsess-separation` W&B project are dead (that project was
+> deleted on 2026-02-10); links into `polsess-thesis-experiments` are still live.
+
 ## Overview
 
 **Project**: PolSESS Speech Separation for Polish ASR Preprocessing  
@@ -99,7 +107,7 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 
 #### Stage 1: Wide Search (2K samples)
 
-**Config**: [`sweeps/3-hyperparam-opt/stage1/dprnn.yaml`](sweeps/3-hyperparam-opt/stage1/dprnn.yaml)  
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml`](3-hyperparam-opt/dprnn/stage1/dprnn.yaml)  
 **WandB**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
 
 | Metric | Value |
@@ -123,7 +131,7 @@ A novel multi-stage approach using increasing dataset sizes to efficiently navig
 
 #### Stage 2: Narrowed Search (4K samples)
 
-**Config**: [`sweeps/3-hyperparam-opt/stage2/dprnn.yaml`](sweeps/3-hyperparam-opt/stage2/dprnn.yaml)  
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage2/dprnn.yaml`](3-hyperparam-opt/dprnn/stage2/dprnn.yaml)  
 **WandB**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
 
 | Metric | Value |
@@ -151,7 +159,7 @@ Two parallel sweeps with different early termination strategies to compare trade
 
 ##### Stage 3a: Hyperband (Aggressive)
 
-**Config**: [`sweeps/3-hyperparam-opt/stage3/dprnn.yaml`](sweeps/3-hyperparam-opt/stage3/dprnn.yaml)  
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage3/dprnn.yaml`](3-hyperparam-opt/dprnn/stage3/dprnn.yaml)  
 **WandB**: [hj7sbz6c](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/hj7sbz6c)
 
 | Metric | Value |
@@ -165,7 +173,7 @@ Two parallel sweeps with different early termination strategies to compare trade
 
 ##### Stage 3b: Conservative (Median Stopping)
 
-**Config**: [`sweeps/3-hyperparam-opt/stage3/dprnn_conservative.yaml`](sweeps/3-hyperparam-opt/stage3/dprnn_conservative.yaml)  
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage3/dprnn_conservative.yaml`](3-hyperparam-opt/dprnn/stage3/dprnn_conservative.yaml)  
 **WandB**: [1wtvbmiu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/1wtvbmiu)
 
 | Metric | Value |
@@ -192,7 +200,7 @@ Two parallel sweeps with different early termination strategies to compare trade
 
 ### Stage 3 Analysis & Config Selection
 
-**Analysis Tool**: [`sweeps/3-hyperparam-opt/stage3/analyze_results.py`](sweeps/3-hyperparam-opt/stage3/analyze_results.py)
+**Analysis Tool**: `sweeps/3-hyperparam-opt/dprnn/stage3/analyze_results.py` (script removed)
 
 Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configurations** using:
 1. **Primary metric**: Validation SI-SDR performance
@@ -204,16 +212,16 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 - Euclidean distance to previously selected configs
 - Ensures selected configs explore different hyperparameter regions
 
-**Full results**: [`sweeps/3-hyperparam-opt/stage3/results/`](sweeps/3-hyperparam-opt/stage3/results/)
-- [`top5_configs_for_validation.csv`](sweeps/3-hyperparam-opt/stage3/results/top5_configs_for_validation.csv)
-- [`ANALYSIS_SUMMARY.md`](sweeps/3-hyperparam-opt/stage3/results/ANALYSIS_SUMMARY.md)
-- [`analysis_plots.png`](sweeps/3-hyperparam-opt/stage3/results/analysis_plots.png)
+**Full results**: [`sweeps/3-hyperparam-opt/dprnn/stage3/results/`](3-hyperparam-opt/dprnn/stage3/results/)
+- `top5_configs_for_validation.csv` (file removed)
+- [`ANALYSIS_SUMMARY.md`](3-hyperparam-opt/dprnn/stage3/results/ANALYSIS_SUMMARY.md)
+- [`analysis_plots.png`](3-hyperparam-opt/dprnn/stage3/results/analysis_plots.png)
 
 ---
 
 ### Final Validation (16K samples, 3 seeds)
 
-**Status**: 🔄 IN PROGRESS (Config 1 ✅ COMPLETE)  
+**Status**: ✅ COMPLETE (finished after this log was frozen; the full 5-config × 3-seed table is in [`EXPERIMENT_LOG_monolithic.md`](EXPERIMENT_LOG_monolithic.md))  
 **Purpose**: Robust selection of final hyperparameters with full dataset and multiple seeds
 
 **Setup**:
@@ -221,8 +229,8 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 - Configs: Top 5 from Stage 3 analysis
 - Seeds: 42, 123, 456 (for each config)
 - **Total runs**: 15 (5 configs × 3 seeds)
-- Config files: [`experiments/dprnn/validation_config1.yaml`](experiments/dprnn/validation_config1.yaml) through `validation_config5.yaml`
-- Run script: [`run_validation.sh`](run_validation.sh)
+- Config files: [`experiments/dprnn/3-hyperparamopt-3stage-vals/validation_config1.yaml`](../experiments/dprnn/3-hyperparamopt-3stage-vals/validation_config1.yaml) through `validation_config5.yaml`
+- Run script: [`run_validation.sh`](../experiments/dprnn/3-hyperparamopt-3stage-vals/run_validation.sh)
 
 **Selection Criteria**: Config with **highest mean SI-SDR across 3 seeds**
 
@@ -348,11 +356,11 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 
 | Model | Status | Stage 3 Config | Notes |
 |-------|--------|----------------|-------|
-| **ConvTasNet** | 📋 Ready | [`stage3/convtasnet.yaml`](sweeps/3-hyperparam-opt/stage3/convtasnet.yaml) | Config prepared, not started |
-| **SepFormer** | ⬜ Not Started | - | - |
-| **SPMamba** | ⬜ Not Started | - | Already best performer; optimization optional |
+| **ConvTasNet** | ✅ completed — see thesis | `stage3/convtasnet.yaml` (config removed) | Run later as a 2-stage sweep instead; see [`EXPERIMENT_LOG_monolithic.md`](EXPERIMENT_LOG_monolithic.md) |
+| **SepFormer** | ✅ completed — see thesis | [`3-hyperparam-opt/sepformer/`](3-hyperparam-opt/sepformer/) | Run later as a 2-stage sweep plus a single-stage positional-encoding sweep |
+| **SPMamba** | ✅ completed — see thesis | [`3-hyperparam-opt/spmamba/`](3-hyperparam-opt/spmamba/) | Already best performer; a 2-stage sweep was run anyway |
 
-**Next Steps**: 
+**Next Steps** (recorded 2026-02-11; all of these were subsequently done): 
 - ✅ ~~Complete DPRNN final validation~~ **DONE**
 - Use optimized DPRNN config (fancy-sweep-62) for thesis benchmarks
 - Optionally run Stage 3 for ConvTasNet/SepFormer (if time permits)
@@ -376,10 +384,10 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 
 ### Tools & Scripts Created
 
-1. **Analysis**: [`analyze_results.py`](sweeps/3-hyperparam-opt/stage3/analyze_results.py) - Multi-criteria selection with diversity
-2. **Validation script**: [`run_validation.sh`](run_validation.sh) - Automated 15-run executor
-3. **Quick guide**: [`VALIDATION_GUIDE.md`](VALIDATION_GUIDE.md) - Usage documentation
-4. **CLI enhancement**: Added `--seed` argument to [`config.py`](config.py) for easy seed override
+1. **Analysis**: `analyze_results.py` (script removed) - Multi-criteria selection with diversity
+2. **Validation script**: [`run_validation.sh`](../experiments/dprnn/3-hyperparamopt-3stage-vals/run_validation.sh) - Automated 15-run executor
+3. **Quick guide**: `VALIDATION_GUIDE.md` (guide removed) - Usage documentation
+4. **CLI enhancement**: Added `--seed` argument to [`config.py`](../config.py) for easy seed override
 
 ---
 
@@ -417,5 +425,5 @@ Combined 109 finished runs from both Stage 3 sweeps and selected **top 5 configu
 | 2026-01-XX | ✅ Completed Stage 2, started Stage 3 |
 | 2026-02-01 | ✅ Completed Stage 3 (hyperband + conservative) |
 | 2026-02-01 | ✅ Analyzed results, selected top 5 configs |
-| 2026-02-01 | 🔄 Started final validation (15 runs) |
+| 2026-02-01 | ✅ Started final validation (15 runs) — completed after this log was frozen |
 

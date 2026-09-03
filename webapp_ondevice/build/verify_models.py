@@ -16,7 +16,8 @@ Three checks, all CPU-only:
 Usage:
     CUDA_VISIBLE_DEVICES="" venv/bin/python webapp_ondevice/build/verify_models.py
     ... --compare-dir <dir>   # also diff against a reference export (e.g. the
-                              # B9 spike scratch dir) — expects corr == 1.0
+                              # 2026-08-05 export experiment's scratch dir) —
+                              # expects corr == 1.0
 """
 from __future__ import annotations
 
@@ -35,8 +36,8 @@ from export_separators import CHUNK, SEPARATORS  # noqa: E402  (sibling module)
 
 APP_DIR = PROJECT_ROOT / "webapp_ondevice"
 MODELS_DIR = APP_DIR / "site" / "models"
-POLSESS_TEST_MIX = Path("/home/user/datasets/PolSESS_C_final_128_v2/test/mix")
-# file names of the spike's equivalents, for --compare-dir
+POLSESS_TEST_MIX = Path.home() / "datasets/PolSESS_C_final_128_v2/test/mix"
+# file names used by the 2026-08-05 export experiment, for --compare-dir
 SPIKE_EQUIVALENT = {
     "mf2_128k_int8.onnx": "mf2_int8_mm_pw.onnx",
     "sepformer_128k_int8.onnx": "sepformer128k_int8_matmul.onnx",

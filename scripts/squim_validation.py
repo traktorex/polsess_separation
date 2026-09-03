@@ -86,7 +86,10 @@ LADDER = [
     ("convtasnet_base", "checkpoints/convtasnet/SB/run_2026-03-24_15-04-31/convtasnet_SB_best.pt"),
     ("dprnn_base", "checkpoints/dprnn/SB/run_2026-03-24_15-15-52/dprnn_SB_best.pt"),
     ("spmamba_64k", "checkpoints/spmamba/SB/64k_baseline_87lepmzg/spmamba_SB_best.pt"),
-    ("sepformer_16k", "checkpoints/sepformer/SB/16k_baseline_posenc-avgvaltest/sepformer_SB_best.pt"),
+    # Directory renamed 2026-07-30 (checkpoint-zoo disambiguation); the B7 run of
+    # 2026-07-18 recorded it under its pre-rename name. Same run: its config.yaml
+    # carries wandb_run_name: 16k_baseline_posenc-avgvaltest.
+    ("sepformer_16k", "checkpoints/sepformer/SB/16k_baseline_posenc-avgvaltest_DEVRUN_tms4000/sepformer_SB_best.pt"),
     ("sepformer_128k", "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"),
     ("mossformer2_e46", "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt"),
     ("anchor_ref20", None),

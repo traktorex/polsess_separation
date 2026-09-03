@@ -34,7 +34,7 @@ model:
     eps: 1.0e-5
 
 training:
-  # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
+  # ---- Paper recipe (verbatim from 6-final-training/128k_full_final.yaml / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
   weight_decay: 4.885301855720965e-06  

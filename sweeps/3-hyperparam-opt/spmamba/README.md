@@ -9,8 +9,8 @@
 
 ## Stage 1: Wide Search (2K samples)
 
-**Config**: `experiments/spmamba/spmamba_2000.yaml`
-**Sweep**: `stage1_2k.yaml`
+**Config**: `experiments/spmamba/3-hyperparamopt/spmamba_2000.yaml`
+**Sweep**: `stage1.yaml`
 
 ### Search Ranges
 
@@ -25,7 +25,7 @@
 ### To Run Stage 1
 
 ```bash
-wandb sweep sweeps/spmamba-2stage/stage1_2k.yaml
+wandb sweep sweeps/3-hyperparam-opt/spmamba/stage1.yaml
 wandb agent <sweep_id>
 ```
 
@@ -33,27 +33,22 @@ wandb agent <sweep_id>
 
 ## Stage 2: Refined Search (8K samples)
 
-**Config**: `experiments/spmamba/spmamba_8000.yaml`
-**Sweep**: `stage2_8k.yaml`
+**Config**: `experiments/spmamba/3-hyperparamopt/spmamba_8000.yaml`
+**Sweep**: `stage2.yaml`
 
-⚠️ **IMPORTANT**: Update `stage2_8k.yaml` ranges after analyzing Stage 1 results!
-
-### After Stage 1, analyze and update:
-
-1. Check best LR values → narrow range
-2. Check weight_decay → likely very low (1e-6 to ~5e-5)
-3. Check grad_clip_norm → may narrow significantly
-4. Check lr_factor → likely higher values (0.6+) work better
+The Stage 2 ranges in `stage2.yaml` were narrowed from the Stage 1 results; the
+annotated parameter block in that file records which Stage 1 runs each bound came
+from. Narrowing covered LR, weight decay, grad clip and LR factor.
 
 ---
 
 ## Validation (16K samples, 3 seeds)
 
-After Stage 2:
-1. Select top 3-5 configs
-2. Create validation config files (similar to DPRNN approach)
-3. Run with seeds 42, 123, 456
-4. Report mean ± std SI-SDR
+The top Stage 2 configs were re-run on 16K samples with multiple seeds. The
+validation configs are in
+[`experiments/spmamba/3-hyperparamopt-stage2-vals/`](../../../experiments/spmamba/3-hyperparamopt-stage2-vals/);
+the resulting numbers are in [`EXPERIMENT_LOG_monolithic.md`](../../EXPERIMENT_LOG_monolithic.md)
+and in the thesis.
 
 ---
 

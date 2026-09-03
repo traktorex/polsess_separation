@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from asr_pipeline.stages.enhancement import _ClearVoiceBackend, _CLEARVOICE_BACKENDS
 
 
-GOTOWY = Path("/home/user/datasets/clarin_gotowy/gotowy")
+GOTOWY = Path.home() / "datasets/clarin_gotowy/gotowy"
 DEBLEED = GOTOWY / "debleed"
 OUT = GOTOWY / "debleed_enhanced"
 MODEL_KEY = "mossformer_gan_se_16k"

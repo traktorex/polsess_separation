@@ -39,19 +39,20 @@ CUDA_VISIBLE_DEVICES="" venv/bin/python webapp_ondevice/build/verify_models.py
 Contract: `mixture` float32 `[1, 32000]` → `separated` float32 `[1, 2, 32000]`,
 4 s @ 8 kHz, opset 17, **static shapes**. Recipes, the reason MossFormer2 needs
 a hand-tuned INT8 recipe, and the `QuantType.QInt8` trap are documented in the
-export script's docstring; the measurements behind them are the B9 spike report.
+export script's docstring; the measurements behind them are the ones recorded in
+this file.
 
 Verified 2026-08-05 (`verify_models.py` ALL CHECKS PASSED): MF2 e46 MatMul-only
 reproduces its eager checkpoint at corr 0.9995 / 30.28 dB worst-case; SepFormer
 at 0.99983 / 34.68 dB.
 
-### Checkpoint choice — RESOLVED 2026-08-05 (orchestrator): ship e46
+### Checkpoint choice — decision 2026-08-05: ship e46
 
 The demo ships **e46** — the exact checkpoint the ASR pipeline deploys
 (`asr_pipeline/config.py:353-355` and both shipped configs), which is what "the
 deployed separator" means everywhere else in the thesis (epoch 45, `val_sisdr`
-17.044 vs e23's 16.366). The B9 spike measured e23; re-running its parity
-harness on e46 exposed a real recipe interaction:
+17.044 vs e23's 16.366). The first export pass measured e23; re-running the same
+parity harness on e46 exposed a real recipe interaction:
 
 | candidate | recipe | MB | self-fidelity (corr / SI-SDR vs eager) |
 |---|---|---:|---|
@@ -63,7 +64,7 @@ The "safe" recipe that was transparent on e23 degrades on e46 (23 more epochs �
 sharper activations, consistent with MF2's known fp16 fragility). MatMul-only
 restores transparent fidelity at +12 MB — an acceptable one-time download for
 the quality-default model; SepFormer INT8 (30.22 MB) remains the light/fast
-option. The historical e23 "safe" evidence lives in the B9 spike report.
+option. The e23 "safe" row above is the historical evidence for that recipe.
 
 ## 2. pyannote-segmentation-3.0 ONNX (downloaded)
 
@@ -94,7 +95,7 @@ Measured here (`reference/osd_reference.py`): fp16 vs fp32 per-frame argmax
 agreement **99.93 – 100 %**, routed-region IoU 0.967 – 1.000, max |logit| delta
 0.53. The plan's "ship fp16, not int8" call holds.
 
-### ⚠ Landmine: ORT's default optimization level segfaults on this file
+### Warning: ORT's default optimization level segfaults on this file
 
 `onnxruntime.InferenceSession(fp16_path)` — i.e. the **default**
 `ORT_ENABLE_ALL` — **segfaults the process** at session creation on ORT 1.23.2
@@ -146,19 +147,20 @@ Notes for the app:
 * **GitHub Pages cannot serve COOP/COEP**, so `SharedArrayBuffer` is
   unavailable and multi-threading will not work there: pin
   `ort.env.wasm.numThreads = 1` (or feature-detect `crossOriginIsolated`). The
-  B9 spike's 4-thread RTFs (MF2 2.28, SepFormer 0.17) are therefore an
-  *optimistic* bound for the deployed page.
+  4-thread RTFs measured in the 2026-08-05 export experiment (MF2 2.28,
+  SepFormer 0.17) are therefore an *optimistic* bound for the deployed page.
 * Point the runtime at the vendored binary:
   `ort.env.wasm.wasmPaths = new URL('./vendor/ort/', document.baseURI).href`.
 * **WebGPU is deliberately not vendored.** It needs
   `ort.webgpu.bundle.min.mjs` + `ort-wasm-simd-threaded.jsep.wasm` (+24 MB of
-  deploy), and the B9 spike flags MossFormer2's 133 `Einsum` + 24
-  `InstanceNormalization` nodes as thin/partial on the JSEP backend. If someone
+  deploy), and the 2026-08-05 export experiment flagged MossFormer2's 133
+  `Einsum` + 24 `InstanceNormalization` nodes as thin/partial on the JSEP backend. If someone
   wants to try it for SepFormer (a Gemm/Softmax/LayerNorm graph, far more
   WebGPU-friendly), the two files are one `tar x` away from the same tarball.
 * **Do not ship a pre-optimized MossFormer2 `.onnx`**: ORT's own offline
   optimization materializes the rotary sin/cos tables and grows the fp32 file
-  104 → 152 MB (spike §6.4). Runtime folding at session init is fine and cheap.
+  104 → 152 MB (measured 2026-08-05). Runtime folding at session init is fine and
+  cheap.
 
 ## 4. What is deliberately absent
 

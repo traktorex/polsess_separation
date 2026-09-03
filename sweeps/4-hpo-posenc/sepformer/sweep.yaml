@@ -1,6 +1,6 @@
 # SepFormer HPO v2 — Positional Encoding, Full 16K Dataset
 # Single-stage Bayesian sweep, 60 epochs, no curriculum learning.
-# Ranges narrowed from previous Stage 2 results (see EXPERIMENT_LOG.md).
+# Ranges narrowed from previous Stage 2 results (see sweeps/EXPERIMENT_LOG_monolithic.md).
 # Target: ~20-25 runs, then validate top 1-2 for 200 epochs × 3 seeds.
 
 program: train_sweep.py

@@ -109,7 +109,7 @@ def compute_layer3(
 
     Returns None when the GT transcripts are missing — without them L3 is
     meaningless. Requires reference tiers labelled exactly ``A`` and ``B``
-    (enforced corpus-wide by ``scripts/check_gt_eaf.py``); any other label set
+    (enforced when the GT set was frozen); any other label set
     returns None. With at least one pipeline mode populated, returns::
 
         {

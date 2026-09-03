@@ -9,11 +9,12 @@ What lives here:
 
 - `default.yaml` — POC-equivalent values; loaded by default.
 - `english.yaml` — English preset (per-language WhisperX alignment).
-- `frcrn_vadstrict.yaml` — knob variant: FRCRN enhancement + strict VAD.
 - `p4_fixed_pad.yaml` — knob-smoke variant: `context_window_mode: fixed_pad`.
 - `p5_full_length.yaml` — knob-smoke variant: `output_mode: full_length`.
 - `sweep_best_e31.yaml`, `sweep_best_e31_refineplus.yaml` — dev-era finalist
   snapshots (see "Which 'best' is authoritative?" below).
+- `v41_mf2full.yaml` — the shipped-best "v41_merge" recipe as a standalone YAML.
+- `b1_*.yaml` — external-separator arms (see the provenance note below).
 
 ## Which "best" is authoritative? (read before trusting any `sweep_best_*`)
 
@@ -21,9 +22,9 @@ The held-out **TEST finalist is the sweep arm `dr_oa050`** — the `dr_refineplu
 recipe (e31 Observation-Adding + ECAPA2 diarization + 2nd-pass B+ relabel) with
 `enhancement.observation_mix_ratio` raised **0.3 → 0.5**. It exists only as an arm
 in `scripts/sweep_pipeline.py`, **not** as a standalone YAML here. The authoritative
-analysis is `docs/sweep_plan/TEST_ANALYSIS.md`: on the test set only the **separator**
-(pipeline vs `nosep`) clears multiple-comparison correction, so `dr_oa050` is kept as
-a *justified default*, not a proven-optimal knob setting.
+analysis is the thesis (chapter 6) and the author's campaign notes: on the test set
+only the **separator** (pipeline vs `nosep`) clears multiple-comparison correction,
+so `dr_oa050` is kept as a *justified default*, not a proven-optimal knob setting.
 
 The `sweep_best_e31*.yaml` files are **dev-selected snapshots**, kept for provenance:
 
@@ -31,9 +32,18 @@ The `sweep_best_e31*.yaml` files are **dev-selected snapshots**, kept for proven
 - `sweep_best_e31_refineplus.yaml` — the above + 2nd-pass B+ relabel ("dr_refineplus",
   2026-06-19); `dr_oa050` is this recipe with OA 0.3 → 0.5.
 
+The `b1_*.yaml` external-separator configs follow the same pattern: each is the
+standalone form of a B1 arm that `scripts/sweep_pipeline.py` normally runs as
+inline `--set` overrides on the shipped-best base. Six of them
+(`b1_cv_mossformer2_ss16k`, `b1_mossformer2_whamr`, `b1_sb_libri2mix`,
+`b1_sb_wham`, `b1_sb_wsj02mix`, `b1_sr_corrnet_wsj_l`) have no sweep arm at all
+and are kept purely as provenance for candidates that were prepared but not run
+in the campaign.
+
 (The older pre-e31 `sweep_best.yaml` and `sweep_best_excl_db15fc57.yaml` snapshots,
 and the dev-era `asr_pipeline/SWEEP_FINAL.md` / `SWEEP_RUNLOG.md` writeups, were
-removed 2026-07-01 as superseded by `docs/sweep_plan/`.)
+removed 2026-07-01 as superseded by the campaign write-ups in the author's
+thesis notes.)
 
 What lives below (notes that don't fit in a YAML comment):
 
@@ -53,6 +63,5 @@ content drops, subtitle hallucinations, mega-segments).
 | `whisper`  | `large-v2`                                  | **Rejected** — L channel fine but R hallucinates in long silences: invented opener, `"Nie ma"` ×6 loop (zero in GT), 40 zero-duration empty segments. |
 | `whisper`  | `large-v3`                                  | **Rejected** — catastrophic truncation on long audio: stops transcribing after ~11:25 on L and ~12:24 on R, losing entire final third of the recording. Plus `kukiełki` ×4 loop on L and `"..."` ×14 loop on R. |
 
-Full 5-variant transcripts at `~/datasets/clarin_gotowy/gotowy/whisper_test_debleed/`.
-
-Full thesis writeup: `thesis/`.
+The full 5-variant transcripts live outside the repository, beside the CLARIN
+eval data; the write-up is in the thesis, chapter 6.

@@ -1,7 +1,8 @@
 """SPMamba model - Speech Processing Mamba for speech separation.
 
 Based on: "SPMamba: State-space model is all you need in speech separation"
-GitHub: https://github.com/JusperLee/SPMamba
+GitHub: https://github.com/JusperLee/SPMamba (Apache-2.0). The GridNet block and
+4-D layer norm follow TF-GridNet (Wang et al. 2023) as implemented in SPMamba.
 
 Key architecture features:
 - STFT-based encoding/decoding (frequency-domain processing)

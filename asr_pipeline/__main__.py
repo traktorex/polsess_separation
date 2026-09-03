@@ -260,9 +260,9 @@ def _batch_command(args) -> int:
 
 
 def _score_command(args) -> int:
-    # Import-only consumption of the eval public API (a parallel agent owns the
-    # eval package internals; these interfaces stay byte-compatible). Lazy so a
-    # `run`/`batch` invocation never imports the eval package.
+    # Import-only consumption of the eval package's public API — this command
+    # never reaches into `asr_pipeline.eval` internals. Lazy so a `run`/`batch`
+    # invocation never imports the eval package.
     from asr_pipeline.eval import (
         evaluate_many,
         summarize_layer2_intrusive,
@@ -283,8 +283,9 @@ def _score_command(args) -> int:
 
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Do NOT hardcode a column list — write whatever each summarizer returns (a
-    # parallel agent is adding cpCER columns to summarize_layer3).
+    # Do NOT hardcode a column list — write whatever each summarizer returns, so
+    # added columns (e.g. `summarize_layer3`'s per-mode cpCER) appear on their
+    # own.
     tables = {
         "layer2_intrusive": summarize_layer2_intrusive(cards),
         "layer2_squim": summarize_layer2_squim(cards),

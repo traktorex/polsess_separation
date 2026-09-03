@@ -1,6 +1,6 @@
 /* ===========================================================================
    Road 2 — demonstrator OSD-gated.
-   Przeniesione 1:1 z zaakceptowanej makiety (design/road2_mockup.html), która
+   Przeniesione 1:1 z zaakceptowanej makiety, która
    sama wzięła tokeny i komponenty z webapp/static/app.css (Road 1).
    Jasny/ciemny: prefers-color-scheme domyślnie, [data-theme] wygrywa.
    Sekcja „dodatki aplikacji” na końcu pliku = to, czego makieta nie miała
