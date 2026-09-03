@@ -14,6 +14,5 @@ Modules:
 - `examples_build`  offline CLI that builds `examples_manifest.json` from the
                     frozen v41_merge eval tree.
 
-The binding request/response contract is `webapp/API.md`; the accepted design is
-`docs/fable_plans/frontends_road1_webapp.md`.
+The binding request/response contract is `webapp/API.md`.
 """

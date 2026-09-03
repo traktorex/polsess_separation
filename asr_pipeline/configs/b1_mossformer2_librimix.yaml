@@ -8,7 +8,6 @@
 # NB dual-path chunked variant — different trunk from the repo's own
 # models/mossformer2. DISCIPLINE (author 2026-08-26): smoke with NOISY input
 # first, then dev; CLARIN test only by explicit author decision afterwards.
-# Integration + verification log: docs/fable_plans/b1_external_separator_swap.md
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
 # verbatim — the per-knob rationale comments live there.

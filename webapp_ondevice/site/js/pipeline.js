@@ -317,7 +317,7 @@ async function separateRegions(active) {
 }
 
 /**
- * The honest special case (design_spec §2.7): with exactly ONE overlap region
+ * The honest special case: with exactly ONE overlap region
  * there is no cross-region permutation to solve, so both speakers can be
  * offered as full-length streams — the clip at 8 kHz with the region's samples
  * replaced by that speaker's separated audio. Everything outside the region is

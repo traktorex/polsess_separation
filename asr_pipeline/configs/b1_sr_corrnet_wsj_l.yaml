@@ -5,7 +5,6 @@
 # conversational audio; that contrast is the point of this arm.
 # DISCIPLINE: dev-first (23 frags); any CLARIN test exposure needs a fresh
 # prereg — the test budget is spent (2026-07-04).
-# Integration + verification log: docs/fable_plans/b1_external_separator_swap.md
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
 # verbatim — the per-knob rationale comments live there.

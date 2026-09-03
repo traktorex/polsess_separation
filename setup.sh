@@ -212,7 +212,7 @@ echo "  wandb login                     # if the verification above warned about
 echo ""
 echo "Quick start:"
 echo "  cd $PROJECT_DIR"
-echo "  python train.py --config experiments/spmamba/spmamba_baseline.yaml"
+echo "  python train.py --config experiments/spmamba/spmamba_sb_reduced.yaml"
 echo ""
 echo "Run tests:"
 echo "  pytest"

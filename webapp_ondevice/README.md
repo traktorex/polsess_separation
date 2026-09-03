@@ -23,8 +23,7 @@ webapp_ondevice/
     vendor/ort/      GITIGNORED, must ship: onnxruntime-web 1.23.2 (12 MB)
   build/           how models/ and vendor/ were produced — NOTES.md is the provenance record
   reference/       osd_reference.py (Python spec of OSD+routing) + parity vectors
-  devcheck/        headless-Chromium harness: serve.py + check_page.py (HARNESS.md)
-  design/          accepted design spec + mockup the app is screenshot-compared against
+  devcheck/        headless-Chromium harness: serve.py + check_page.py
   test.html/.js    engine parity proof page (dev-only, deliberately outside site/)
 ```
 
@@ -57,8 +56,7 @@ python3 webapp_ondevice/devcheck/serve.py webapp_ondevice --port 8123
 #   parity page  http://127.0.0.1:8123/test.html
 ```
 
-Screenshot and probe with the harness (`devcheck/HARNESS.md` is the full
-reference; exit 0 = no console errors, no page errors, no failed requests):
+Screenshot and probe with the harness (exit 0 = no console errors, no page errors, no failed requests):
 
 ```bash
 ~/playwright_venv/bin/python webapp_ondevice/devcheck/check_page.py \

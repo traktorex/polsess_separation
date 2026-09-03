@@ -1,8 +1,7 @@
 /**
  * Rendering. One `render()` paints the whole page from `state.js`; nothing
  * here reads audio buffers and nothing here decides anything — the pipeline
- * writes state, this reflects it. Structure and copy are the accepted mockup's
- * (`design/road2_mockup.html`), so the two can be screenshot-compared.
+ * writes state, this reflects it. Structure and copy are the accepted mockup's.
  *
  * Events are NOT bound here: `app.js` owns behaviour and uses delegation, which
  * is why regions and download links carry `data-*` instead of listeners.

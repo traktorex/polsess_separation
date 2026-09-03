@@ -6,7 +6,7 @@
  *
  * 1. **Every state without a model.** It fills `state.js` with synthetic data
  *    in exactly the shape the real pipeline produces and re-renders, so all ten
- *    states of `design/design_spec.md` §3 can be screenshotted in a second
+ *    states listed in `state.js` can be screenshotted in a second
  *    instead of in minutes. The fake clips are the accepted mockup's, which is
  *    what makes the screenshot comparison against the mockup meaningful. This
  *    data exists nowhere else in the app.

@@ -129,9 +129,9 @@ Order of operations, exactly as in `asr_pipeline/stages/routing.py`:
 Filter before merge — the server's order. Reversing it would resurrect
 sub-threshold overlaps by gluing them to a neighbour.
 
-### The `context_pad = 1.0 s` in the plan doc is the wrong knob
+### `context_pad = 1.0 s` is the wrong knob
 
-`docs/fable_plans/frontends_road2_ondevice.md` §2 says "`context_pad = 1.0 s`".
+The original Road-2 plan said "`context_pad = 1.0 s`".
 That constant exists, but it belongs to `context_window_mode: fixed_pad`, which
 neither shipped config selects. Both `asr_pipeline/configs/default.yaml:43-45`
 and `sweep_best_e31_refineplus.yaml:80-82` use **`expand_to_chunk`**: every

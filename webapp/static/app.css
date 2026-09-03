@@ -1,7 +1,6 @@
 /* ===========================================================================
    Separacja mowy · PolSESS — showcase webapp
-   Design tokens and components lifted from the accepted mockup
-   (docs/fable_plans/frontends_road1_webapp.md §5 + road1_ui_mockup.html).
+   Design tokens and components lifted from the accepted UI mockup (2026-07-28).
    Light and dark: prefers-color-scheme by default, [data-theme] wins.
    =========================================================================== */
 

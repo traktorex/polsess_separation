@@ -1,8 +1,8 @@
 """Rysunek 2.4 (ch2 §2.1.2) — trzy reprezentacje sygnału mowy.
 
 Przebieg czasowy, spektrogram STFT i wyjście uczonego enkodera (SepFormer,
-Conv1d PRZED ReLU — wartości ze znakiem, mapa rozbieżna). Port komórki 6
-notatnika `plot_notebook.ipynb`, z której rysunek pierwotnie pochodził jako
+Conv1d PRZED ReLU — wartości ze znakiem, mapa rozbieżna). Port komórki dawnego notatnika roboczego
+(`plot_notebook.ipynb`, usunięty z repozytorium), z której rysunek pierwotnie pochodził jako
 zrzut; dochodzi wybór koloru zera na mapie wyjścia enkodera:
 
   --zero black   niebieski → czarny → czerwony (jak w notatniku; cisza = czarna

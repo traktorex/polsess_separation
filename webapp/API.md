@@ -1,7 +1,7 @@
 # webapp API contract (v1)
 
 Binding contract between `webapp/` backend and frontend. Both are implemented against THIS file;
-change it only via the orchestrator. Design authority: `docs/fable_plans/frontends_road1_webapp.md` (accepted 2026-07-28).
+change it deliberately and update both sides together (design accepted 2026-07-28).
 
 ## HTML routes
 

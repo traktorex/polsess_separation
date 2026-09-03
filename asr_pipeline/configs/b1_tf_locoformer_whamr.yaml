@@ -11,7 +11,6 @@
 # licence the whole separator quality ladder has run under since 08-20; dev and
 # test were both approved. Scored as its own contrast family so the frozen 19/22-arm
 # ladder tables are untouched. Run as sweep arm `v41_b1_tflocoformer` (queue 10).
-# Integration + verification log: docs/fable_plans/b1_external_separator_swap.md
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
 # verbatim — the per-knob rationale comments live there.

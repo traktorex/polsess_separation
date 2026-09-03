@@ -42,7 +42,7 @@ After any substantial change — new top-level script or subsystem, new env var,
 **Training:**
 ```bash
 python train.py --config experiments/dprnn/dprnn_baseline.yaml
-python train.py --config experiments/spmamba/spmamba_baseline.yaml --no-wandb --seed 123
+python train.py --config experiments/spmamba/spmamba_sb_reduced.yaml --no-wandb --seed 123
 python train.py --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 ```
 

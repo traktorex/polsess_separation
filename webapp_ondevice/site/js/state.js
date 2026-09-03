@@ -5,7 +5,7 @@
  * a scalar or a pre-computed peak array, so the debug state-switcher can fill
  * the same fields with synthetic data and get a pixel-identical page).
  *
- * States (design_spec §3): S0 idle · S1 models · S2 decode · S3 OSD ·
+ * States: S0 idle · S1 models · S2 decode · S3 OSD ·
  * S4 routed · S5 separating · S6 done · S6b done-no-overlap · S7 override ·
  * E1 error.
  */

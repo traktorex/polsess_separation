@@ -113,7 +113,7 @@ Stage 3b context padding — NOT in RoutingConfig; it lives in
     min_fragment_length_s   = 4.0              asr_pipeline/config.py:382
     context_pad_seconds     = 1.0              asr_pipeline/config.py:373
 
-NB the plan doc (`docs/fable_plans/frontends_road2_ondevice.md` §2) says
+NB the original Road-2 plan said
 "context_pad = 1.0 s". That number is real but it is the `fixed_pad` knob,
 which the shipped config does not use: `sweep_best_e31_refineplus.yaml:80-82`
 and `default.yaml:43-45` both select `expand_to_chunk`, i.e. every overlap

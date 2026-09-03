@@ -7,8 +7,7 @@
 # target domain, or does the pipeline architecture carry the effect?
 # DISCIPLINE: dev-first (23 frags); any CLARIN test exposure needs a fresh
 # prereg — the test budget is spent (2026-07-04).
-# Adapter PoC + stage-path sanity: 2026-07-18 (docs/fable_plans/
-# b1_external_separator_swap.md).
+# Adapter PoC + stage-path sanity: 2026-07-18.
 
 # Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
 # verbatim — the per-knob rationale comments live there.
