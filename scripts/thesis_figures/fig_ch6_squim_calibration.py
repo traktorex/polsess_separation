@@ -60,9 +60,9 @@ INK, INK2, GRID, AXIS, MUTED = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7", "#898
 # paleta rodzinami, zgodna z ch5 (SepFormer pomarańczowy, SPMamba niebieski,
 # MossFormer2 fioletowy) — dwa szczeble SepFormera rozróżnione jasnością
 ANCHORS = [
-    ("anchor_noise", "kotwica: szum", "#d8d7ce"),
-    ("anchor_mix",   "kotwica: mieszanina", "#bdbcb1"),
-    ("anchor_ref20", "kotwica: sygnał wzorcowy +20 dB", "#9b9a93"),
+    ("anchor_noise", "szum", "#d8d7ce"),
+    ("anchor_mix",   "miks", "#bdbcb1"),
+    ("anchor_ref20", "sygnał wzorcowy +20 dB", "#9b9a93"),
 ]
 REAL = [
     ("convtasnet_base", "ConvTasNet",       "#1baf7a", 12, 0.9),
@@ -211,7 +211,7 @@ def main() -> None:
 
     # --- wersja podstawowa: A + B ----------------------------------------
     fig, (axA, axB) = plt.subplots(
-        1, 2, figsize=(9.0, 4.3), gridspec_kw={"width_ratios": [2.25, 1.0], "wspace": 0.28})
+        1, 2, figsize=(9.0, 4.3), gridspec_kw={"width_ratios": [2.25, 1.0], "wspace": 0.45})
     panel_scatter(axA, df)
     panel_bars(axB, per)
     for ext in ("png", "pdf"):

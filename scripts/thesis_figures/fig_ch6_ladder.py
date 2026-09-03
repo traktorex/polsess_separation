@@ -1,5 +1,10 @@
 """Rysunek (ch6 §6.6.2) — dawka–odpowiedź: jakość separatora a wynik ASR potoku.
 
+ZASTĄPIONY (decyzja autora 2026-08-28): rozdział używa teraz trójki rysunków
+per-źródło (`fig_ch6_{oracle,squim,indomain}_pesq_stoi.py` — każdy z panelami
+SI-SDR(i) | PESQ | STOI jednego źródła). Skrypt zostaje jako zapis układu
+3×SI-SDR; nie regenerować do rozdziału bez ponownej decyzji.
+
 Druga „money figure" rozdziału: 23–25 separatorów o różnej jakości wstawionych
 do tego samego, zamrożonego potoku (`v41_merge`, pojedyncze dekodowanie). Oś Y:
 cpWER (lub cpCER, `--metric`) potoku; oś X: jakość separatora mierzona na TRZECH
@@ -65,7 +70,7 @@ GROUP_OF_ARM = {"v41_mf2full": "in128"}        # MF2-full to pojemność, nie di
 FAMILIES = [
     ("in128",  "trenowane na PolSESS_128k",                             SPK_A, "o"),
     ("diet",   "ablacje różnorodności MM-IPC (bez E / tylko C)",      OVERLAP, "o"),
-    ("cnew64", "trenowane na korpusie C_new_64",                        RED,   "^"),
+    ("cnew64", "trenowane na korpusie PolSESS_64k",                     RED,   "^"),
     ("ext",    "gotowe separatory zewnętrzne (B1)",                     SPK_B, "s"),
 ]
 COLOR = {k: c for k, _l, c, _m in FAMILIES}
@@ -99,10 +104,10 @@ def main():
     ap.add_argument("--csv", type=Path, default=None)
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
     args = ap.parse_args()
-    # _ext = rozszerzone tabele (2026-08-26): + 5 separatorów zewnętrznych (B1, oba splity)
-    # + rodzina C_new_64 z r2 (tylko DEV — ta rodzina nie ma dekodowań testowych).
-    # Zamrożone `ladder_table_{split}.csv` pozostają nietknięte.
-    df = pd.read_csv(args.csv or SWAP / f"ladder_table_{args.split}_ext.csv")
+    # _r3 = pełne tabele (2026-08-27): + separatory zewnętrzne rundy 3 B1 oraz
+    # dekodowania testowe rodziny C_new_64. Wcześniejsze `_ext` (28 ramion,
+    # bez testowych C_new_64) i zamrożone `ladder_table_{split}.csv` — nietknięte.
+    df = pd.read_csv(args.csv or SWAP / f"ladder_table_{args.split}_r3.csv")
     seps = df[df["family"] != "nosep"].copy()
     seps["grp"] = [GROUP_OF_ARM.get(a, GROUP[f]) for a, f in zip(seps["arm"], seps["family"])]
     y = args.metric

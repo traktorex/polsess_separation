@@ -1762,6 +1762,32 @@ CONFIGS: dict[str, dict] = {
                      "separation.checkpoint_path": "JusperLee/TIGER-speech",
                      "separation.separator_sample_rate": 16000,
                      "post_separation_processing.backend": "naive"},  # TIGER (Xu et al., ICLR 2025), 822K params, Apache-2.0, EchoSet (Matterport3D RIRs — reverberant + noisy). NB EchoSet targets are REVERBERANT: TIGER separates without dereverberating, PolSESS SB targets are dry. HF snapshot already cached locally, so HF_HUB_OFFLINE=1 works.
+    # THE DELIVERED-BAND PROBE (author's design, 2026-08-27). Identical to
+    # v41_b1_tiger in every knob EXCEPT the one line it drops: no
+    # `post_separation_processing.backend: naive`, so the base's `ap_bwe` applies.
+    # That is the whole experiment, and it needs NO code — _APBWEBackend.extend
+    # (stages/post_separation_processing.py:214-215) unconditionally resamples
+    # 16k -> 8k -> 16k before the generator runs, so routing TIGER's genuinely
+    # wideband output through it band-limits that output to 8 kHz and then
+    # re-synthesises the octave, exactly as the deployed 8 kHz chain does to e46.
+    # TIGER still SEPARATES at 16 kHz; only what it DELIVERS downstream changes.
+    # This is the single-variable band manipulation the family was missing: same
+    # weights, same separated waveforms, only the post-processing flips.
+    # NB this arm was written on 2026-08-26 as `v41_b1_tiger_bwe`, a band-matched
+    # FAIRNESS control, and dropped by the author ("BWE is not needed for a
+    # 16 kHz model"). It returns under a different question — decomposition, not
+    # fairness — and that ruling is untouched: the shipped 16 kHz arms keep `naive`.
+    "v41_b1_tiger_bwe": {"enhancement.observation_mix_ratio": 0.50,
+                         "diarization.backend": "sortformer",
+                         "diarization.sortformer_head_policy": "merge",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "relabel.solo_clustering_init": "rescue",
+                         "transcription.loop_retry": True,
+                         "transcription.loop_retry_phrase": True,
+                         "separation.separator_backend": "tiger",
+                         "separation.checkpoint_path": "JusperLee/TIGER-speech",
+                         "separation.separator_sample_rate": 16000},
     "v41_b1_spmamba_echo2mix": {"enhancement.observation_mix_ratio": 0.50,
                            "diarization.backend": "sortformer",
                            "diarization.sortformer_head_policy": "merge",
@@ -2207,6 +2233,13 @@ GROUPS: dict[str, list[str]] = {
     # queue 17's band re-decode from the opposite direction: q17 removes the band
     # from a good model, this adds the band to a weak one.
     "b1band": ["v41_b1_sb_whamr"],
+    # The DELIVERED-band probe: TIGER's own output band-limited to 8 kHz and
+    # re-synthesised by AP-BWE, i.e. TIGER separating at 16 kHz but delivering
+    # the same narrowband-then-BWE chain e46 delivers. Scored as a 2-contrast
+    # family: vs v41_b1_tiger (primary — isolates the delivered band, same
+    # weights and same separated waveforms) and vs v41_merge (secondary —
+    # chain-matched, so what remains is operating band + model + corpus).
+    "b1deliv": ["v41_b1_tiger_bwe"],
     "ladder16k": ["v41_lad16k_e01", "v41_lad16k_e02", "v41_lad16k_e03",
                  "v41_lad16k_e05", "v41_lad16k_e09", "v41_lad16k_e14",
                  "v41_lad16k_e21", "v41_lad16k_e30"],

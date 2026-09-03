@@ -187,9 +187,9 @@ def main() -> None:
 
     handles = [Line2D([], [], lw=0, marker="D", markersize=6.2,
                       markerfacecolor="white", markeredgecolor=MUTED,
-                      markeredgewidth=1.3, label="zbiór strojeniowy (23)")]
+                      markeredgewidth=1.3, label="zbiór DEV (23)")]
     handles += [Line2D([], [], lw=0, marker="o", markersize=6.2, color=c,
-                       label=f"zbiór testowy, warstwa {n}"
+                       label=f"zbiór TEST, warstwa {n}"
                              f" ({int((test.stratum == n).sum())})")
                 for n, c in STRATA]
     ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.155),

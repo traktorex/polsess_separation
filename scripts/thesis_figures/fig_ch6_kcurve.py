@@ -28,7 +28,7 @@ to zastrzeżenie jest ważniejsze niż było na osi zysku.
 Punkty dla K = 5 i K = 7 policzono na 200 losowanych podzbiorach (pozostałe K
 wyczerpują wszystkie kombinacje). Na rysunku nie są w żaden sposób wyróżnione
 (decyzja autora 2026-08-23) — PODPIS MUSI więc powiedzieć, że drobne załamanie
-krzywej nieprzetworzonego nagrania przy K = 7 jest wahaniem losowania, a nie
+krzywej samodzielnego WhisperX przy K = 7 jest wahaniem losowania, a nie
 niemonotonicznością.
 
 Dane: <eval>/_forensics/swap_family/ensemble_anatomy/kcurve_test.csv
@@ -55,14 +55,18 @@ DEFAULT_CSV = (Path.home() / "datasets" / "eval" / "clarin_fragments" / "_forens
 
 INK, INK2, GRID, AXIS, MUTED = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7", "#898781"
 
-# Tylko trzy systemy (decyzja autora 2026-08-23): potok, NAJSILNIEJSZY wariant
-# bez separacji (`nosep_relB` — na rysunku po prostu „bez separacji"; słabszy
-# `v41_merge_nosep` usunięty) oraz transkrypcja nieprzetworzonego nagrania.
+# Tylko trzy systemy (decyzja autora 2026-08-23): pełny potok, NAJSILNIEJSZY
+# wariant bez separacji (`nosep_relB` — na rysunku „potok bez separacji";
+# słabszy `v41_merge_nosep` usunięty) oraz samodzielny WhisperX. UWAGA: ten
+# ostatni to `mixture_enh_oa050` — WhisperX na nagraniu po częściowym
+# enhancemencie (OA 0,5), NIE na surowej mieszaninie z Tabeli 6.3; surowa
+# mieszanina nie była głosowana. Etykiety przemianowane 2026-09-02, żeby
+# legenda nie sugerowała nieprzetworzonego nagrania.
 SYSTEMS = [
-    ("pipeline_v41_merge",         "potok",                            "#eb6834"),
-    ("nosep_v41_merge_nosep_relB", "bez separacji",                    "#2a78d6"),
+    ("pipeline_v41_merge",         "pełny potok",                      "#eb6834"),
+    ("nosep_v41_merge_nosep_relB", "potok bez separacji",              "#2a78d6"),
     ("mixture_enh_oa050",
-     "transkrypcja nieprzetworzonego nagrania (MIMO-WER / MIMO-CER)",  "#898781"),
+     "samodzielny WhisperX (MIMO-WER / MIMO-CER)",                     "#898781"),
 ]
 
 # Słupki rozrzutu rysowane tylko dla K = 1 i K = 3: przy większych K odchylenie
