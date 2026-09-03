@@ -1,9 +1,15 @@
 """Stage 3c — VAD masking + optional bandwidth extension.
 
 Inputs from Stage 3b's ``ctx.overlap_separated`` entries:
-- ``s{1,2}_raw``  the separator's unmasked output (16 kHz numerical,
-                  spectrally band-limited to 0–4 kHz because the
-                  separator itself runs at 8 kHz)
+- ``s{1,2}_raw``  the separator's unmasked output, always at the pipeline
+                  rate (16 kHz). When the separator runs at 8 kHz — the
+                  shipped configuration — this is spectrally band-limited to
+                  0–4 kHz, which is what ``ap_bwe`` exists to extend. A
+                  16 kHz-native separator (B1's 16 kHz arms — TIGER,
+                  SPMamba-Echo2Mix, SepFormer-WHAMR16k) instead delivers
+                  genuine full-band content, and those arms MUST set
+                  ``backend: naive``: ``ap_bwe`` would decimate the real upper
+                  band away and re-synthesise it (see ``_APBWEBackend.extend``).
 - ``mask{1,2}``   per-stream binary VAD mask computed by 3b
 - ``emit_*``      the emit-region boundaries 3b finalised
 
@@ -342,6 +348,8 @@ class PostSeparationProcessingStage(Stage):
                     f"  processed {i_ovl+1}/{n} regions "
                     f"({time.perf_counter()-t0:.1f}s elapsed)"
                 )
+            # No-op unless the orchestrator wired a progress sink.
+            self._progress(i_ovl + 1, n)
         elapsed = time.perf_counter() - t0
         rtf = total_chunk_s / elapsed if elapsed > 0 else float("inf")
         _log(

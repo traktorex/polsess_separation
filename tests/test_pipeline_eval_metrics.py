@@ -16,7 +16,6 @@ from asr_pipeline.eval.metrics import (
     cpwer_meeteval,
     mimo_cer_meeteval,
     mimo_wer_meeteval,
-    orc_cer_charopt,
     orc_cer_meeteval,
     orc_wer_meeteval,
     orc_wer_multistream,
@@ -499,30 +498,6 @@ def test_cp_cer_empty_hypothesis_scores_all_deletions():
 
 
 # ---------------------------------------------------------------------------
-# orc_cer_charopt — the char-reoptimised ORC-CER (renamed from orc_cer_multistream)
-# ---------------------------------------------------------------------------
-
-
-def test_orc_cer_charopt_perfect_is_zero():
-    pytest.importorskip("meeteval")
-    pytest.importorskip("rapidfuzz")
-    ref = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies")]}
-    hyp = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies")]}
-    assert orc_cer_charopt(ref, hyp, session_id="t")["orc_cer"] == 0.0
-
-
-def test_orc_cer_charopt_is_attribution_blind_below_cp_cer():
-    # Content routed to the wrong stream: ORC-CER re-routes each ref utterance to
-    # whichever stream fits and scores 0; cp-CER (fixed speaker matching) charges it.
-    pytest.importorskip("meeteval")
-    pytest.importorskip("rapidfuzz")
-    ref = {"A": [U(0.0, 1.0, "kot"), U(2.0, 3.0, "dom")], "B": [U(1.0, 2.0, "pies")]}
-    hyp = {"A": [U(0.0, 1.0, "kot")], "B": [U(1.0, 2.0, "pies"), U(2.0, 3.0, "dom")]}
-    assert orc_cer_charopt(ref, hyp, session_id="t")["orc_cer"] == 0.0
-    assert cp_cer_meeteval(ref, hyp, session_id="t")["cer"] > 0.0
-
-
-# ---------------------------------------------------------------------------
 # per_fragment_metrics — the shared per-fragment scoring core (item 10). Its
 # sub-result counts must equal the individual wrappers (the thesis-number path).
 # ---------------------------------------------------------------------------
@@ -542,7 +517,9 @@ def test_per_fragment_metrics_counts_match_individual_wrappers():
     assert m["cpcer"]["errors"] == cp_cer_meeteval(ref, hyp, session_id="t")["errors"]
     assert m["orc"]["errors"] == orc_wer_multistream(ref, hyp, session_id="t")["errors"]
     assert m["mimo"]["errors"] == mimo_wer_meeteval(ref, hyp, session_id="t")["errors"]
-    assert m["orccer"]["errors"] == orc_cer_charopt(ref, hyp, session_id="t")["errors"]
+    # orccer = chars under ORC-WER's routing (author ruling 2026-07-28; the
+    # char-reoptimised orc_cer_charopt variant was removed).
+    assert m["orccer"]["errors"] == orc_cer_meeteval(ref, hyp, session_id="t")["errors"]
     assert m["mix_orc"]["errors"] == orc_wer_meeteval(ref, mix, session_id="t")["errors"]
     assert m["mix_cer"]["errors"] == mimo_cer_meeteval(ref, mix, session_id="t")["errors"]
 

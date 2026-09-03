@@ -1,0 +1,165 @@
+# B1 peer-checkpoint arm, 16 kHz sibling of b1_spmamba_librimix.yaml
+# (author-picked 2026-08-26).
+#
+# The OFFICIAL SPMamba release (JusperLee/SPMamba v1.0, Apache-2.0),
+# **Echo2Mix**-trained, loaded into the repo's own models/spmamba.SPMamba
+# (peer weights in the thesis's own architecture — key rename verified exact,
+# strict load). Constructor kwargs come from the conf.yml beside the checkpoint.
+#
+# WHY THIS ARM IS WORTH ITS RUN: it is the SAME ARCHITECTURE AND SIZE as the
+# `b1_spmamba_librimix` arm — identical emb_dim 16 / emb_ks 8 / n_layers 6 /
+# input_dim 64 / lstm_hidden_units 256 / attn_n_head 4 — differing only in the
+# encoder geometry, which upstream DOUBLED for the 16 kHz build (n_fft 512 vs
+# 256, stride 128 vs 64), and in the training corpus. So the pair is a
+# within-architecture 8k-vs-16k **and** corpus contrast, with capacity held
+# fixed: the cleanest such contrast in the whole B1 family.
+#
+# Echo2Mix = reverberant 2-speaker mixtures; the release's own dataloader is
+# `MP3DDataModule` (Matterport3D) over `DataPreProcess/Echo2Mix/`. Per the
+# SPMamba paper (arXiv 2404.02063v2) the speech is LibriSpeech-360, the noise
+# WHAM! + DnR, reverb applied by IR convolution, 16 kHz. Trained on 3.0 s crops
+# (conf `datamodule.data_config.segment`).
+#
+# TARGET CONVENTION — PRESUMED REVERBERANT, **NOT CONFIRMED** (checked
+# 2026-08-26). The SPMamba paper describes how Echo2Mix is built but never says
+# whether the separation targets are the dry sources or the reverberant ones,
+# and the release ships no data. What we do know: the loader is Matterport3D-
+# based, and the sibling corpus EchoSet — same author, same lineage — IS
+# verified reverberant-target in this repo (it ships only spk{1,2}_reverb.wav;
+# see datasets/echoset_dataset.py, which also records the −2.92 dB penalty a
+# dry-target PolSESS model takes when scored against it).
+# So: treat this arm as reverberant-target, i.e. it separates WITHOUT
+# dereverberating, where PolSESS SB targets are dry and e46 separates AND
+# dereverberates — but state the uncertainty rather than asserting it. If the
+# arm underperforms, convention mismatch is a live explanation that this arm
+# alone cannot distinguish from corpus or capacity effects; that is exactly why
+# the family also carries the CONFIRMED dry-target `b1_sb_whamr16k` arm.
+#
+# Two deliberate deviations from sweep_best_e31_refineplus.yaml (v41_merge),
+# both forced by the checkpoint's native rate — everything else is verbatim.
+# Same reasoning as b1_tiger_echoset.yaml; repeated here so this file stands
+# on its own:
+#   1. separator_sample_rate: 16000 (the conf's `datamodule.sample_rate`).
+#      The stage's resample round-trip becomes a true identity (torchaudio's
+#      `resample` early-returns when orig_freq == new_freq), so window / seam /
+#      VAD / overlap-add geometry is unchanged: every geometry knob is
+#      expressed in seconds against the 16 kHz pipeline rate, never against
+#      the separator rate.
+#   2. post_separation_processing.backend: naive (NOT ap_bwe). AP-BWE is an
+#      8->16 kHz reconstruction whose `extend` unconditionally decimates its
+#      input to 8 kHz and interpolates back before the generator runs
+#      (stages/post_separation_processing.py, _AP_BWE_LR_SR). On a 16 kHz
+#      separator that DESTROYS the genuine 4-8 kHz band and replaces it with
+#      synthesis — it would silently measure "SPMamba-Echo2Mix, narrowbanded".
+#      `naive` is identity + the VAD mask, which is all this always-on stage
+#      owes Stage 4.
+#      This is NOT a confound to be controlled away (author ruling 2026-08-26):
+#      band extension exists to undo an 8 kHz separator's narrowbanding, and a
+#      16 kHz model simply does not need it. Anchor the arm against
+#      `v41_bweoff` (= v41_merge with the same `naive` override, already
+#      decoded on all 141) so the primary contrast is the separator alone;
+#      report `v41_merge` as the secondary, as-deployed number.
+#
+# training_chunk_length_s stays 4.0, NOT the release's 3.0 s train crop — the
+# 8 kHz Librimix sibling (also 3.0 s crops) uses 4.0 too, so holding both at
+# the v41_merge value is what keeps the within-architecture contrast clean.
+#
+# DISCIPLINE (author 2026-08-26): smoke with NOISY input first, then dev;
+# CLARIN test only by explicit author decision afterwards.
+
+# Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
+# verbatim — the per-knob rationale comments live there.
+sample_rate: 16000
+device: cuda
+deterministic: true
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  backend: sortformer
+  sortformer_head_policy: merge
+  model_id: pyannote/speaker-diarization-3.1   # pyannote-path knob; unused under sortformer
+  num_speakers: 2
+  embedding: ecapa2          # pyannote-path knob; no-op under sortformer
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  max_segment_length_s: 8.0
+  observation_mix_ratio: 0.5
+
+separation:
+  enabled: true
+  separator_backend: spmamba_external
+  checkpoint_path: checkpoints/external/spmamba/SPMamba-Echo2Mix/SPMamba-Echo2Mix/best_model.pth
+  separator_sample_rate: 16000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25
+  vad_soft_threshold: 0.10
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+post_separation_processing:
+  backend: naive           # NOT ap_bwe — see header note 2. 16 kHz native checkpoint.
+  # Kept verbatim from sweep_best_e31_refineplus.yaml although DEAD under
+  # `naive` (_NaiveBackend ignores it; load_signature returns just the backend
+  # name). Deleting it would NOT be a no-op for review: the dataclass default
+  # is the same path without the `.zip` suffix, so an omitted key shows up as a
+  # spurious 5th difference and breaks the "diff this arm against the shipped
+  # config, expect exactly N lines" check the B1 family is verified with.
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+
+relabel:
+  enabled: true
+  source: global             # solos + separated overlap streams (B+); "solos" = B
+  embedding: ecapa2
+  audio_source: enhanced     # solos from enhanced_full; overlap streams are raw-derived
+  exclude_overlap: true
+  duration_weighted: false
+  solo_clustering_init: rescue
+
+assembly:
+  enabled: true
+  weak_anchor_warn_below_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  beam_size: 5
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  condition_on_previous_text: false
+  no_speech_threshold: 0.6
+  compression_ratio_threshold: 2.4
+  patience: 1.0
+  no_repeat_ngram_size: 0
+  retry_collapsed_chunk_size: 8
+  loop_retry: true
+  loop_retry_phrase: true
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7

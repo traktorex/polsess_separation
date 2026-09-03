@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -39,6 +40,14 @@ class Stage(ABC):
     """Base class for all pipeline stages."""
 
     name: str = "stage"
+
+    # Optional inner-loop progress sink, wired by the orchestrator around
+    # `run()` and cleared afterwards. `None` (the class default, and what every
+    # stage sees when `Pipeline` has no `on_event` callback) makes `_progress`
+    # a no-op — stages behave exactly as they did before the sink existed. A
+    # class attribute rather than an `__init__` field so a stage that doesn't
+    # chain to `super().__init__` still has it.
+    on_progress: Optional[Callable[[int, int], None]] = None
 
     def __init__(self, enabled: bool = True) -> None:
         self.enabled = enabled
@@ -81,3 +90,14 @@ class Stage(ABC):
         is enabled.
         """
         return None
+
+    def _progress(self, done: int, total: int) -> None:
+        """Report inner-loop progress (`done` of `total` items), if wired.
+
+        Stages with long per-item loops (separation,
+        post_separation_processing, assembly) call this at their existing
+        per-item log points; the orchestrator turns each call into a
+        `stage_progress` event.
+        """
+        if self.on_progress is not None:
+            self.on_progress(done, total)

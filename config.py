@@ -253,6 +253,21 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
+    def validate_data_root(self):
+        """Check that the configured dataset root exists.
+
+        Separate from __post_init__ because it must run *after* CLI/sweep
+        overrides are applied — see the note in __post_init__. Entry points
+        (get_config_from_args, load_config_for_run) call this last.
+        """
+        if self.data.dataset_type == "polsess":
+            data_root = Path(self.data.polsess.data_root)
+            if not data_root.exists():
+                raise FileNotFoundError(
+                    f"Data root does not exist: {data_root}\n"
+                    f"Set via --data-root CLI arg or POLSESS_DATA_ROOT environment variable"
+                )
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         # Ensure dataset-specific params are initialized
@@ -263,14 +278,14 @@ class Config:
         if self.model.model_type == "convtasnet" and self.model.convtasnet is None:
             self.model.convtasnet = ConvTasNetParams()
 
-        # Validate paths (dataset-specific)
-        if self.data.dataset_type == "polsess":
-            data_root = Path(self.data.polsess.data_root)
-            if not data_root.exists():
-                raise FileNotFoundError(
-                    f"Data root does not exist: {data_root}\n"
-                    f"Set via --data-root CLI arg or POLSESS_DATA_ROOT environment variable"
-                )
+        # NB: the data-root existence check deliberately does NOT live here.
+        # __post_init__ runs at construction, i.e. inside load_config_from_dict,
+        # which is *before* apply_cli_overrides gets to see --data-root. Checking
+        # here made --data-root and --resume unusable on any machine whose
+        # default POLSESS_DATA_ROOT is absent: the error fired first and told the
+        # user to pass the very flag that could never be reached. The check now
+        # lives in validate_data_root(), called by the entry points once
+        # overrides have been applied.
 
         # Validate task
         if self.data.task not in ["ES", "EB", "SB"]:
@@ -756,8 +771,11 @@ def get_config_from_args() -> Config:
     # Apply CLI overrides
     config = apply_cli_overrides(config, args)
 
-    # Validate and return
+    # Validate and return. validate_data_root() runs last, so --data-root (and a
+    # --resume checkpoint recorded on another machine) can point the run at a
+    # root that exists here.
     config.__post_init__()
+    config.validate_data_root()
     return config
 
 
@@ -875,4 +893,5 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
 
     # Validate and return
     config.__post_init__()
+    config.validate_data_root()
     return config

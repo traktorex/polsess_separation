@@ -1103,6 +1103,827 @@ CONFIGS: dict[str, dict] = {
                         "separation.enabled": False,
                         "transcription.loop_retry": True,
                         "transcription.loop_retry_phrase": True},
+    # FAIR NO-SEPARATION comparator family (2026-08-20, fair-comparison design
+    # for the separation-effect table — thesis-log/sweep_plan/
+    # FAIR_NOSEP_COMPARISON.md). Question: how strong can the no-separation
+    # side of the v41_merge instrument be made with everything except
+    # separation held identical? Two levers the historical `v41_merge_nosep`
+    # arm did not get: (i) the 2nd-pass identity relabel in its SOLOS mode (B;
+    # `source=global` needs separated streams, `solos` does not) + the
+    # degeneracy rescue; (ii) the no-sep overlap policy `longest_turn` (floor
+    # holder only) instead of duplicating the mixture slice to both speakers.
+    # Dev first; the strongest variant is pre-declared for the test one-shot.
+    "v41_merge_nosep_relB": {"enhancement.observation_mix_ratio": 0.50,
+                             "diarization.backend": "sortformer",
+                             "diarization.sortformer_head_policy": "merge",
+                             "separation.enabled": False,
+                             "relabel.enabled": True, "relabel.source": "solos",
+                             "relabel.embedding": "ecapa2",
+                             "relabel.audio_source": "enhanced",
+                             "relabel.solo_clustering_init": "rescue",
+                             "transcription.loop_retry": True,
+                             "transcription.loop_retry_phrase": True},
+    "v41_merge_nosep_lt": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "separation.enabled": False,
+                           "assembly.nosep_overlap_policy": "longest_turn",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True},
+    "v41_merge_nosep_lt_relB": {"enhancement.observation_mix_ratio": 0.50,
+                                "diarization.backend": "sortformer",
+                                "diarization.sortformer_head_policy": "merge",
+                                "separation.enabled": False,
+                                "assembly.nosep_overlap_policy": "longest_turn",
+                                "relabel.enabled": True, "relabel.source": "solos",
+                                "relabel.embedding": "ecapa2",
+                                "relabel.audio_source": "enhanced",
+                                "relabel.solo_clustering_init": "rescue",
+                                "transcription.loop_retry": True,
+                                "transcription.loop_retry_phrase": True},
+    # (iii) overlap AUDIO source `raw` — the separator consumes the RAW mixture,
+    # so the matched no-sep overlap slice is the raw one (the enhancer is a
+    # single-speaker model that may suppress the quieter talker in overlap).
+    "v41_merge_nosep_rawov": {"enhancement.observation_mix_ratio": 0.50,
+                              "diarization.backend": "sortformer",
+                              "diarization.sortformer_head_policy": "merge",
+                              "separation.enabled": False,
+                              "assembly.nosep_overlap_source": "raw",
+                              "transcription.loop_retry": True,
+                              "transcription.loop_retry_phrase": True},
+    "v41_merge_nosep_lt_relB_rawov": {"enhancement.observation_mix_ratio": 0.50,
+                                      "diarization.backend": "sortformer",
+                                      "diarization.sortformer_head_policy": "merge",
+                                      "separation.enabled": False,
+                                      "assembly.nosep_overlap_policy": "longest_turn",
+                                      "assembly.nosep_overlap_source": "raw",
+                                      "relabel.enabled": True, "relabel.source": "solos",
+                                      "relabel.embedding": "ecapa2",
+                                      "relabel.audio_source": "enhanced",
+                                      "relabel.solo_clustering_init": "rescue",
+                                      "transcription.loop_retry": True,
+                                      "transcription.loop_retry_phrase": True},
+    # 2x2 FACTORIAL under the v41_merge instrument (2026-08-20): separation x
+    # enhancement, so the audio-preprocessing gain decomposes into a separation
+    # main effect, an enhancement main effect and their interaction. Cells:
+    # v41_merge (sep+enh) / v41_merge_nosep (enh only) / v41_merge_noenh (sep
+    # only) / v41_merge_minimal (neither). Tied knobs, of necessity and
+    # documented: relabel B+ exists only with separation (it clusters the
+    # separated streams); relabel.audio_source=enhanced needs enhancement, so the
+    # sep-only cell re-clusters on raw audio.
+    "v41_merge_noenh": {"diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "enhancement.enabled": False,
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "raw",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True},
+    "v41_merge_minimal": {"diarization.backend": "sortformer",
+                          "diarization.sortformer_head_policy": "merge",
+                          "enhancement.enabled": False,
+                          "separation.enabled": False,
+                          "transcription.loop_retry": True,
+                          "transcription.loop_retry_phrase": True},
+    # Separator QUALITY LADDER (2026-08-20, author idea): separators trained on
+    # ALL 8 MM-IPC variants but weaker than the deployed e46 — so the downstream
+    # dose-response is separator *quality*, not training *diversity* (that axis
+    # is noE / Conly). Same MossFormer2 family, smaller training sets; all-8
+    # SI-SDRi on the C_new_64 test (ch5_test_evals): full-64k 15.16, matched-64k
+    # 13.93, full-16k = the weakest (val-metric lowest; all-8 test eval pending).
+    # e46 = 16.67 unweighted on the 128k test (different test set — re-score the
+    # ladder on C_final_128_v2 test for one common x-axis; queued).
+    "v41_mf2_full64k": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path":
+                            "checkpoints/mossformer2/SB/64k_mossformer2_full_42_f0pt0kly/"
+                            "mossformer2_SB_best.pt"},
+    # Enhancement-OFF twins of two C_new_64 arms (2026-08-22). Those checkpoints were
+    # trained WITHOUT the C variant (curriculum ['R','S','SR','E','ER','SE','SER']) and
+    # earn only +0.7..+1.7 dB on the clean variant where every all-8-trained model earns
+    # +3.2..+3.4 — i.e. clean-ish input is the regime they never saw. In the pipeline the
+    # separator is handed ENHANCED overlaps (FRCRN + observation-mix 0.5), which is much
+    # closer to C than to SER. If that mismatch is what breaks them, removing enhancement
+    # should help THEM while leaving the deployed separator roughly where it is
+    # (v41_merge 18.6/11.6 vs v41_merge_noenh 19.1/12.0 on dev, n.s.). A 2x2 interaction.
+    "v41_mf2_full64k_noenh": {"enhancement.enabled": False,
+                              "diarization.backend": "sortformer",
+                              "diarization.sortformer_head_policy": "merge",
+                              "relabel.enabled": True, "relabel.source": "global",
+                              "relabel.embedding": "ecapa2", "relabel.audio_source": "raw",
+                              "relabel.solo_clustering_init": "rescue",
+                              "transcription.loop_retry": True,
+                              "transcription.loop_retry_phrase": True,
+                              "separation.checkpoint_path":
+                                  "checkpoints/mossformer2/SB/64k_mossformer2_full_42_f0pt0kly/"
+                                  "mossformer2_SB_best.pt"},
+    "v41_sep_64k_cnew_noenh": {"enhancement.enabled": False,
+                               "diarization.backend": "sortformer",
+                               "diarization.sortformer_head_policy": "merge",
+                               "relabel.enabled": True, "relabel.source": "global",
+                               "relabel.embedding": "ecapa2", "relabel.audio_source": "raw",
+                               "relabel.solo_clustering_init": "rescue",
+                               "transcription.loop_retry": True,
+                               "transcription.loop_retry_phrase": True,
+                               "separation.checkpoint_path":
+                                   "checkpoints/sepformer/SB/64k_baseline_posenc_z0omra18/"
+                                   "sepformer_SB_best.pt"},
+    "v41_mf2_matched64k": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.checkpoint_path":
+                               "checkpoints/mossformer2/SB/mossformer2-matched_64k_q3hzv58q/"
+                               "mossformer2_SB_best.pt"},
+    # Second C_new_64 MF2-matched run (author, stopped at epoch 14, val SI-SDR 8.674).
+    # Its directory is named `mossformer2-matched-64k-withC`, but the checkpoint's OWN
+    # embedded config records curriculum variants [R,S,SR,E,ER,SE,SER] — i.e. no C, the
+    # same diet as every other C_new_64 arm. It also differs from `v41_mf2_matched64k`
+    # in lr (2.15e-4 vs 3e-4), weight_decay (2.4e-7 vs 0), grad_clip (3.07 vs 5.0),
+    # attn_dropout (0.070 vs default 0.1) and seed (123 vs 42). So it is NOT a with-C
+    # control; what it IS is a differently-tuned, differently-seeded C_new_64 replicate,
+    # which tests whether the collapse (§4.5.18) is a corpus property or an HPO accident.
+    "v41_mf2_matched64k_r2": {"enhancement.observation_mix_ratio": 0.50,
+                              "diarization.backend": "sortformer",
+                              "diarization.sortformer_head_policy": "merge",
+                              "relabel.enabled": True, "relabel.source": "global",
+                              "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                              "relabel.solo_clustering_init": "rescue",
+                              "transcription.loop_retry": True,
+                              "transcription.loop_retry_phrase": True,
+                              "separation.checkpoint_path":
+                                  "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC/"
+                                  "mossformer2_SB_epoch14.pt"},
+    # The ACTUAL with-C control (§4.5.42): `mossformer2-matched-64k-withC-fixed`,
+    # verified exact hp/seed twin of `v41_mf2_matched64k_r2` (lr 2.1453e-4,
+    # wd 2.411e-7, grad_clip 3.0697, attn_dropout 0.07031, seed 123) with
+    # curriculum_learning: null — all 8 variants INCLUDING C from epoch 1.
+    # Epoch 14 produced no checkpoint upstream; e13 is the closest rung to the
+    # `_r2` ep-14 pair. Val figures in the dir's README.txt are the corrected
+    # SER+SE numbers (the run's own W&B val used all variants by mistake).
+    # Oracle probe (§4.5.42) is VOLATILE across these epochs: 7.10 dB @e5 →
+    # 1.19 @e8 → 5.99 @e10 — hence the full ladder, not one rung. DEV ONLY.
+    "v41_withc_e01": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch1.pt"},  # val SER+SE 4.38, probe 2.91
+    "v41_withc_e02": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch2.pt"},  # val 5.55, probe 5.08
+    "v41_withc_e03": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch3.pt"},  # val 6.52, probe 5.34
+    "v41_withc_e04": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch4.pt"},  # val 6.74, probe 6.56
+    "v41_withc_e05": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch5.pt"},  # val 7.38, probe 7.10 (peak)
+    "v41_withc_e06": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch6.pt"},  # val 7.61, probe 1.84 (collapse)
+    "v41_withc_e07": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch7.pt"},  # val 7.81, probe 2.35
+    "v41_withc_e08": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch8.pt"},  # val 7.86, probe 1.19 (trough)
+    "v41_withc_e10": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch10.pt"},  # val 8.24, probe 5.99
+    "v41_withc_e13": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/mossformer2/SB/mossformer2-matched-64k-withC-fixed/"
+                          "mossformer2_SB_epoch13.pt"},  # closest rung to the _r2 ep-14 pair
+    "v41_mf2_full16k": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path":
+                            "checkpoints/mossformer2/SB/16k_mossformer2_full_42_fy0hz7on/"
+                            "mossformer2_SB_best.pt"},
+    # BANDWIDTH ablation (2026-08-22, author's request): what if the input
+    # recordings were 8 kHz? Every model stage except the separator is a 16 kHz
+    # model (Sortformer, FRCRN, silero, ECAPA2, WhisperX), so the pipeline keeps
+    # running at 16 kHz and the INPUT is band-limited instead
+    # (`input_bandlimit_hz: 4000` — decimate to 8 kHz and interpolate back at
+    # load). The separator already runs at 8 kHz internally, so the overlap path
+    # is nearly unaffected by design; the arms below isolate the solo path,
+    # diarization and ASR. 2x2 with `v41_merge` (full band + AP-BWE).
+    "v41_bweoff": {"enhancement.observation_mix_ratio": 0.50,
+                 "diarization.backend": "sortformer",
+                 "diarization.sortformer_head_policy": "merge",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                 "relabel.solo_clustering_init": "rescue",
+                 "transcription.loop_retry": True,
+                 "transcription.loop_retry_phrase": True,
+                 "post_separation_processing.backend": "naive"},  # full-band input, bandwidth extension OFF — isolates what AP-BWE contributes today
+    "v41_8k": {"enhancement.observation_mix_ratio": 0.50,
+             "diarization.backend": "sortformer",
+             "diarization.sortformer_head_policy": "merge",
+             "relabel.enabled": True, "relabel.source": "global",
+             "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+             "relabel.solo_clustering_init": "rescue",
+             "transcription.loop_retry": True,
+             "transcription.loop_retry_phrase": True,
+             "input_bandlimit_hz": 4000,
+             "post_separation_processing.backend": "naive"},  # telephone-band input (decimate 16k->8k->16k at load), BWE off — the "what if the recordings were 8 kHz" arm
+    "v41_8k_bwe": {"enhancement.observation_mix_ratio": 0.50,
+                 "diarization.backend": "sortformer",
+                 "diarization.sortformer_head_policy": "merge",
+                 "relabel.enabled": True, "relabel.source": "global",
+                 "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                 "relabel.solo_clustering_init": "rescue",
+                 "transcription.loop_retry": True,
+                 "transcription.loop_retry_phrase": True,
+                 "input_bandlimit_hz": 4000},  # telephone-band input, BWE left ON — can AP-BWE put back a band that was never there?
+    # Separator QUALITY LADDER, same corpus, DATA-limited (2026-08-21, author's 3080 run):
+    # MossFormer2-matched (identical architecture to e46) trained on the 16k subset of
+    # PolSESS_C_final_128_v2, all-8 validation, every epoch kept. These rungs cover
+    # val all-8 SI-SDRi 6.7-12.9 dB, the region no other checkpoint occupies, and they
+    # are the second, independent route to a weak separator (data-limited vs the
+    # training-progress-limited `ladder_v2` rows below). File epoch N = internal epoch
+    # N-1 (0-indexed); names follow the filenames.
+    # CAVEAT (checked in the checkpoints' embedded configs, 2026-08-22): the run is
+    # one continuous W&B run (bilrpd4m, seed 42) but its data budget CHANGES between
+    # ep14 and ep21 — ep1..ep14 trained on train_max_samples=16000, ep21/ep30 on
+    # 64000 (LR also stepped 2.15e-4 -> 1.61e-4). So the top two rungs are 64k-subset
+    # checkpoints, not 16k ones; the arm names keep the `lad16k` prefix for continuity.
+    # Harmless for the dose-response, whose x-axis is measured separator quality and
+    # which deliberately mixes routes to a weak separator, but the rungs must not be
+    # described as one homogeneous data-limited trajectory.
+    "v41_lad16k_e01": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch1.pt"},  # val all-8 6.7
+    "v41_lad16k_e02": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch2.pt"},  # val all-8 7.8
+    "v41_lad16k_e03": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch3.pt"},  # val all-8 9.41
+    "v41_lad16k_e05": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch5.pt"},  # val all-8 10.72
+    "v41_lad16k_e09": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch9.pt"},  # val all-8 11.89
+    "v41_lad16k_e14": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch14.pt"},  # val all-8 12.85
+    "v41_lad16k_e21": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch21.pt"},  # val all-8 14.12 — NB run resumed at 64k
+    "v41_lad16k_e30": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path":
+                           "checkpoints/mossformer2/SB/mossformer2_matched_128k_ladder16k_42_send/"
+                           "mossformer2_SB_epoch30.pt"},  # val all-8 15.11 — NB run resumed at 64k
+    "v41_sep_64k_cnew": {"enhancement.observation_mix_ratio": 0.50,
+                         "diarization.backend": "sortformer",
+                         "diarization.sortformer_head_policy": "merge",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "relabel.solo_clustering_init": "rescue",
+                         "transcription.loop_retry": True,
+                         "transcription.loop_retry_phrase": True,
+                         "separation.checkpoint_path":
+                             "checkpoints/sepformer/SB/64k_baseline_posenc_z0omra18/"
+                             "sepformer_SB_best.pt"},  # best SepFormer on C_new_64 (val 8.84, in-domain all-8 13.88) — is the corpus collapse architecture-independent?
+    # Separator QUALITY LADDER, same data (PolSESS_C_final_128_v2, all 8 MM-IPC
+    # variants) — 2026-08-21. The C_new_64-trained `ladder` rows above turned out
+    # NOT to be a quality ladder: those models collapse on real CLARIN audio
+    # (dev −14 cpWER, worse than no separation; CPU probe: −13 dB SI-SDRi on
+    # real oracle overlaps while +18 dB on v2 synthetic) — a domain-transfer
+    # failure, recorded as such in FAIR_NOSEP_COMPARISON.md §4.5. These rungs
+    # are early-stopped / early-epoch checkpoints of the SAME recipe and data as
+    # e46 (Hyperband sweep survivors + e46's own run at ep22/ep30) plus the
+    # SepFormer family on the same data — weaker by training progress only.
+    "v41_mf2_sw_glad9": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.checkpoint_path": "checkpoints/mossformer2/SB/glad-sweep-9/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep1, val all-8 13.15
+    "v41_mf2_sw_swept8": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path": "checkpoints/mossformer2/SB/swept-sweep-8/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep2, val 13.81
+    "v41_mf2_sw_floral4": {"enhancement.observation_mix_ratio": 0.50,
+                         "diarization.backend": "sortformer",
+                         "diarization.sortformer_head_policy": "merge",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "relabel.solo_clustering_init": "rescue",
+                         "transcription.loop_retry": True,
+                         "transcription.loop_retry_phrase": True,
+                         "separation.checkpoint_path": "checkpoints/mossformer2/SB/floral-sweep-4/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep7, val 15.29
+    # Knee-bracket rungs (2026-08-24 audit): §4.5.33 left the dose-response knee
+    # bracketed only to 15.29 < val < 15.76 dB because no rung existed in between on
+    # either split. These two are floral-sweep-4's own HPO siblings — same 128k corpus,
+    # same seed 42, same epoch 7, same all-8 validation (`validation_variants` unset),
+    # differing only in the sweep's sampled hyperparameters — and they land at 15.33 and
+    # 15.43, inside the bracket. See GROUPS["knee"].
+    "v41_mf2_sw_sunny1": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path": "checkpoints/mossformer2/SB/sunny-sweep-1/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep7, val all-8 15.33 — just above the floral rung
+    "v41_mf2_sw_volcanic6": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.checkpoint_path": "checkpoints/mossformer2/SB/volcanic-sweep-6/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep7, val all-8 15.43 — the upper knee-bracket rung
+    "v41_sep_e41": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_head_policy": "merge",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True,
+                  "separation.checkpoint_path": "checkpoints/sepformer/SB/128_run/sepformer_SB_best_128k_e41.pt"},  # SepFormer 128k at ep40, val all-8 15.83. NB same lr + seed as sepformer_128k_final_42 (val 16.00, ep69) and an earlier file date: this is that run's OWN earlier epoch, a `progress` rung, NOT an independent architecture point.
+    # ---- B1: off-the-shelf separators dropped into the shipped instrument -------
+    # Author-approved 2026-08-25 (dev + test). Everything except the separator is
+    # byte-identical to `v41_merge` — verified by diffing the standing arm configs
+    # `configs/b1_{tf_locoformer,sr_corrnet}_whamr.yaml` against
+    # `configs/sweep_best_e31_refineplus.yaml`: the only non-comment differences are
+    # the two lines overridden here. `separator_sample_rate` needs no override — the
+    # shipped instrument already runs the separator at 8 kHz, which is also these
+    # models' native rate, so the stage geometry is unchanged.
+    #
+    # What these test is NOT "is ours better" — §4.5.36's knee already answered that
+    # generically. All 22 ladder arms are the author's own checkpoints, so the
+    # plateau could belong to the *pipeline* or to the *training recipe*. An external
+    # separator, trained by other people on other data, separates those two.
+    # NB neither model can ever join the knee figure: its x-axis is val all-8 SI-SDRi
+    # on PolSESS, undefined for a model validated on WHAMR!. See GROUPS["b1"].
+    "v41_b1_tflocoformer": {"enhancement.observation_mix_ratio": 0.50,
+                          "diarization.backend": "sortformer",
+                          "diarization.sortformer_head_policy": "merge",
+                          "relabel.enabled": True, "relabel.source": "global",
+                          "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                          "relabel.solo_clustering_init": "rescue",
+                          "transcription.loop_retry": True,
+                          "transcription.loop_retry_phrase": True,
+                          "separation.separator_backend": "tf_locoformer",
+                          "separation.checkpoint_path": "checkpoints/external/tf_locoformer/whamr_medium_valid.loss.ave_5best.pth"},  # TF-Locoformer-M (MERL), 15.0M, WHAMR! 8k, Apache-2.0, weights on disk since 2026-07-18. Dry targets — the same convention as PolSESS SB, unlike TIGER/EchoSet.
+    "v41_b1_srcorrnet": {"enhancement.observation_mix_ratio": 0.50,
+                       "diarization.backend": "sortformer",
+                       "diarization.sortformer_head_policy": "merge",
+                       "relabel.enabled": True, "relabel.source": "global",
+                       "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                       "relabel.solo_clustering_init": "rescue",
+                       "transcription.loop_retry": True,
+                       "transcription.loop_retry_phrase": True,
+                       "separation.separator_backend": "sr_corrnet",
+                       "separation.checkpoint_path": "shinuh/sr-corrnet-ss-1ch-whamr"},  # SR-CorrNet-B, 13.6M, WHAMR! 8k, higher published SI-SNRi than TF-Locoformer. TWO cautions: its HF repo declares no licence (fine to measure, must be stated if cited), and it is documented to degenerate on CLEAN input by domain prior. If it collapses, that is the predicted failure, not a bug. CORRECTION 2026-08-26: this comment previously said the hazard was live "because the separator is fed FRCRN-enhanced audio, not raw" — that is wrong. The separator reads the ORIGINAL ctx.audio; enhancement only ever writes ctx.enhanced_full, which feeds the solo path (stages/enhancement.py docstring; separation.py reads ctx.audio; ctx.audio is assigned only at load in pipeline.py). Real CLARIN audio is noisy anyway, so the arm was in-domain and did not collapse.
+    # ---- B1 round 2: the CORPUS arms (author 2026-08-25) -----------------------
+    # Same architecture, same recipe, ~same size as the WHAMR arm above — training
+    # corpus is the only variable. Per-checkpoint constructor kwargs are mandatory
+    # (the siblings use ffn_hidden_dim [384,384], conv1d_kernel 4, n_fft 128 against
+    # WHAMR's [192,192]/8/256); `vendor.tf_locoformer.variant_for` resolves them by
+    # filename and RAISES on an unknown name rather than defaulting to WHAMR.
+    # All three corpora are 8 kHz, so separator geometry and ap_bwe stay correct.
+    #
+    # The oracle probe (2026-08-25) puts these ABOVE the two WHAMR arms and near e46:
+    # librimix 11.31, srcorrnet_wsj 10.17, wsj0_2mix 9.72 vs e46 11.85 — while
+    # tfloco_whamr 6.46 and srcorrnet_whamr 5.13 already TIED e46 downstream. The
+    # probe therefore does not transfer across families and is NOT being used as a
+    # gate; these are decoded because the corpus question is the point. See GROUPS["b1c"].
+    "v41_b1_tfloco_librimix": {"enhancement.observation_mix_ratio": 0.50,
+                             "diarization.backend": "sortformer",
+                             "diarization.sortformer_head_policy": "merge",
+                             "relabel.enabled": True, "relabel.source": "global",
+                             "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                             "relabel.solo_clustering_init": "rescue",
+                             "transcription.loop_retry": True,
+                             "transcription.loop_retry_phrase": True,
+                             "separation.separator_backend": "tf_locoformer",
+                             "separation.checkpoint_path": "checkpoints/external/tf_locoformer/librimix_medium_valid.loss.ave_5best.pth"},  # Libri2Mix 8k: read speech, anechoic-ish, noisy variants; sha256 9c691cee…b49129
+    "v41_b1_tfloco_wsj02mix": {"enhancement.observation_mix_ratio": 0.50,
+                             "diarization.backend": "sortformer",
+                             "diarization.sortformer_head_policy": "merge",
+                             "relabel.enabled": True, "relabel.source": "global",
+                             "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                             "relabel.solo_clustering_init": "rescue",
+                             "transcription.loop_retry": True,
+                             "transcription.loop_retry_phrase": True,
+                             "separation.separator_backend": "tf_locoformer",
+                             "separation.checkpoint_path": "checkpoints/external/tf_locoformer/wsj0_2mix_medium_valid.loss.ave_5best.pth"},  # WSJ0-2mix 8k: clean + anechoic, the WORST domain match to real noisy Polish conversation; sha256 c536fa84…f983c
+    "v41_b1_srcorrnet_wsj": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.separator_backend": "sr_corrnet",
+                           "separation.checkpoint_path": "shinuh/sr-corrnet-ss-1ch-wsj-fix-2spk"},  # deliberately the BASE wsj build, not the staged `-l-dm` config: l-dm confounds corpus with capacity AND dynamic mixing, so it cannot answer a corpus question.
+    # B1 round 3 (author-picked 2026-08-26): peer SPMamba (thesis's own arch,
+    # official release weights, 8 kHz native) + the dual-path MF2 librimix
+    # sibling (one-variable corpus contrast vs the wired whamr build).
+    # DEV-first; test only by explicit author decision.
+    "v41_b1_spmamba_librimix": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.separator_backend": "spmamba_external",
+                           "separation.checkpoint_path":
+                               "checkpoints/external/spmamba/SPMamba-Librimix/"
+                               "SPMamba-Librimix/best_model.pth"},
+    "v41_b1_mf2dp_librimix": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.separator_backend": "mossformer2_dp",
+                           "separation.checkpoint_path": "alibabasglab/mossformer2-librimix-2spk"},
+    # ---- B1: the 16 kHz arms (author 2026-08-26) -------------------------------
+    # The first B1 arms whose separator is NOT 8 kHz. Two consequences, both
+    # explicit, and the second is why these arms are NOT "byte-identical except
+    # the separator" the way b1/b1c/round-3 were:
+    #   * separator_sample_rate: 16000 makes the stage's resample round-trip an
+    #     identity (torchaudio.functional.resample early-returns on equal rates).
+    #     Geometry is untouched: every window/seam/VAD/overlap-add knob is
+    #     expressed in SECONDS against the 16 kHz pipeline rate, never against
+    #     the separator rate — so these arms keep v41_merge's exact geometry.
+    #   * AP-BWE MUST be off. _APBWEBackend.extend decimates its input to 8 kHz
+    #     and interpolates back BEFORE the generator runs, so on a 16 kHz
+    #     separator it destroys the genuine 4-8 kHz band and re-synthesises it —
+    #     i.e. it would silently measure "<model>, narrowbanded". `naive` is
+    #     identity + the VAD mask, all that this always-on stage owes Stage 4.
+    #     Author ruling 2026-08-26: this is NOT a confound to be controlled
+    #     away with a band-matched twin — band extension exists to undo an
+    #     8 kHz separator's narrowbanding, and a 16 kHz model does not need it.
+    # ANCHORS: primary contrast vs `v41_bweoff` (= v41_merge + the same naive
+    # override, already decoded on all 141 → the separator swap at matched
+    # post-processing, zero extra compute); secondary vs `v41_merge` for the
+    # as-deployed number.
+    # TARGET-CONVENTION STRUCTURE of this family (deliberate, author 2026-08-26):
+    # two reverberant-target arms (tiger / spmamba_echo2mix — they separate
+    # WITHOUT dereverberating, unlike PolSESS SB's dry targets, so their
+    # mismatch to e46 is a corpus *convention* difference and is disclosed on
+    # each row) + one dry-target arm (sb_whamr16k — WHAMR trains against
+    # ANECHOIC sources, the same convention as PolSESS). The dry arm is what
+    # keeps the family from confounding "16 kHz" with "reverberant targets".
+    # NB no oracle-probe dB for these arms: real_sep_probe.py hard-codes
+    # SR_SEP=8000 and resamples BOTH mixture and references to 8 kHz, and a
+    # 16 kHz variant would be a different quantity that must never share a cell
+    # with the frozen 8 kHz column (§4.5.41 already rules the probe non-gating).
+    # See GROUPS["b1t"].
+    "v41_b1_tiger": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.backend": "sortformer",
+                     "diarization.sortformer_head_policy": "merge",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "relabel.solo_clustering_init": "rescue",
+                     "transcription.loop_retry": True,
+                     "transcription.loop_retry_phrase": True,
+                     "separation.separator_backend": "tiger",
+                     "separation.checkpoint_path": "JusperLee/TIGER-speech",
+                     "separation.separator_sample_rate": 16000,
+                     "post_separation_processing.backend": "naive"},  # TIGER (Xu et al., ICLR 2025), 822K params, Apache-2.0, EchoSet (Matterport3D RIRs — reverberant + noisy). NB EchoSet targets are REVERBERANT: TIGER separates without dereverberating, PolSESS SB targets are dry. HF snapshot already cached locally, so HF_HUB_OFFLINE=1 works.
+    # THE DELIVERED-BAND PROBE (author's design, 2026-08-27). Identical to
+    # v41_b1_tiger in every knob EXCEPT the one line it drops: no
+    # `post_separation_processing.backend: naive`, so the base's `ap_bwe` applies.
+    # That is the whole experiment, and it needs NO code — _APBWEBackend.extend
+    # (stages/post_separation_processing.py:214-215) unconditionally resamples
+    # 16k -> 8k -> 16k before the generator runs, so routing TIGER's genuinely
+    # wideband output through it band-limits that output to 8 kHz and then
+    # re-synthesises the octave, exactly as the deployed 8 kHz chain does to e46.
+    # TIGER still SEPARATES at 16 kHz; only what it DELIVERS downstream changes.
+    # This is the single-variable band manipulation the family was missing: same
+    # weights, same separated waveforms, only the post-processing flips.
+    # NB this arm was written on 2026-08-26 as `v41_b1_tiger_bwe`, a band-matched
+    # FAIRNESS control, and dropped by the author ("BWE is not needed for a
+    # 16 kHz model"). It returns under a different question — decomposition, not
+    # fairness — and that ruling is untouched: the shipped 16 kHz arms keep `naive`.
+    "v41_b1_tiger_bwe": {"enhancement.observation_mix_ratio": 0.50,
+                         "diarization.backend": "sortformer",
+                         "diarization.sortformer_head_policy": "merge",
+                         "relabel.enabled": True, "relabel.source": "global",
+                         "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                         "relabel.solo_clustering_init": "rescue",
+                         "transcription.loop_retry": True,
+                         "transcription.loop_retry_phrase": True,
+                         "separation.separator_backend": "tiger",
+                         "separation.checkpoint_path": "JusperLee/TIGER-speech",
+                         "separation.separator_sample_rate": 16000},
+    "v41_b1_spmamba_echo2mix": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.separator_backend": "spmamba_external",
+                           "separation.checkpoint_path":
+                               "checkpoints/external/spmamba/SPMamba-Echo2Mix/"
+                               "SPMamba-Echo2Mix/best_model.pth",
+                           "separation.separator_sample_rate": 16000,
+                           "post_separation_processing.backend": "naive"},  # Official SPMamba release (JusperLee/SPMamba v1.0, Apache-2.0), Echo2Mix. SAME architecture AND size as v41_b1_spmamba_librimix (emb_dim 16 / emb_ks 8 / n_layers 6 / input_dim 64 identical); upstream DOUBLED the encoder geometry for 16 kHz (n_fft 512 vs 256, stride 128 vs 64). The pair is a within-architecture 8k-vs-16k + corpus contrast with capacity held fixed — the cleanest such contrast in B1. Trained on 3.0 s crops; window held at the v41_merge 4.0 s, as the librimix sibling is. TARGET CONVENTION — **PRESUMED REVERBERANT, NOT CONFIRMED** (checked 2026-08-26): the SPMamba paper (arXiv 2404.02063v2) describes Echo2Mix's construction (LibriSpeech-360 speech, WHAM!/DnR noise, IR-convolved reverb, 16 kHz) but never states whether targets are dry or reverberant; the release's own dataloader is `MP3DDataModule` (Matterport3D) and its sibling corpus EchoSet — same author — is VERIFIED reverberant-target in this repo (ships only spk{1,2}_reverb.wav, datasets/echoset_dataset.py). Treat as reverberant-target and DISCLOSE the uncertainty; do not assert it as fact.
+    "v41_b1_sb_whamr16k": {"enhancement.observation_mix_ratio": 0.50,
+                           "diarization.backend": "sortformer",
+                           "diarization.sortformer_head_policy": "merge",
+                           "relabel.enabled": True, "relabel.source": "global",
+                           "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                           "relabel.solo_clustering_init": "rescue",
+                           "transcription.loop_retry": True,
+                           "transcription.loop_retry_phrase": True,
+                           "separation.separator_backend": "speechbrain",
+                           "separation.checkpoint_path": "speechbrain/sepformer-whamr16k",
+                           "separation.separator_sample_rate": 16000,
+                           "post_separation_processing.backend": "naive"},  # SepFormer on WHAMR! at 16 kHz (HF speechbrain/sepformer-whamr16k, Apache-2.0; card: SI-SNRi 13.5 dB / SDRi 13.0 dB). THE DRY-TARGET 16 kHz ARM — the control that stops this family confounding "16 kHz" with "reverberant targets". TARGET CONVENTION **CONFIRMED DRY** (2026-08-26, two independent sources): Asteroid's canonical WHAMR task table uses s1_anechoic/s2_anechoic as targets for ALL FOUR tasks incl. sep_reverb/sep_reverb_noisy, and SpeechBrain's own recipes/WHAMandWHAMR/prepare_data.py pairs the reverberant mixture (mix_both_reverb/) with anechoic targets (s1_anechoic/, s2_anechoic/) for training — so the model separates AND dereverberates, exactly PolSESS SB's convention (matches §4.5.38's classification of the 8 kHz WHAMR arms). Also SepFormer = one of the thesis's own architectures. NB SpeechBrain separators emit HOT unnormalised streams: separation.volume_normalization=sum_equals_mix is LOAD-BEARING here (inherited from the base, not overridden). NOT cached locally as of 2026-08-26 — prefetch once WITHOUT HF_HUB_OFFLINE before any offline eval run.
+    # See GROUPS["b1band"] — the rate-only contrast against v41_b1_sb_whamr16k.
+    "v41_b1_sb_whamr": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.separator_backend": "speechbrain",
+                        "separation.checkpoint_path": "speechbrain/sepformer-whamr"},  # SepFormer on WHAMR! at 8 kHz (HF speechbrain/sepformer-whamr, Apache-2.0; home-set SI-SNRi 13.7 dB vs the 16 kHz sibling's 13.5 — as near a quality tie as this family offers). Deliberately does NOT override separator_sample_rate or post_separation_processing: it rides the deployed 8 kHz chain (8000 + ap_bwe), which is exactly what makes it the rate-only twin of v41_b1_sb_whamr16k AND a one-knob swap against v41_merge. Same HOT-stream caveat as every speechbrain arm: separation.volume_normalization=sum_equals_mix is load-bearing, inherited from the base.
+    "v41_mf2_e23": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_head_policy": "merge",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True,
+                  "separation.checkpoint_path": "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42/mossformer2_SB_best_e23.pt"},  # e46's own run at ep22, val 16.37
+    "v41_mf2_e31": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_head_policy": "merge",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True,
+                  "separation.checkpoint_path": "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt"},  # e46's own run at ep30, val 16.76 (the pre-06-13 shipped separator)
+    "v41_mf2_sw_lemon2": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path": "checkpoints/mossformer2/SB/lemon-sweep-2/mossformer2_SB_best.pt"},  # MF2-matched 128k sweep, ep2, val 2.87 — a failed run; dev-only far-left control
+    "v41_sep_sw_vivid7": {"enhancement.observation_mix_ratio": 0.50,
+                        "diarization.backend": "sortformer",
+                        "diarization.sortformer_head_policy": "merge",
+                        "relabel.enabled": True, "relabel.source": "global",
+                        "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                        "relabel.solo_clustering_init": "rescue",
+                        "transcription.loop_retry": True,
+                        "transcription.loop_retry_phrase": True,
+                        "separation.checkpoint_path": "checkpoints/sepformer/SB/vivid-sweep-7/sepformer_SB_best.pt"},  # SepFormer 128k sweep, ep7, val 11.94
+    "v41_sep_sw_ancient3": {"enhancement.observation_mix_ratio": 0.50,
+                          "diarization.backend": "sortformer",
+                          "diarization.sortformer_head_policy": "merge",
+                          "relabel.enabled": True, "relabel.source": "global",
+                          "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                          "relabel.solo_clustering_init": "rescue",
+                          "transcription.loop_retry": True,
+                          "transcription.loop_retry_phrase": True,
+                          "separation.checkpoint_path": "checkpoints/sepformer/SB/ancient-sweep-3/sepformer_SB_best.pt"},  # SepFormer 128k sweep, ep18, val 13.04
+    "v41_sep128k": {"enhancement.observation_mix_ratio": 0.50,
+                  "diarization.backend": "sortformer",
+                  "diarization.sortformer_head_policy": "merge",
+                  "relabel.enabled": True, "relabel.source": "global",
+                  "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                  "relabel.solo_clustering_init": "rescue",
+                  "transcription.loop_retry": True,
+                  "transcription.loop_retry_phrase": True,
+                  "separation.checkpoint_path": "checkpoints/sepformer/SB/sepformer_128k_final_42/sepformer_SB_best.pt"},  # SepFormer 128k final, ep69, val 16.00 (test all-8 15.57)
+    # Separator-SWAP measurement family (2026-08-20; author ruling 2026-07-30:
+    # measurement, not adoption — e46 stays the deployed separator). Each row
+    # is the v41_merge instrument byte-identical except `separation.
+    # checkpoint_path`. Dev first; test only under the signed swap-family
+    # prereg (thesis-log/sweep_plan/). See GROUPS["swap"].
+    #   v41_mf2full  — depth-24 capacity twin (seed 123); Gate 0 +0.96 dB on
+    #                  PolSESS test, Gate 1 dev null via the YAML path
+    #                  (mf2_full_gate0/GATE1_RESULTS.md) — re-run here so the
+    #                  family shares one runner + ledger.
+    #   v41_mf2noE   — MM-IPC diversity ablation arm {C,S,R,SR} (no events).
+    #   v41_mf2conly — MM-IPC diversity ablation arm {C} (clean anechoic only;
+    #                  the `_cval` retrain, epoch-31 checkpoint).
+    "v41_mf2full": {"enhancement.observation_mix_ratio": 0.50,
+                    "diarization.backend": "sortformer",
+                    "diarization.sortformer_head_policy": "merge",
+                    "relabel.enabled": True, "relabel.source": "global",
+                    "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                    "relabel.solo_clustering_init": "rescue",
+                    "transcription.loop_retry": True,
+                    "transcription.loop_retry_phrase": True,
+                    "separation.checkpoint_path":
+                        "checkpoints/mossformer2/SB/mossformer2_full_128k_final_123/"
+                        "mossformer2_SB_best.pt"},
+    "v41_mf2noE": {"enhancement.observation_mix_ratio": 0.50,
+                   "diarization.backend": "sortformer",
+                   "diarization.sortformer_head_policy": "merge",
+                   "relabel.enabled": True, "relabel.source": "global",
+                   "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                   "relabel.solo_clustering_init": "rescue",
+                   "transcription.loop_retry": True,
+                   "transcription.loop_retry_phrase": True,
+                   "separation.checkpoint_path":
+                       "checkpoints/mossformer2/SB/mossformer2_matched_128k_noE_42/"
+                       "mossformer2_SB_best.pt"},
+    "v41_mf2conly": {"enhancement.observation_mix_ratio": 0.50,
+                     "diarization.backend": "sortformer",
+                     "diarization.sortformer_head_policy": "merge",
+                     "relabel.enabled": True, "relabel.source": "global",
+                     "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                     "relabel.solo_clustering_init": "rescue",
+                     "transcription.loop_retry": True,
+                     "transcription.loop_retry_phrase": True,
+                     "separation.checkpoint_path":
+                         "checkpoints/mossformer2/SB/mossformer2_matched_128k_Conly_cval_42/"
+                         "mossformer2_SB_epoch31.pt"},
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms
     # (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Base = v4_eend's exact
     # override set (OA 0.5 + sortformer + relabel B+/global/ecapa2/enhanced/rescue
@@ -1351,6 +2172,79 @@ GROUPS: dict[str, list[str]] = {
     # decompose the levers. All off the v4_eend base. Needs $SORTFORMER_VENV_PY;
     # rescore with --anchor v3_phraseloop (report vs v4_eend too).
     "v41": ["v41_merge"],
+    # Separator-swap measurement family (2026-08-20): the v41_merge instrument
+    # with only `separation.checkpoint_path` changed. Dev first; rescore with
+    # --anchor v41_merge; test only under the signed swap-family prereg.
+    "swap": ["v41_mf2full", "v41_mf2noE", "v41_mf2conly"],
+    # Fair no-separation comparator family (2026-08-20): the v41_merge
+    # instrument minus separation, with the strongest no-sep-compatible
+    # attribution machinery. Rescore with --anchor v41_merge.
+    "fairnosep": ["v41_merge_nosep", "v41_merge_nosep_relB",
+                  "v41_merge_nosep_lt", "v41_merge_nosep_lt_relB",
+                  "v41_merge_nosep_rawov", "v41_merge_nosep_lt_relB_rawov"],
+    # 2x2 factorial (separation x enhancement) under the v41_merge instrument;
+    # v41_merge and v41_merge_nosep are the other two cells.
+    "factorial": ["v41_merge_noenh", "v41_merge_minimal"],
+    # Separator quality ladder (all-8-trained, weaker than e46); anchor v41_merge.
+    "ladder": ["v41_mf2_full64k", "v41_mf2_matched64k", "v41_mf2_full16k", "v41_sep_64k_cnew"],
+    "cnew64_noenh": ["v41_mf2_full64k_noenh", "v41_sep_64k_cnew_noenh"],
+    "cnew64_r2": ["v41_mf2_matched64k_r2"],
+    # with-C control epoch ladder (§4.5.42) — DEV ONLY by standing discipline.
+    "withc": ["v41_withc_e01", "v41_withc_e02", "v41_withc_e03", "v41_withc_e04",
+              "v41_withc_e05", "v41_withc_e06", "v41_withc_e07", "v41_withc_e08",
+              "v41_withc_e10", "v41_withc_e13"],
+    "bandwidth": ["v41_bweoff", "v41_8k", "v41_8k_bwe"],
+    # the three rungs that narrow the §4.5.33 knee bracket (15.29 < val < 15.76)
+    "knee": ["v41_mf2_sw_sunny1", "v41_mf2_sw_volcanic6", "v41_sep_e41"],
+    # off-the-shelf separators — does the plateau belong to the pipeline or the recipe?
+    "b1": ["v41_b1_tflocoformer", "v41_b1_srcorrnet"],
+    # round 2 — same models, different TRAINING CORPUS (the only variable)
+    "b1c": ["v41_b1_tfloco_librimix", "v41_b1_tfloco_wsj02mix", "v41_b1_srcorrnet_wsj"],
+    # round 3: peer SPMamba + MF2-dp librimix sibling (all 8 kHz). DEV-first.
+    "b1d": ["v41_b1_spmamba_librimix", "v41_b1_mf2dp_librimix"],
+    # the 16 kHz arms — the first B1 separators that are not 8 kHz, so AP-BWE is
+    # necessarily OFF (it would narrowband their own output; author 2026-08-26
+    # rules that a feature of the arms, not a confound needing a band-matched
+    # twin). Rescore with --anchor v41_bweoff (matched post-processing; already
+    # decoded on all 141) and again with --anchor v41_merge (as-deployed).
+    # Deliberate structure: TWO reverberant-target arms (tiger = EchoSet,
+    # verified; spmamba_echo2mix = Echo2Mix, presumed-by-lineage and disclosed)
+    # + ONE dry-target arm (sb_whamr16k, WHAMR anechoic targets CONFIRMED — the
+    # PolSESS SB convention), so "16 kHz" is not confounded with "reverberant
+    # targets". v41_b1_spmamba_echo2mix additionally pairs with
+    # v41_b1_spmamba_librimix in "b1d" as a within-architecture, capacity-fixed
+    # 8k-vs-16k + corpus contrast. sb_whamr16k needs a one-off ONLINE prefetch
+    # (not cached as of 2026-08-26). DEV-first.
+    "b1t": ["v41_b1_tiger", "v41_b1_spmamba_echo2mix", "v41_b1_sb_whamr16k"],
+    # THE BAND-ISOLATION ARM (2026-08-27). Every other B1 contrast moves the
+    # sampling rate and the training corpus together, so none of them can say
+    # which one the 16 kHz arms' win belongs to. This one holds architecture
+    # (SepFormer), corpus (WHAMR!) and home-set quality (13.7 vs 13.5 dB SI-SNRi)
+    # fixed and moves the RATE AXIS AS DEPLOYED: speechbrain/sepformer-whamr at
+    # 8 kHz against its own 16 kHz sibling v41_b1_sb_whamr16k. Not a single-
+    # variable isolate and must not be quoted as one — the two siblings are
+    # independently trained weights, and the 8 kHz arm necessarily carries the
+    # deployed 8 kHz chain's ap_bwe where the 16 kHz one runs naive. That bundle
+    # IS the deployed rate axis, which is the axis the thesis argues about. Inherits the deployed 8 kHz
+    # chain unchanged (separator_sample_rate 8000 + ap_bwe from the base), so it
+    # is also a pure one-knob swap against v41_merge and therefore eligible for
+    # the ch6 ladder under the author's "8 kHz only" rule. Weights already cached
+    # (checkpoints/external/speechbrain/speechbrain__sepformer-whamr). Pincers
+    # queue 17's band re-decode from the opposite direction: q17 removes the band
+    # from a good model, this adds the band to a weak one.
+    "b1band": ["v41_b1_sb_whamr"],
+    # The DELIVERED-band probe: TIGER's own output band-limited to 8 kHz and
+    # re-synthesised by AP-BWE, i.e. TIGER separating at 16 kHz but delivering
+    # the same narrowband-then-BWE chain e46 delivers. Scored as a 2-contrast
+    # family: vs v41_b1_tiger (primary — isolates the delivered band, same
+    # weights and same separated waveforms) and vs v41_merge (secondary —
+    # chain-matched, so what remains is operating band + model + corpus).
+    "b1deliv": ["v41_b1_tiger_bwe"],
+    "ladder16k": ["v41_lad16k_e01", "v41_lad16k_e02", "v41_lad16k_e03",
+                 "v41_lad16k_e05", "v41_lad16k_e09", "v41_lad16k_e14",
+                 "v41_lad16k_e21", "v41_lad16k_e30"],
+    "ladder_v2": ["v41_mf2_sw_glad9", "v41_mf2_sw_swept8", "v41_mf2_sw_floral4", "v41_mf2_e23",
+                  "v41_mf2_e31", "v41_mf2_sw_lemon2", "v41_sep_sw_vivid7", "v41_sep_sw_ancient3", "v41_sep128k"],
     # Campaign v5 (instrument reframe) — Sortformer v2.1 dev arms off the v4_eend
     # base (docs/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
     # $SORTFORMER_VENV_PY; rescore with --anchor v3_phraseloop (report vs v4_eend).
@@ -1622,24 +2516,25 @@ def score_configs(config_names, eval_root, recordings, anchor="baseline") -> pd.
             acc["cp"][0] += r["cp_errors"];  acc["cp"][1] += r["cp_length"]
             acc["tcp"][0] += r["tcp_errors"]; acc["tcp"][1] += r["tcp_length"]
             # MIMO-WER on the SAME per-speaker pipeline hyp (speaker-agnostic).
-            mw = scored["mimo"]
-            acc["mimo"][0] += mw["errors"]; acc["mimo"][1] += mw["length"]
+            # ORC/MIMO sub-results are ``None`` when per_fragment_metrics hit its
+            # meeteval DP-table cap (one long test fragment, ccfbb9db__seg00): that
+            # fragment then simply drops out of THAT metric's micro-average (same
+            # exclusion rescore_stratified makes); cpWER/cpCER are unaffected.
+            def _add(key, sub):
+                if sub is not None:
+                    acc[key][0] += sub["errors"]; acc[key][1] += sub["length"]
+            _add("mimo", scored["mimo"])
             # Per-fragment cpWER counts for the bootstrap (errors, ref_words).
             frag_counts[fid] = (float(r["cp_errors"]), float(r["cp_length"]))
             run_secs, run_mtime = _read_run_seconds(d)
             secs_list.append(run_secs)
             mtime_list.append(run_mtime)
-            o = scored["orc"]
-            acc["orc"][0] += o["errors"]; acc["orc"][1] += o["length"]
-            cc = scored["cpcer"]
-            acc["cer"][0] += cc["errors"]; acc["cer"][1] += cc["length"]
+            _add("orc", scored["orc"])
+            _add("cer", scored["cpcer"])
             if mix_utts is not None:
-                m = scored["mix_orc"]
-                acc["mixORC"][0] += m["errors"]; acc["mixORC"][1] += m["length"]
-                mm = scored["mix_mimo"]
-                acc["mixMIMO"][0] += mm["errors"]; acc["mixMIMO"][1] += mm["length"]
-                mxc = scored["mix_cer"]
-                acc["mixCER"][0] += mxc["errors"]; acc["mixCER"][1] += mxc["length"]
+                _add("mixORC", scored["mix_orc"])
+                _add("mixMIMO", scored["mix_mimo"])
+                _add("mixCER", scored["mix_cer"])
             per_rec[fid] = r["cpwer"]
             n_done += 1
         if n_done == 0:

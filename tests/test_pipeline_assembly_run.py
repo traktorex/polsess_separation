@@ -6,6 +6,8 @@ overlap→speaker assignment (with a stub ECAPA), the no-separation
 mixture fill, and event-list construction.
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -175,6 +177,85 @@ def test_assign_too_short_keeps_region_with_fixed_assignment():
     assert out[0]["pairing"] == "arbitrary (too short)"
     assert len(out[0]["emit_pieces"]["SPK_A"]) == n
     assert len(out[0]["emit_pieces"]["SPK_B"]) == n
+
+
+# ---------------------------------------------------------------------------
+# Attribution diagnostics (ctx.assembly_diag / assignment["diag"]) — webapp hook 1
+# ---------------------------------------------------------------------------
+
+
+def test_diag_records_pairing_and_both_cosines():
+    # The ECAPA path publishes the decision AND the two summed cosines behind
+    # it, keyed by the routing-region idx (not the loop position).
+    anchors = {"SPK_A": torch.tensor([1.0, 0.0]), "SPK_B": torch.tensor([0.0, 1.0])}
+    ecapa = _TableEcapa({0.6: [0.6, 0.8], 0.1: [0.0, 1.0]})
+    ovl = _ovl(np.full(SR, 0.6), np.full(SR, 0.1), idx=7)
+    out = _assign_overlaps([ovl], anchors, ["SPK_A", "SPK_B"], ecapa, DEVICE, SR)
+    diag = out[0]["diag"]
+    assert diag["idx"] == 7
+    assert diag["pairing"] == "straight" == out[0]["pairing"]
+    # straight = 0.6 + 1.0, swapped = 0.8 + 0.0 (see the summed-cosine test).
+    assert diag["cos_straight"] == pytest.approx(1.6)
+    assert diag["cos_swapped"] == pytest.approx(0.8)
+    assert isinstance(diag["cos_straight"], float)   # plain float, not np scalar
+
+
+def test_diag_cosines_are_none_when_no_argmax_ran():
+    # Three ways to reach a pairing without an ECAPA argmax — each records the
+    # pairing but no cosines (null, not a fabricated 0.0).
+    o_ext = _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=0)
+    ext = _assign_overlaps(
+        [o_ext], _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+        external_pairings={0: "swapped"},
+    )
+    assert ext[0]["diag"] == {
+        "idx": 0, "pairing": "swapped (relabel_global)",
+        "cos_straight": None, "cos_swapped": None,
+    }
+
+    n = SR // 20   # 0.05 s → too short for ECAPA
+    short = _assign_overlaps(
+        [_ovl(np.full(n, 0.5), np.full(n, -0.5), idx=1)],
+        _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+    )
+    assert short[0]["diag"]["pairing"] == "arbitrary (too short)"
+    assert short[0]["diag"]["cos_straight"] is None
+
+    weak = _assign_overlaps(
+        [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=2)],
+        {"SPK_A": None, "SPK_B": torch.tensor([0.0, 1.0])},
+        ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+    )
+    assert weak[0]["diag"]["pairing"] == "arbitrary (weak anchor)"
+    assert weak[0]["diag"]["cos_swapped"] is None
+
+
+def test_diag_non_finite_cosines_become_null():
+    # NaN cosines must not reach the diagnostic: json.dumps would write a bare
+    # NaN literal that strict JSON parsers reject.
+    anchors = {"SPK_A": torch.tensor([1.0, 0.0]), "SPK_B": torch.tensor([0.0, 1.0])}
+    ecapa = _TableEcapa({0.5: [float("nan"), float("nan")], -0.5: [0.0, 1.0]})
+    out = _assign_overlaps(
+        [_ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=3)],
+        anchors, ["SPK_A", "SPK_B"], ecapa, DEVICE, SR,
+    )
+    diag = out[0]["diag"]
+    assert diag["pairing"] == "arbitrary (non-finite cosine)"
+    assert diag["cos_straight"] is None and diag["cos_swapped"] is None
+    json.dumps(diag, allow_nan=False)     # strict-JSON serialisable
+
+
+def test_assign_overlaps_reports_progress_per_overlap():
+    # The stage_progress hook: one (done, total) call per overlap, in order.
+    calls: list[tuple[int, int]] = []
+    ovls = [
+        _ovl(np.full(SR, 0.5), np.full(SR, -0.5), idx=i) for i in range(3)
+    ]
+    _assign_overlaps(
+        ovls, _anchors(), ["SPK_A", "SPK_B"], _StubEcapa(), DEVICE, SR,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+    assert calls == [(1, 3), (2, 3), (3, 3)]
 
 
 def test_assign_missing_gated_raises_clear_error():
@@ -424,6 +505,67 @@ def test_assembly_run_end_to_end():
     ]
 
 
+def _end_to_end_ctx():
+    """Two speakers, distinct solos, one separated overlap (see
+    `test_assembly_run_end_to_end` for the content rationale)."""
+    enhanced = np.zeros(5 * SR, dtype=np.float32)
+    enhanced[0 : 2 * SR] = 0.5
+    enhanced[3 * SR : 5 * SR] = -0.5
+    ovl = _ovl(
+        np.full(SR, 0.5), np.full(SR, -0.5),
+        idx=0, pad_start=2.0, emit_start=2.0, emit_end=3.0,
+    )
+    ctx = PipelineContext(sample_rate=SR)
+    ctx.audio = enhanced.copy()
+    ctx.enhanced_full = enhanced
+    ctx.diarization = _diarization(
+        [("SPK_A", 0.0, 2.5), ("SPK_B", 2.5, 5.0)], total_duration_s=5.0
+    )
+    ctx.overlap_regions = [(2.0, 3.0)]
+    ctx.speakers = ["SPK_A", "SPK_B"]
+    ctx.overlap_separated = [ovl]
+    return ctx
+
+
+def test_run_publishes_assembly_diag_on_ctx():
+    # Hook 1: the per-overlap attribution decisions land on the context in a
+    # JSON-safe shape (no audio, no numpy scalars) for metadata.json.
+    stage = _make_stage(weak_anchor_warn_below_s=1.0, crossfade_ms=0.0,
+                        edge_fade_ms=0.0, overlap_rms_match_solo=False)
+    ctx = _end_to_end_ctx()
+    stage.run(ctx)
+    assert ctx.assembly_diag == [
+        {
+            "idx": 0,
+            "pairing": "straight",
+            "cos_straight": pytest.approx(2.0),
+            "cos_swapped": pytest.approx(0.0),
+        }
+    ]
+    json.dumps(ctx.assembly_diag, allow_nan=False)
+
+
+def test_run_leaves_assembly_diag_none_in_no_separation_mode():
+    # The mixture-fill path takes no per-overlap attribution decision, so there
+    # is nothing to report — the field stays None rather than claiming a
+    # decision that never happened.
+    stage = _make_stage(weak_anchor_warn_below_s=1.0)
+    ctx = _end_to_end_ctx()
+    ctx.overlap_separated = []          # separation disabled / produced nothing
+    stage.run(ctx)
+    assert ctx.assembly_diag is None
+
+
+def test_run_reports_progress_through_the_stage_sink():
+    # Hook 2: AssemblyStage.run threads the orchestrator's progress sink into
+    # the per-overlap loop.
+    calls: list[tuple[int, int]] = []
+    stage = _make_stage(weak_anchor_warn_below_s=1.0)
+    stage.on_progress = lambda done, total: calls.append((done, total))
+    stage.run(_end_to_end_ctx())
+    assert calls == [(1, 1)]
+
+
 # ---------------------------------------------------------------------------
 # B+ handoff: external_pairings (ctx.overlap_speaker_assignment)
 # ---------------------------------------------------------------------------
@@ -647,3 +789,42 @@ def test_run_solo_onset_pad_clamped_by_overlap_region():
     assert len(solo_entries) == 1
     assert solo_entries[0].orig_start == pytest.approx(0.9)   # not 0.5
     assert solo_entries[0].orig_end == pytest.approx(2.0)
+
+
+# ---------------------------------------------------------------------------
+# _mixture_fill_overlaps — `assembly.nosep_overlap_policy` (fairness knob for
+# the no-separation comparator: "all" = historical duplicate-to-every-speaker,
+# "longest_turn" = floor holder only)
+# ---------------------------------------------------------------------------
+
+
+def test_mixture_fill_longest_turn_gives_slice_to_floor_holder_only():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    # SPK_A holds the floor 0-8 s; SPK_B interjects 2.5-3.5 s → overlap 2.5-3.5.
+    turns = _seg_df([("SPK_A", 0.0, 8.0), ("SPK_B", 2.5, 3.5)])
+    out = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR,
+                                 policy="longest_turn", turns_df=turns)
+    assert len(out) == 1
+    assert list(out[0]["emit_pieces"]) == ["SPK_A"]
+    assert out[0]["pairing"] == "no_separation:longest_turn=SPK_A"
+    np.testing.assert_array_equal(out[0]["emit_pieces"]["SPK_A"],
+                                  audio[int(2.5 * SR): int(3.5 * SR)])
+
+
+def test_mixture_fill_longest_turn_falls_back_to_all_when_no_turn_touches():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    turns = _seg_df([("SPK_A", 0.0, 1.0)])          # nothing touches 5-6 s
+    out = _mixture_fill_overlaps([(5.0, 6.0)], ["SPK_A", "SPK_B"], audio, SR,
+                                 policy="longest_turn", turns_df=turns)
+    assert set(out[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}
+    assert out[0]["pairing"] == "no_separation:longest_turn_fallback_all"
+
+
+def test_mixture_fill_default_policy_is_byte_identical_to_all():
+    audio = np.arange(10 * SR, dtype=np.float32)
+    turns = _seg_df([("SPK_A", 0.0, 8.0), ("SPK_B", 2.5, 3.5)])
+    a = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR)
+    b = _mixture_fill_overlaps([(2.5, 3.5)], ["SPK_A", "SPK_B"], audio, SR,
+                               policy="all", turns_df=turns)
+    assert a[0]["pairing"] == b[0]["pairing"] == "no_separation"
+    assert set(a[0]["emit_pieces"]) == set(b[0]["emit_pieces"]) == {"SPK_A", "SPK_B"}

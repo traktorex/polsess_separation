@@ -1,0 +1,101 @@
+# B1 peer-checkpoint arm (author-picked 2026-08-26) — pipeline byte-identical
+# to the shipped best (sweep_best_e31_refineplus.yaml = v41_merge), ONLY the
+# separator swapped: the OFFICIAL SPMamba release (JusperLee/SPMamba v1.0,
+# Apache-2.0), Libri2Mix-train-100-trained, 6.09M params, loaded into the
+# repo's own models/spmamba.SPMamba (peer weights in the thesis's own
+# architecture — key rename verified exact, strict load). 8 kHz NATIVE per the
+# release conf.yml (n_fft 256 / stride 64) — the deployed pipeline geometry is
+# unchanged. Constructor kwargs come from the conf.yml beside the checkpoint.
+# DISCIPLINE (author 2026-08-26): smoke with NOISY input first, then dev;
+# CLARIN test only by explicit author decision afterwards.
+
+# Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
+# verbatim — the per-knob rationale comments live there.
+sample_rate: 16000
+device: cuda
+deterministic: true
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  backend: sortformer
+  sortformer_head_policy: merge
+  model_id: pyannote/speaker-diarization-3.1   # pyannote-path knob; unused under sortformer
+  num_speakers: 2
+  embedding: ecapa2          # pyannote-path knob; no-op under sortformer
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  max_segment_length_s: 8.0
+  observation_mix_ratio: 0.5
+
+separation:
+  enabled: true
+  separator_backend: spmamba_external
+  checkpoint_path: checkpoints/external/spmamba/SPMamba-Librimix/SPMamba-Librimix/best_model.pth
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25
+  vad_soft_threshold: 0.10
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+post_separation_processing:
+  backend: ap_bwe
+  checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
+
+relabel:
+  enabled: true
+  source: global             # solos + separated overlap streams (B+); "solos" = B
+  embedding: ecapa2
+  audio_source: enhanced     # solos from enhanced_full; overlap streams are raw-derived
+  exclude_overlap: true
+  duration_weighted: false
+  solo_clustering_init: rescue
+
+assembly:
+  enabled: true
+  weak_anchor_warn_below_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  beam_size: 5
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  condition_on_previous_text: false
+  no_speech_threshold: 0.6
+  compression_ratio_threshold: 2.4
+  patience: 1.0
+  no_repeat_ngram_size: 0
+  retry_collapsed_chunk_size: 8
+  loop_retry: true
+  loop_retry_phrase: true
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7

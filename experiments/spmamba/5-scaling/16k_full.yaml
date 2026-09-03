@@ -1,25 +1,22 @@
-# SPMamba paper-faithful scaling run — 16k.   [full 6/256, emb_ks=8, paper optimizer]
+# SPMamba paper-full scaling run — 16k.   [full 6/256, emb_ks=8, paper optimizer]
 #
-# The whole 128k_paper_final.yaml recipe scaled down to 16k — identical to that file
-# EXCEPT train_max_samples (16000) and the W&B target. The reduced-SPMamba scaling
-# runs (config-1, 4/192, emb_ks=4) are already done and separate; these use the full
-# PAPER config end-to-end — architecture AND optimizer — because config-1's
-# hyperparameters were tuned for the reduced architecture (a different model) and
-# shouldn't be transplanted onto the full one.
+# HEADER REWRITTEN 2026-07-29 to match what the file actually runs (the old header
+# described the never-launched 128k_paper_final.yaml: all-8 validation, no curriculum,
+# early-stop 20 — none of which is true of this body).
 #
-# Paper recipe (configs/spmamba-wsj0.yml; see 128k_paper_final.yaml header for full
-# provenance + caveats): Adam lr 1e-3, wd 0, ReduceLROnPlateau(0.5, 10), grad_clip 5.0
-# (trainer always clips; paper yaml has none), epochs 500 cap / early-stop 20, no
-# curriculum, validation on all 8 MM-IPC variants (best checkpoint on avg SI-SDRi).
+# PURPOSE: the capacity-attribution arm for the reduced-SPMamba saturation (ch5 §5.5).
+# Paper ARCHITECTURE + OPTIMIZER (Adam lr 1e-3, wd 0, ReduceLROnPlateau 0.5/patience 2,
+# clip 5.0 as harness constant); TRAINING HARNESS matched to the reduced config-1
+# scaling runs — same 3-stage curriculum, same {SER,SE} validation (best_val_sisdr),
+# early-stop 6 — so the full-vs-reduced overlay is direct: same metric, same curriculum
+# family, same seed. NOT comparable to the 128k finals (all-8 SI-SDRi, different
+# corpus + val set). config-1's hyperparameters were tuned for the reduced architecture
+# (a different model) and are not transplanted onto the full one.
 #
-# Result: the full-SPMamba curve (16k/32k/64k -> deferred 128k_paper_final) is one
-# coherent paper-config curve on the all-8 SI-SDRi metric — directly comparable to the
-# MF2/SepFormer 128k finals (17.04 / 16.0 dB), but NOT a tight overlay on the reduced
-# curve (which reported best_val over {SER,SE}). emb_ks=8 is the paper kernel; your
-# 06_spmamba_investigation found 4 better on PolSESS, so it carries a known handicap.
-#
-# Cost: ~2.75 h/epoch at 16k — run first. (early-stop 20 can add a ~2-day tail; drop
-# to ~12-15 if you want to cap it.)
+# As-run history: l2wdbeif (3080, killed ep8 — NB it pointed at the C_final_128_v2
+# root, not C_new_64) and eaajo48k (4070, C_new_64, killed ep35 at 5.643 {SER,SE} val
+# SI-SDR, still climbing — the resume candidate). Measured cost: 2.70 h/ep (4070),
+# 2.97 h/ep (3080).
 
 data:
   dataset_type: polsess
@@ -51,9 +48,9 @@ training:
   # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
-  weight_decay: 0.0        # Paper -> pure Adam.
+  weight_decay: 4.885301855720965e-06  
   lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
-  lr_patience: 2          # Paper ReduceLROnPlateau patience.
+  lr_patience: 1          # Paper ReduceLROnPlateau patience.
   grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none.
   num_epochs: 500          # Paper cap; early stopping ends it far sooner.
   early_stopping_patience: 6   # Paper.
@@ -64,16 +61,12 @@ training:
 
   use_wandb: true
   wandb_project: polsess-separation-real16k
-  wandb_run_name: 16k_spmamba_full_42
+  wandb_run_name: 16k_spmamba_full_42_third_attempt
   log_level: INFO
 
   validation_variants: ["SER", "SE"]
 
   curriculum_learning:
     - epoch: 1
-      variants: ["C", "R"]
-    - epoch: 3
-      variants: ["C", "R", "SR", "S"]
-    - epoch: 6
       variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start

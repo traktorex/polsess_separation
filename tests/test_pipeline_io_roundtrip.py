@@ -258,6 +258,89 @@ def test_writer_omits_stage_timings_when_none(tmp_path):
     assert "stage_timings" not in meta
 
 
+def _reject_json_constant(name):   # pragma: no cover — only fires on bad output
+    raise AssertionError(f"non-JSON constant {name!r} in metadata.json")
+
+
+def test_writer_embeds_assembly_diag_when_set(tmp_path):
+    # Hook 1: ctx.assembly_diag (per-overlap pairing + ECAPA cosine sums) is
+    # written verbatim into metadata.json, and survives as strict JSON.
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    ctx.assembly_diag = [
+        {"idx": 0, "pairing": "straight", "cos_straight": 1.6, "cos_swapped": 0.8},
+        {"idx": 3, "pairing": "arbitrary (too short)",
+         "cos_straight": None, "cos_swapped": None},
+    ]
+    write_pipeline_outputs(ctx, rec_dir, subdir_name="pipeline")
+    raw = (rec_dir / "pipeline" / "metadata.json").read_text(encoding="utf-8")
+    meta = json.loads(raw)
+    assert meta["assembly_diag"] == ctx.assembly_diag
+    # No NaN/Infinity literals: the webapp parses this with a strict parser.
+    json.loads(raw, parse_constant=_reject_json_constant)
+
+
+def test_writer_omits_assembly_diag_when_none(tmp_path):
+    # Default (assembly didn't run, or ran in no-separation mode): key absent —
+    # byte-identical to a run from before the hook existed.
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    assert ctx.assembly_diag is None
+    write_pipeline_outputs(ctx, rec_dir, subdir_name="pipeline")
+    meta = json.loads(
+        (rec_dir / "pipeline" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert "assembly_diag" not in meta
+
+
+def test_diarization_json_carries_pre_routing_overlaps(tmp_path):
+    # Hook 3: the eval-facing diarization.json exposes the diarizer's own
+    # overlap timeline (spill-schema field names), one entry per overlaps_df
+    # row. This is the PRE-routing list — routing.json holds the post-filter
+    # subset, and the difference is the routing diff.
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)
+    ctx.diarization.overlaps_df = pd.DataFrame(
+        [
+            {"start": 1.5, "end": 2.25, "duration": 0.75},
+            {"start": 7.0, "end": 7.05, "duration": 0.05},   # routing drops this
+        ],
+        columns=["start", "end", "duration"],
+    )
+    ctx.overlap_regions = [(1.5, 2.25)]                      # post-filter
+    write_pipeline_outputs(ctx, rec_dir, subdir_name="pipeline")
+
+    diar = json.loads(
+        (rec_dir / "pipeline" / "diarization.json").read_text(encoding="utf-8")
+    )
+    assert diar["overlaps"] == [
+        {"start": 1.5, "end": 2.25, "duration": 0.75},
+        {"start": 7.0, "end": 7.05, "duration": 0.05},
+    ]
+    assert len(diar["turns"]) == len(_UTTS)                  # turns unchanged
+    # The pre/post-routing difference is visible across the two files.
+    routing = json.loads(
+        (rec_dir / "pipeline" / "routing.json").read_text(encoding="utf-8")
+    )
+    assert len(routing["overlap_regions"]) == 1
+
+
+def test_diarization_json_overlaps_empty_when_no_overlap(tmp_path):
+    # Empty overlaps_df (the common no-overlap recording) → an empty array, not
+    # a missing key: consumers can always index it.
+    rec_dir = tmp_path / "eval" / "clarin" / REC_ID
+    rec_dir.mkdir(parents=True)
+    ctx = _fake_ctx(rec_dir)                                 # empty overlaps_df
+    write_pipeline_outputs(ctx, rec_dir, subdir_name="pipeline")
+    diar = json.loads(
+        (rec_dir / "pipeline" / "diarization.json").read_text(encoding="utf-8")
+    )
+    assert diar["overlaps"] == []
+
+
 def test_writer_falls_back_to_speaker_id_without_label(tmp_path):
     # spk_to_label.get(spk, spk): a speaker missing from the label map writes
     # under its raw id rather than crashing — the documented fallback.

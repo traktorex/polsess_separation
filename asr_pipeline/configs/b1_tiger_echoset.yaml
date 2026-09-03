@@ -1,11 +1,45 @@
-# B1 tier-2 SOTA arm — pipeline byte-identical to the shipped best
-# (sweep_best_e31_refineplus.yaml = v41_merge), ONLY the separator swapped:
-# TIGER (ICLR 2025, Apache-2.0), EchoSet-trained (realistic reverb+noise —
-# the most deployment-like public training corpus in the ladder), 0.8M
-# params, 16 kHz native (separator_# Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
-# verbatim — the per-knob rationale comments live there.
-sample_rate: 16000 — the resample
+# B1 tier-2 SOTA arm — 16 kHz native separator.
+#
+# TIGER (Xu et al., ICLR 2025, arXiv:2410.01469; Apache-2.0), 822K params,
+# trained on EchoSet — Matterport3D-RIR reverberant + noisy 2-speaker mixtures,
+# the most deployment-like public training corpus in the B1 ladder.
+# NB EchoSet targets are REVERBERANT (spk{1,2}_reverb.wav): TIGER separates
+# without dereverberating, where PolSESS SB targets are dry and e46 separates
+# AND dereverberates (see datasets/echoset_dataset.py). Disclose alongside the
+# corpus in any citation.
+#
+# Two deliberate deviations from sweep_best_e31_refineplus.yaml (v41_merge),
+# both forced by the model's native rate — everything else is verbatim:
+#   1. separator_sample_rate: 16000. The stage's resample round-trip becomes a
+#      true identity (torchaudio.functional.resample early-returns when
+#      orig_freq == new_freq), so window/seam/VAD geometry is unchanged: every
+#      geometry knob is expressed in seconds against the 16 kHz pipeline rate,
+#      never against the separator rate.
+#   2. post_separation_processing.backend: naive (NOT ap_bwe). AP-BWE is an
+#      8->16 kHz reconstruction whose `extend` unconditionally decimates its
+#      input to 8 kHz and interpolates back before the generator runs
+#      (stages/post_separation_processing.py, _AP_BWE_LR_SR). On a 16 kHz
+#      separator that DESTROYS the genuine 4-8 kHz band and replaces it with
+#      synthesis — it would silently measure "TIGER, narrowbanded". `naive` is
+#      identity + the VAD mask, which is all this always-on stage owes Stage 4.
+#      This is NOT a confound to be controlled away (author ruling 2026-08-26):
+#      band extension exists to undo an 8 kHz separator's narrowbanding, and a
+#      16 kHz model simply does not need it. Anchor the arm against
+#      `v41_bweoff` (= v41_merge with the same `naive` override, already
+#      decoded on all 141) so the primary contrast is the separator alone;
+#      report `v41_merge` as the secondary, as-deployed number.
+#
+# training_chunk_length_s stays 4.0, NOT EchoSet's 6.00 s item length: TIGER is
+# STFT-based and length-agnostic (istft(..., length=nsample), no fixed-length
+# state), and holding geometry fixed is the B1 discipline that makes the arm
+# comparable at all.
+#
+# DISCIPLINE: smoke with NOISY input first (TIGER is noisy-trained, so clean
+# input is out-of-manifold exactly as SR-CorrNet's is), then dev; CLARIN test
+# only by explicit author decision afterwards.
 
+# Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
+# verbatim — the per-knob rationale comments live there.
 sample_rate: 16000
 device: cuda
 deterministic: true
@@ -51,7 +85,13 @@ separation:
   vad_release_frames: 1
 
 post_separation_processing:
-  backend: ap_bwe
+  backend: naive           # NOT ap_bwe — see header note 2. TIGER is 16 kHz native.
+  # Kept verbatim from sweep_best_e31_refineplus.yaml although DEAD under
+  # `naive` (_NaiveBackend ignores it; load_signature returns just the backend
+  # name). Deleting it would NOT be a no-op for review: the dataclass default
+  # is the same path without the `.zip` suffix, so an omitted key shows up as a
+  # spurious 5th difference and breaks the "diff this arm against the shipped
+  # config, expect exactly N lines" check the B1 family is verified with.
   checkpoint_path: /home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k.zip
 
 relabel:

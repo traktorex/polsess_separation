@@ -35,6 +35,22 @@ def _num2words_importable() -> bool:
     return importlib.util.find_spec("num2words") is not None
 
 
+def _hf_snapshot_cached(repo_id: str) -> bool:
+    """True iff ``repo_id``'s ``config.json`` is already in the local HF cache.
+
+    Used for the warn-only "first run needs network" notice on the HF-loaded
+    separator backends. Deliberately optimistic: any error (odd repo id, HF
+    layout change, unreadable cache) returns True so preflight prints nothing
+    rather than crying wolf — this is a courtesy warning, never a gate.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        return try_to_load_from_cache(repo_id, "config.json") is not None
+    except Exception:
+        return True
+
+
 def preflight(cfg: PipelineConfig) -> list:
     """Return the blocking-failure strings for ``cfg``'s configured backends.
 
@@ -138,9 +154,36 @@ def preflight(cfg: PipelineConfig) -> list:
                     f"tf_locoformer checkpoint missing: {ck} (download "
                     "recipe in asr_pipeline/vendor/tf_locoformer/__init__.py)."
                 )
-        # "tiger" and "mossformer2_dp" need only vendored code + an HF
-        # download at load — nothing to preflight beyond the config
-        # validation already done.
+        elif sep_backend == "spmamba_external":
+            # LOCAL release directory: the .pth AND the conf.yml beside it are
+            # both required (the loader reads constructor kwargs from the conf,
+            # because the librimix and echo2mix builds differ in n_fft/stride).
+            # Checked here so a half-unzipped release fails in seconds instead
+            # of deep inside load().
+            ck = Path(cfg.separation.checkpoint_path)
+            if not ck.exists():
+                problems.append(
+                    f"spmamba_external checkpoint missing: {ck} (official "
+                    "SPMamba release, github.com/JusperLee/SPMamba v1.0)."
+                )
+            elif not (ck.parent / "conf.yml").exists():
+                problems.append(
+                    f"spmamba_external needs conf.yml beside the checkpoint "
+                    f"({ck.parent / 'conf.yml'}) — it carries the build's "
+                    "n_fft/stride. Re-unzip the release directory intact."
+                )
+        elif sep_backend in ("tiger", "mossformer2_dp"):
+            # Vendored code + an HF download at load. Nothing can be checked as
+            # a hard problem, but warn when the snapshot is not cached yet, so
+            # an HF_HUB_OFFLINE=1 eval run fails here rather than mid-batch
+            # inside load() (same courtesy as the speechbrain branch above).
+            if not _hf_snapshot_cached(cfg.separation.checkpoint_path):
+                print(
+                    f"[warn] external separator not cached yet "
+                    f"({cfg.separation.checkpoint_path}) — the first run "
+                    "downloads it from HuggingFace (needs network; unset "
+                    "$HF_HUB_OFFLINE for that run)."
+                )
 
     # --- Warn-only: num2words (SCOPE §10 q2 is the author's; preflight never blocks) ---
     if not _num2words_importable():

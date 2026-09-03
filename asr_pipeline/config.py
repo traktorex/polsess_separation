@@ -297,6 +297,7 @@ class EnhancementConfig:
 SEPARATOR_BACKENDS = (
     "repo", "speechbrain", "clearvoice",
     "sr_corrnet", "tf_locoformer", "tiger", "mossformer2_dp",
+    "spmamba_external",
 )
 
 
@@ -349,6 +350,17 @@ class SeparationConfig:
     #     "alibabasglab/mossformer2-whamr-2spk", 8 kHz); model code vendored
     #     under asr_pipeline/vendor/mossformer2_dp (MIT). NB a different
     #     architecture from the repo's own models/mossformer2.
+    #   B1 peer-checkpoint arm (2026-08-26):
+    #   - "spmamba_external": a LOCAL best_model.pth from the official SPMamba
+    #     release (github.com/JusperLee/SPMamba v1.0, Apache-2.0), loaded into
+    #     the REPO's own models/spmamba.SPMamba class — constructor kwargs are
+    #     read from the conf.yml that ships beside the checkpoint (the
+    #     librimix and echo2mix builds differ in n_fft/stride and sample
+    #     rate: 8 kHz vs 16 kHz — set separator_sample_rate to the conf's
+    #     datamodule rate). Like "repo", this backend deliberately imports
+    #     from the parent project (the point of the arm is peer weights in
+    #     the thesis's own architecture); it is the second seam to the
+    #     parent, after "repo".
     separator_backend: str = "repo"  # one of SEPARATOR_BACKENDS (loader notes above)
     checkpoint_path: str = (
         "checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt"
@@ -452,7 +464,15 @@ class PostSeparationProcessingConfig:
     depends on ``s_gated`` being populated. To run "VAD mask only with
     no BWE", set ``backend: naive`` — the stage still runs (the mask
     multiplication is its core job) but no neural model touches the
-    audio. The 8 kHz spectral content is left as-is.
+    audio, so whatever spectral content the separator produced is left
+    as-is.
+
+    ``naive`` is REQUIRED, not merely allowed, whenever the separator is
+    16 kHz-native (``separator_sample_rate: 16000`` — B1's TIGER,
+    SPMamba-Echo2Mix and SepFormer-WHAMR16k arms): ``ap_bwe`` decimates its
+    input to 8 kHz and interpolates back before its generator runs, so on a
+    full-band input it destroys the genuine 4-8 kHz band and replaces it with
+    synthesis.
     """
 
     # Backend selector:
@@ -513,6 +533,29 @@ class AssemblyConfig:
     # of a syllable. Gates how many overlaps reach ANY assignment strategy.
     # Default 0.1 = current behaviour (byte-identical). >= 0.
     overlap_min_duration_s: float = 0.1
+    # NO-SEPARATION overlap policy (`separation.enabled: false` only — ignored
+    # whenever separated streams exist). Decides who receives the mixture slice
+    # of each overlap region in the no-sep ablation arm:
+    #   - "all" (default): the same slice goes to EVERY speaker (the historical
+    #     behaviour, byte-identical): recall for both, insertions for the one
+    #     Whisper did not transcribe.
+    #   - "longest_turn": the slice goes ONLY to the speaker whose pass-1
+    #     diarization turn overlapping the region is the longest (the floor
+    #     holder; the interjector is usually the short one) — no duplicated
+    #     content, the other speaker's overlapped words are simply lost.
+    # Exists so the no-separation comparator in the thesis's separation-effect
+    # table can use its STRONGEST policy (chosen on dev, pre-registered) —
+    # a fairness knob for a planned comparison (SCOPE §6/§7), not a feature.
+    nosep_overlap_policy: str = "all"          # "all" | "longest_turn"
+    # NO-SEPARATION overlap AUDIO source (same scope as the policy above):
+    #   - "enhanced" (default, historical): the overlap slice is cut from the
+    #     enhanced full mixture (what the solo pieces are cut from).
+    #   - "raw": cut from the raw mixture `ctx.audio` — matches what the
+    #     separator receives in the full pipeline (the separator consumes the
+    #     RAW mixture), so the no-sep comparator is not handicapped by a
+    #     single-speaker enhancer suppressing the quieter talker in overlap.
+    # Ignored when enhancement is disabled (assembly audio is raw anyway).
+    nosep_overlap_source: str = "enhanced"     # "enhanced" | "raw"
     # ECAPA only needs a few seconds of audio for a stable speaker embedding,
     # but a richer anchor sharpens overlap speaker-assignment, so we feed as
     # much solo as is safe. On a long recording (e.g. 15 min) the per-speaker
@@ -884,6 +927,18 @@ class PipelineConfig:
     # Working sample rate for the pipeline (diarization / SE / VAD / ASR all
     # operate here). The separator runs at its own `separator_sample_rate`.
     sample_rate: int = 16_000
+
+    # Band-limit the INPUT recording to this bandwidth at load time (0 = off,
+    # the default). The audio is decimated to `2 * input_bandlimit_hz` and
+    # interpolated back to `sample_rate`, so every stage keeps running at its
+    # own trained rate while seeing telephone-band material. This exists for
+    # the "what if the input were 8 kHz" ablation (`input_bandlimit_hz: 4000`,
+    # paired with `post_separation_processing.backend: naive` to keep the
+    # bandwidth extension from putting the upper band back) — running the model
+    # stages themselves at 8 kHz is not possible: Sortformer, FRCRN, silero,
+    # ECAPA2 and WhisperX are all 16 kHz models; only the separator is 8 kHz
+    # and it resamples internally anyway.
+    input_bandlimit_hz: int = 0
     device: str = "cuda"
 
     # Force deterministic cuDNN algorithms so runs are reproducible. The
@@ -919,6 +974,10 @@ class PipelineConfig:
 
     def __post_init__(self):
         # Validate enum-string knobs early so misconfiguration is loud.
+        if self.input_bandlimit_hz:
+            _require_range(self.input_bandlimit_hz, "input_bandlimit_hz",
+                           lo=1, hi=self.sample_rate // 2, hi_open=True,
+                           note="0 disables band-limiting; must stay below Nyquist")
         _one_of(self.separation.context_window_mode, "context_window_mode",
                 ("expand_to_chunk", "fixed_pad", "none"))
         _one_of(self.separation.separator_backend, "separation.separator_backend",
@@ -940,6 +999,10 @@ class PipelineConfig:
                 ("whisperx", "coherex"))
         _one_of(self.assembly.anchor_embedding, "assembly.anchor_embedding",
                 ("ecapa1", "ecapa2"))
+        _one_of(self.assembly.nosep_overlap_policy, "assembly.nosep_overlap_policy",
+                ("all", "longest_turn"))
+        _one_of(self.assembly.nosep_overlap_source, "assembly.nosep_overlap_source",
+                ("enhanced", "raw"))
         _one_of(self.diarization.clustering_method, "diarization.clustering_method",
                 ("average", "centroid", "complete", "median", "single",
                  "ward", "weighted"))

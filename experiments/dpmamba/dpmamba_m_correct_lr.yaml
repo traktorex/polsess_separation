@@ -1,0 +1,72 @@
+# DPMamba M (Medium) — ~15.9M params, at the LADDER-CONSISTENT learning rate.
+# Based on: Jiang et al. 2024, Dual-Path Mamba (arXiv 2403.18257, Table 1)
+#
+# Differs from dpmamba_m.yaml in exactly one field: lr 1.5e-4 -> 3e-4.
+# Every other rung of both Mamba ladders holds the PER-SAMPLE lr at 1.5e-4
+# (XS: bs 4 @ 6e-4, S: bs 2 @ 3e-4, L: bs 1 @ 1.5e-4); M was the only rung
+# where lr did not track batch size, giving it 0.75e-4 per sample — half of
+# everyone else. This run tests whether the Tabela 5.4 M dip (3.45 < S's 3.84)
+# is that optimizer artifact rather than a capacity finding.
+#
+# Read the result DIRECTIONALLY against S's 3.84, not against M's own 3.45:
+# the original ladder trained in the fp16 regime and this reruns in bf16
+# (author 2026-08-09: precision effect judged small; revisit only if the
+# result lands ambiguously close).
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: dpmamba
+  dpmamba:
+    N: 256          # Encoder channels (paper M)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    num_layers: 16  # Paper M: 16 dual-path layers (doubled from S)
+    chunk_size: 250
+    n_mamba_dp: 2   # BiMamba blocks per intra/inter path (author default)
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    skip_around_intra: false  # Disabled: causes NaN with bf16 AMP at 16 layers (residual accumulation)
+    residual_in_fp32: true
+
+training:
+  lr: 0.0003     # = 2 x 1.5e-4 for bs 2, matching the ladder's per-sample rate
+  weight_decay: 0.0
+  grad_clip_norm: 0.5
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  # Renamed off the original's `dpmamba-m`: both runs target the same project,
+  # and W&B display names collide across runs (ch5 arc §7.3 hazard) — a shared
+  # name would make the lr pair indistinguishable in the very table it feeds.
+  wandb_run_name: dpmamba-m-lr3e4
+  log_file: null
+  log_level: INFO
+  resume_from: null
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 3
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 5
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

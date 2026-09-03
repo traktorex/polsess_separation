@@ -594,20 +594,70 @@ def _load_tf_locoformer_separator(
     ckpt_path: str, device: torch.device
 ) -> _TFLocoformerAdapter:
     """Load the vendored TF-Locoformer with a local checkpoint file
-    (``checkpoint_path`` = the .pth). Model kwargs + STFT params are the
-    WHAMR-medium constants recorded in the vendor package — the one published
-    checkpoint this arm uses; extend there if another variant is ever added."""
-    from asr_pipeline.vendor.tf_locoformer import (
-        TFLocoformerSeparator, WHAMR_MEDIUM_KWARGS, WHAMR_MEDIUM_STFT,
-    )
+    (``checkpoint_path`` = the .pth). Constructor kwargs + STFT params are
+    resolved per checkpoint by ``vendor.tf_locoformer.variant_for`` — upstream's
+    whamr / librimix / wsj0_2mix builds are NOT interchangeable (they differ in
+    ffn_hidden_dim, conv1d_kernel and n_fft), and an unknown name raises there
+    rather than silently defaulting to WHAMR."""
+    from asr_pipeline.vendor.tf_locoformer import TFLocoformerSeparator, variant_for
 
-    model = TFLocoformerSeparator(**WHAMR_MEDIUM_KWARGS)
+    kwargs, stft = variant_for(ckpt_path)
+    model = TFLocoformerSeparator(**kwargs)
     sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     # Upstream ships keys prefixed 'separator.' (ESPnet wrapper) — strip.
     sd = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
     model.load_state_dict(sd, strict=True)
     model.to(device).eval()
-    return _TFLocoformerAdapter(model, **WHAMR_MEDIUM_STFT)
+    return _TFLocoformerAdapter(model, **stft)
+
+
+def _load_spmamba_external_separator(ckpt_path: str, device: torch.device):
+    """Load an official SPMamba release checkpoint (JusperLee/SPMamba v1.0)
+    into the REPO's own ``models.spmamba.SPMamba`` class.
+
+    ``checkpoint_path`` = the LOCAL ``best_model.pth``; the ``conf.yml`` that
+    ships beside it supplies the constructor kwargs (the librimix and
+    echo2mix builds differ in n_fft/stride — never hardcode them). The only
+    difference from the repo class is submodule naming inside BiMamba:
+    upstream ``layers``/``backward_layers`` vs the repo's ``forward_blocks``/
+    ``backward_blocks`` — a pure rename, verified exact 2026-08-26 (0 missing,
+    0 unexpected, 0 shape mismatches, strict load). Like the "repo" backend,
+    this deliberately imports from the parent project: the arm's purpose is
+    peer-trained weights in the thesis's own architecture.
+
+    The repo class's forward is [B, T] -> [B, n_srcs, T] at the checkpoint's
+    native rate — already the stage contract, so no adapter is needed.
+    """
+    import yaml
+
+    from models.spmamba import SPMamba as _RepoSPMamba
+
+    ckpt = Path(ckpt_path)
+    conf_path = ckpt.parent / "conf.yml"
+    if not conf_path.exists():
+        raise FileNotFoundError(
+            f"spmamba_external needs the release's conf.yml beside the "
+            f"checkpoint (looked at {conf_path}) — it carries the build's "
+            "n_fft/stride, which differ between the librimix and echo2mix "
+            "releases. Re-unzip the release directory intact."
+        )
+    with open(conf_path, encoding="utf-8") as fh:
+        conf = yaml.safe_load(fh)
+    net = dict(conf["audionet"]["audionet_config"])
+    # Upstream-only fields the repo constructor does not take: n_imics is
+    # mono-only here anyway; use_builtin_complex is an ESPnet STFT detail.
+    for k in ("n_imics", "use_builtin_complex"):
+        net.pop(k, None)
+    model = _RepoSPMamba(**net)
+    sd = torch.load(ckpt, map_location="cpu", weights_only=False)["state_dict"]
+    sd = {
+        k.replace(".backward_layers.", ".backward_blocks.")
+         .replace(".layers.", ".forward_blocks."): v
+        for k, v in sd.items()
+    }
+    model.load_state_dict(sd, strict=True)
+    model.to(device).eval()
+    return model
 
 
 class _MossFormer2DPSeparator(torch.nn.Module):
@@ -874,6 +924,10 @@ class SeparationStage(Stage):
             separator = _load_mossformer2_dp_separator(
                 self.config.checkpoint_path, device
             )
+        elif backend == "spmamba_external":
+            separator = _load_spmamba_external_separator(
+                self.config.checkpoint_path, device
+            )
         else:  # unreachable — PipelineConfig.__post_init__ validates the enum
             raise ValueError(f"Unknown separator_backend: {backend!r}")
 
@@ -1048,6 +1102,8 @@ class SeparationStage(Stage):
                     f"run: overlap {idx + 1}/{n_regions} done "
                     f"({time.perf_counter() - t0:.1f}s elapsed)"
                 )
+            # No-op unless the orchestrator wired a progress sink.
+            self._progress(idx + 1, n_regions)
 
         ctx.overlap_separated = results
 

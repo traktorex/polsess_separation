@@ -78,6 +78,28 @@ def test_naive_gated_is_raw_times_mask():
     assert entry["s1_gated"].dtype == np.float32
 
 
+def test_run_reports_progress_per_region():
+    # Hook 2: one (done, total) call per overlap region through the sink the
+    # orchestrator wires around run().
+    calls: list[tuple[int, int]] = []
+    stage = _stage()
+    stage.on_progress = lambda done, total: calls.append((done, total))
+    entries = [
+        _entry([1.0], [1.0], [1.0], [1.0], idx=i) for i in range(3)
+    ]
+    stage.run(_ctx_with(entries))
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_run_without_progress_sink_is_silent():
+    # Default (no sink): `_progress` is a no-op, stage behaviour unchanged.
+    stage = _stage()
+    assert stage.on_progress is None
+    entry = _entry([1.0], [1.0], [1.0], [1.0])
+    stage.run(_ctx_with([entry]))        # must not raise
+    assert "s1_gated" in entry
+
+
 class _SpyBackend:
     """Non-identity backend that records what it was asked to extend.
 

@@ -10,9 +10,11 @@
 # (run `setup.sh --rclone` once to set it up).
 #
 # Usage:
-#   ./download_dataset.sh                    # default: rclone from gdrive:polsess/...
-#   POLSESS_URL=... ./download_dataset.sh    # override source (gdrive: / HTTP / local file)
-#   ./download_dataset.sh --force            # re-download even if already extracted
+#   ./download_dataset.sh                                   # default: PolSESS_C_final_128_v2
+#   DATASET_NAME=PolSESS_C_new_64 ./download_dataset.sh     # 64k scaling corpus
+#   DATASET_NAME=PolSESS_C_both ./download_dataset.sh       # 8k-effective pilot corpus
+#   POLSESS_URL=... ./download_dataset.sh                   # override source (gdrive: / HTTP / local file)
+#   ./download_dataset.sh --force                           # re-download even if already extracted
 
 set -euo pipefail
 
@@ -21,15 +23,25 @@ set -euo pipefail
 # ============================================================================
 
 DATASETS_DIR="${DATASETS_DIR:-$HOME/datasets}"
-DATASET_NAME="PolSESS_C_final_128_v2"
-ARCHIVE_NAME="${DATASET_NAME}.zip"
+
+# Which corpus to fetch (see CLAUDE.md "Dataset Variants" for what each one is):
+#   PolSESS_C_final_128_v2 — 128k finals corpus (.zip, ~47 GB)  [default]
+#   PolSESS_C_new_64       — 64k scaling corpus (.zip, ~22 GB); 16k/32k arms
+#                            use train_max_samples subsets of it
+#   PolSESS_C_both         — pilot corpus (.tar.gz, ~6 GB)
+DATASET_NAME="${DATASET_NAME:-PolSESS_C_final_128_v2}"
+
+# The pilot corpus ships as .tar.gz on the Drive remote, the newer corpora as .zip.
+case "$DATASET_NAME" in
+    PolSESS_C_both) ARCHIVE_NAME="${DATASET_NAME}.tar.gz" ;;
+    *)              ARCHIVE_NAME="${DATASET_NAME}.zip" ;;
+esac
 
 # Default: rclone remote path. Requires an `rclone config` with a remote named 'gdrive'.
 DEFAULT_URL="gdrive:polsess/${ARCHIVE_NAME}"
 
 POLSESS_URL="${POLSESS_URL:-$DEFAULT_URL}"
 
-# Archive unzips to a single-level directory (no double-nesting).
 EXTRACTED_PATH="$DATASETS_DIR/$DATASET_NAME"
 
 # ============================================================================
@@ -51,7 +63,7 @@ while [ $# -gt 0 ]; do
         --force)
             FORCE=true; shift ;;
         -h|--help)
-            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -70,10 +82,10 @@ if [ -d "$EXTRACTED_PATH" ] && [ "$FORCE" = false ]; then
 fi
 
 # ============================================================================
-# Ensure unzip is available (the archive is a .zip — fails noisily without it)
+# Ensure unzip is available for .zip archives (fails noisily without it)
 # ============================================================================
 
-if ! command -v unzip &>/dev/null; then
+if [[ "$ARCHIVE_NAME" == *.zip ]] && ! command -v unzip &>/dev/null; then
     info "Installing unzip..."
     if command -v apt-get &>/dev/null; then
         apt-get update -qq && apt-get install -y -qq unzip
@@ -119,12 +131,27 @@ ok "Archive downloaded ($(du -h "$archive" | cut -f1))"
 # ============================================================================
 
 info "Extracting to $DATASETS_DIR..."
-unzip -q "$archive" -d "$DATASETS_DIR"
+case "$archive" in
+    *.zip)          unzip -q "$archive" -d "$DATASETS_DIR" ;;
+    *.tar.gz|*.tgz) tar -xzf "$archive" -C "$DATASETS_DIR" ;;
+    *)              error "Unknown archive type: $archive" ;;
+esac
 rm -f "$archive"
 ok "Extraction complete"
 
 if [ ! -d "$EXTRACTED_PATH" ]; then
     error "Expected path missing after extraction: $EXTRACTED_PATH (archive layout may differ — check $DATASETS_DIR)"
+fi
+
+# The corpora differ in nesting: C_final_128_v2 extracts flat (train/ at top level),
+# C_new_64 and C_both extract double-nested (<name>/<name>/train). The data root the
+# code needs is the directory that contains train/.
+if [ -d "$EXTRACTED_PATH/train" ]; then
+    DATA_ROOT="$EXTRACTED_PATH"
+elif [ -d "$EXTRACTED_PATH/$DATASET_NAME/train" ]; then
+    DATA_ROOT="$EXTRACTED_PATH/$DATASET_NAME"
+else
+    error "No train/ directory found under $EXTRACTED_PATH — archive layout differs from expected"
 fi
 
 # ============================================================================
@@ -133,19 +160,20 @@ fi
 
 if grep -q "^export POLSESS_DATA_ROOT=" ~/.bashrc 2>/dev/null; then
     current="$(grep "^export POLSESS_DATA_ROOT=" ~/.bashrc | tail -1)"
-    if [[ "$current" == *"$EXTRACTED_PATH\""* ]]; then
-        ok "POLSESS_DATA_ROOT already pointing at $EXTRACTED_PATH"
+    if [[ "$current" == *"$DATA_ROOT\""* ]]; then
+        ok "POLSESS_DATA_ROOT already pointing at $DATA_ROOT"
     else
         warn "POLSESS_DATA_ROOT is set in ~/.bashrc but to a different path:"
         warn "  $current"
-        warn "  Edit ~/.bashrc manually if you want to switch to $EXTRACTED_PATH"
+        warn "  With several corpora on one machine, prefer passing --data-root per run:"
+        warn "    python train.py --config <cfg> --data-root $DATA_ROOT"
     fi
 else
     info "Adding POLSESS_DATA_ROOT to ~/.bashrc..."
     cat >> ~/.bashrc << ENVEOF
 
 # polsess_separation dataset (added by download_dataset.sh)
-export POLSESS_DATA_ROOT="$EXTRACTED_PATH"
+export POLSESS_DATA_ROOT="$DATA_ROOT"
 ENVEOF
     ok "Env var persisted — run 'source ~/.bashrc' to load it in this shell"
 fi
@@ -156,13 +184,13 @@ fi
 
 echo ""
 echo "============================================"
-ok "Dataset ready at $EXTRACTED_PATH"
+ok "Dataset ready — data root: $DATA_ROOT"
 echo "============================================"
 echo ""
-info "Top-level contents:"
-ls "$EXTRACTED_PATH" | sed 's/^/  /'
+info "Data root contents:"
+ls "$DATA_ROOT" | sed 's/^/  /'
 echo ""
 echo "Next:"
 echo "  source ~/.bashrc"
-echo "  cd ~/polsess_separation && python train.py --config experiments/sepformer/sepformer_baseline.yaml"
+echo "  cd ~/polsess_separation && python train.py --config <experiment yaml> --data-root $DATA_ROOT"
 echo ""

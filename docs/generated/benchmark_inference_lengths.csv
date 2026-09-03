@@ -1,0 +1,7 @@
+model,size,config,params,duration_s,gmacs,gmacs_per_s_audio,gflops,gflops_per_s_audio,latency_ms_median,latency_ms_iqr,rtf,peak_infer_mem_mb,gmacs_aten_crosscheck,gpu,torch,cuda,ptflops
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,2.0,42.9968,21.4984,85.9935,42.9968,51.58,16.32,0.02579,269.4,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,4.0,87.3716,21.8429,174.7431,43.6858,81.81,4.29,0.02045,520.6,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,8.0,179.9942,22.4993,359.9884,44.9986,154.78,11.48,0.01935,1022.5,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,2.0,207.8603,103.9301,415.7206,207.8603,113.81,2.44,0.05690,520.4,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,4.0,420.9817,105.2454,841.9633,210.4908,214.50,5.83,0.05363,1004.5,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,8.0,856.5214,107.0652,1713.0428,214.1303,423.59,7.59,0.05295,1979.0,,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5

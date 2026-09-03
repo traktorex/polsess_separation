@@ -221,34 +221,21 @@ def _normalize_text(s: str, lang: str = "pl") -> str:
 # Word-boundary sentinel for character-level (CER) tokenization: spaces become
 # this token so they are scored as edits, matching cp_cer's string-Levenshtein
 # convention (spaces count). U+2581 does not occur in normalized transcript text.
-_CER_SPACE = "▁"
-
-
-def _char_words(text_norm: str) -> str:
-    """Char-tokenize a normalized 'words' string for character-level (CER)
-    scoring: each character becomes its own whitespace-separated token (spaces →
-    the _CER_SPACE sentinel). A WER routine run on this yields CER, reusing the
-    exact permutation/assignment machinery of the word-level metrics."""
-    return " ".join(_CER_SPACE if ch == " " else ch for ch in text_norm)
-
-
 def _seglst_from_dict(
     utts_by_spk: Dict[str, List[Utterance]], session_id: str, lang: str = "pl",
-    char_level: bool = False,
 ):
     """SegLST rows from per-speaker utterances, with normalization applied.
 
     Shared by every metric below — one row per non-empty utterance.
-    `lang` selects the number speller (see ``_normalize_text``). When
-    ``char_level`` is set the normalized text is char-tokenized (``_char_words``)
-    so a WER routine computes CER. meeteval is imported lazily so the module
-    stays importable without it.
+    `lang` selects the number speller (see ``_normalize_text``). meeteval is
+    imported lazily so the module stays importable without it. All CER metrics
+    reuse their word metric's assignment and score chars with plain edit
+    distance (author ruling 2026-07-28) — there is no char-tokenized SegLST.
     """
     from meeteval.io.seglst import SegLST
 
     def _words(u):
-        w = _normalize_text(u.text, lang)
-        return _char_words(w) if char_level else w
+        return _normalize_text(u.text, lang)
 
     # Untimed utterances (start/end = None) carry 0.0 placeholders here. This
     # is safe ONLY because the metrics that consume this SegLST — cpWER, ORC,
@@ -524,33 +511,6 @@ def orc_wer_multistream(
     return _wer_result(orc, "orc_wer")
 
 
-def orc_cer_charopt(
-    ref_utts_by_spk: Dict[str, List[Utterance]],
-    hyp_utts_by_spk: Dict[str, List[Utterance]],
-    session_id: str,
-    lang: str = "pl",
-) -> Dict[str, object]:
-    """ORC-CER re-optimised at the CHARACTER level — char analog of
-    :func:`orc_wer_multistream`.
-
-    Char-tokenizes both sides (spaces scored, as in :func:`cp_cer_meeteval`) and
-    runs meeteval's ORC routine on the char tokens, so the reference→stream
-    routing is chosen to minimise *character* errors — NOT reused from the
-    word-level assignment. (The ``charopt`` name marks that re-optimisation; it
-    reads more permissively than :func:`orc_cer_meeteval`, which reuses ORC-WER's
-    word-level routing.) The gap ``cp-CER - ORC-CER`` is the attribution penalty
-    in characters; ORC-CER <= cp-CER always. Returns
-    ``{"orc_cer", "errors", "length"}``."""
-    from meeteval.wer import orcwer
-
-    ref = _seglst_from_dict(ref_utts_by_spk, session_id, lang, char_level=True)
-    hyp = _ensure_nonempty_hyp(
-        _seglst_from_dict(hyp_utts_by_spk, session_id, lang, char_level=True),
-        session_id, "orc_cer_charopt",
-    )
-    return _wer_result(orcwer(ref, hyp)[session_id], "orc_cer")
-
-
 def cp_cer_meeteval(
     ref_utts_by_spk: Dict[str, List[Utterance]],
     hyp_utts_by_spk: Dict[str, List[Utterance]],
@@ -656,8 +616,10 @@ def orc_cer_meeteval(
     routing (each reference utterance → the hypothesis stream that recognised it
     best), then score characters under **that fixed routing** — reusing the WER
     assignment exactly as :func:`cp_cer_meeteval` reuses cpWER's, *not*
-    re-optimising ORC at the character level (that is :func:`orc_cer_charopt`,
-    which grants extra routing freedom and so reads more permissively). Each
+    re-optimising ORC at the character level (which would grant the char metric
+    its own routing freedom and read more permissively; a char-reoptimised
+    ``orc_cer_charopt`` was removed 2026-07-28 by author ruling — every CER
+    floor must reuse its word metric's assignment). Each
     stream's reference is concatenated in segment/time order, matching ORC's own
     merge; the single-stream case therefore reduces to the time-ordered mixture
     CER.
@@ -769,9 +731,9 @@ def mimo_cer_meeteval(
 # through :func:`per_fragment_metrics` can hit the blow-up: any combinatorial
 # sub-metric whose estimated table exceeds its cap is skipped (its sub-result
 # becomes ``None``) with a visible note (SCOPE §4.3), never silently hung on.
-# The character-level floors (``orccer``/``mix_cer``) use CHAR counts in the
-# same formula, so they trip sooner (chars ≈ 5–6× words) — the char DP is the
-# real OOM risk. Raise the caps if you have the RAM and want them on a long clip.
+# The character-level floors (``orccer``/``mix_cer``) reuse their word metric's
+# assignment (author ruling 2026-07-28) and then score chars with plain edit
+# distance, so every guard estimate is word-grain — no char-level DP exists.
 _ORC_TABLE_CAP = 5e8    # sum(ref)·prod(hyp); ~<2 GB peak, safe on 31 GB
 _MIMO_TABLE_CAP = 1e9   # prod(ref)·prod(hyp); ~<0.5 GB peak, safe on 31 GB
 
@@ -779,12 +741,6 @@ _MIMO_TABLE_CAP = 1e9   # prod(ref)·prod(hyp); ~<0.5 GB peak, safe on 31 GB
 def _stream_word_counts(utts_by_spk: Dict[str, List[Utterance]]) -> List[int]:
     """Per-stream word counts (≥1 each) for a DP-table-size estimate."""
     return [max(1, sum(len(u.text.split()) for u in utts))
-            for utts in utts_by_spk.values()] or [1]
-
-
-def _stream_char_counts(utts_by_spk: Dict[str, List[Utterance]]) -> List[int]:
-    """Per-stream character counts (≥1 each) for a char-level DP-size estimate."""
-    return [max(1, sum(len(u.text) for u in utts))
             for utts in utts_by_spk.values()] or [1]
 
 
@@ -820,7 +776,7 @@ def per_fragment_metrics(
         cpcer    cp_cer_meeteval       (cpCER, reuse cpWER routing)
         orc      orc_wer_multistream   (WER content floor, ORC)
         mimo     mimo_wer_meeteval     (WER content floor, MIMO — pipeline hyp)
-        orccer   orc_cer_charopt       (CER content floor, ORC char-reoptimised)
+        orccer   orc_cer_meeteval      (CER content floor — chars under ORC-WER's routing)
         mix_orc  orc_wer_meeteval      (mixture floor, ORC-WER)      [mix only]
         mix_mimo mimo_wer_meeteval     (mixture floor, MIMO-WER)     [mix only]
         mix_cer  mimo_cer_meeteval     (mixture floor, MIMO-CER)     [mix only]
@@ -840,8 +796,6 @@ def per_fragment_metrics(
     """
     ref_w = _stream_word_counts(ref)
     hyp_w = _stream_word_counts(hyp)
-    ref_c = _stream_char_counts(ref)
-    hyp_c = _stream_char_counts(hyp)
 
     def _guarded(role: str, cells: float, cap: float, compute):
         """Run ``compute()`` unless the estimated DP table exceeds ``cap``; then
@@ -866,9 +820,13 @@ def per_fragment_metrics(
         "mimo": _guarded(
             "mimo", math.prod(ref_w) * math.prod(hyp_w), _MIMO_TABLE_CAP,
             lambda: mimo_wer_meeteval(ref, hyp, session_id=session_id, lang=lang)),
+        # orc_cer_meeteval runs word-level ORC internally, then scores chars
+        # under that fixed routing → the combinatorial cost is the word-level
+        # ORC table, same as "orc". (Author ruling 2026-07-28: ORC-CER means
+        # chars under ORC-WER's assignment — never a char-level re-optimisation.)
         "orccer": _guarded(
-            "orccer", sum(ref_c) * math.prod(hyp_c), _ORC_TABLE_CAP,
-            lambda: orc_cer_charopt(ref, hyp, session_id=session_id, lang=lang)),
+            "orccer", sum(ref_w) * math.prod(hyp_w), _ORC_TABLE_CAP,
+            lambda: orc_cer_meeteval(ref, hyp, session_id=session_id, lang=lang)),
     }
     if mix is not None:
         mix_w = max(1, sum(len(u.text.split()) for u in mix))

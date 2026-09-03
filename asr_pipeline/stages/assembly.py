@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import soundfile as sf
@@ -223,6 +223,19 @@ def _cap_anchor_audio(
 
 def _cos(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((a * b).sum())
+
+
+def _diag_cos(value: Optional[float]) -> Optional[float]:
+    """A cosine sum as a plain float for the diagnostic, else None.
+
+    ``None`` in means the pairing was decided without cosines (B+ handoff or a
+    fixed fallback). Non-finite in means ECAPA produced a degenerate embedding —
+    which `json.dumps` would write as a bare `NaN`/`Infinity` literal that
+    strict JSON parsers reject, so it becomes `null` too.
+    """
+    if value is None or not np.isfinite(value):
+        return None
+    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -490,18 +503,53 @@ def _compute_anchors(
     return anchors, solo_durations
 
 
+def _longest_turn_speaker(
+    start_s: float, end_s: float, turns_df, speakers: list[str],
+) -> Optional[str]:
+    """Speaker whose pass-1 diarization turn overlapping [start_s, end_s] is the
+    LONGEST (turn duration, not overlap share — the floor holder; the
+    interjector is usually the short turn). Ties → larger overlap share. None
+    when no turn of a known speaker touches the region.
+    """
+    if turns_df is None or len(turns_df) == 0:
+        return None
+    best, best_key = None, None
+    for row in turns_df.itertuples(index=False):
+        spk = str(row.speaker)
+        if spk not in speakers:
+            continue
+        ov = min(float(row.end), end_s) - max(float(row.start), start_s)
+        if ov <= 0:
+            continue
+        key = (float(row.end) - float(row.start), ov)
+        if best_key is None or key > best_key:
+            best, best_key = spk, key
+    return best
+
+
 def _mixture_fill_overlaps(
     overlap_regions: list[Interval],
     speakers: list[str],
     audio: np.ndarray,
     sr: int,
+    *,
+    policy: str = "all",
+    turns_df=None,
 ) -> list[dict]:
     """No-separation mode: fill overlap regions with the (enhanced) mixture.
 
     Used when ``separation.enabled: false`` (or when stage 3b otherwise
-    produced no separated streams). The same audio slice is attributed to
-    every speaker — Whisper will double-transcribe the overlapping content,
-    and cpWER pays the cost honestly via the per-speaker GT.
+    produced no separated streams). ``policy`` (``AssemblyConfig.
+    nosep_overlap_policy``) decides who receives each slice:
+
+    * ``"all"`` (default, historical): the same slice is attributed to every
+      speaker — Whisper will double-transcribe the overlapping content, and
+      cpWER pays the cost honestly via the per-speaker GT.
+    * ``"longest_turn"``: the slice goes only to the speaker whose pass-1
+      diarization turn overlapping the region is the longest (``turns_df`` =
+      ``ctx.diarization.segments_df``); the other speaker's overlapped words are
+      lost instead of duplicated. Falls back to ``"all"`` for a region no known
+      speaker's turn touches (logged via ``pairing``), never drops audio.
 
     Returns assignments with the same shape as :func:`_assign_overlaps`.
     """
@@ -516,11 +564,21 @@ def _mixture_fill_overlaps(
         if hi <= lo:
             continue
         clip = audio[lo:hi].astype(np.float32)
-        emit_pieces = {spk: clip.copy() for spk in speakers}
+        pairing = "no_separation"
+        if policy == "longest_turn":
+            spk = _longest_turn_speaker(float(start_s), float(end_s), turns_df, speakers)
+            if spk is not None:
+                emit_pieces = {spk: clip.copy()}
+                pairing = f"no_separation:longest_turn={spk}"
+            else:
+                emit_pieces = {s: clip.copy() for s in speakers}
+                pairing = "no_separation:longest_turn_fallback_all"
+        else:
+            emit_pieces = {spk: clip.copy() for spk in speakers}
         assignments.append({
             "orig_start": float(start_s),
             "orig_end": float(end_s),
-            "pairing": "no_separation",
+            "pairing": pairing,
             "emit_pieces": emit_pieces,
         })
     return assignments
@@ -537,6 +595,7 @@ def _assign_overlaps(
     external_pairings: Optional[dict[int, str]] = None,
     overlap_min_duration_s: float = _OVERLAP_MIN_DURATION_S_DEFAULT,
     anchor_min_duration_s: float = _ANCHOR_MIN_DURATION_S_DEFAULT,
+    progress: Optional[Callable[[int, int], None]] = None,
 ) -> list[dict]:
     """For each overlap, ECAPA-embed s1/s2 and pick the pairing with higher
     summed cosine similarity to the anchors (``ecapa_argmax``). Falls back to
@@ -554,8 +613,14 @@ def _assign_overlaps(
     here) fall through to the per-overlap argmax unchanged — the SCOPE-compliant
     fall-soft to current behaviour.
 
+    ``progress`` is an optional ``(done, total)`` sink called once per overlap
+    (the orchestrator's `stage_progress` plumbing); ``None`` = silent.
+
     Returns one assignment dict per overlap: `{orig_start, orig_end, pairing,
-    emit_pieces: {speaker: audio_np}}`.
+    emit_pieces: {speaker: audio_np}, diag}`. ``diag`` is the JSON-safe
+    attribution record `{idx, pairing, cos_straight, cos_swapped}` that
+    `AssemblyStage.run` lifts onto `ctx.assembly_diag` (cosines are `None`
+    whenever the pairing was not decided by an ECAPA argmax).
     """
     n = len(overlap_separated)
     _log(f"assigning {n} overlaps to speakers via ECAPA cosine...")
@@ -578,6 +643,10 @@ def _assign_overlaps(
                 "overlap_separated entries have no 's1_gated'/'s2_gated' — "
                 "run the post_separation_processing stage before assembly."
             )
+        # Diagnostic cosines: filled in on the ECAPA path only, so they stay
+        # None for the B+ handoff and the fixed fallbacks.
+        cos_straight: Optional[float] = None
+        cos_swapped: Optional[float] = None
         too_short = len(ovl["s1_gated"]) < min_overlap_len
         have_both_anchors = (
             len(speakers) >= 2
@@ -608,6 +677,7 @@ def _assign_overlaps(
                 ).cpu()
                 straight = _cos(emb1, anchors[a]) + _cos(emb2, anchors[b])
                 swapped = _cos(emb1, anchors[b]) + _cos(emb2, anchors[a])
+                cos_straight, cos_swapped = straight, swapped
                 if not (np.isfinite(straight) and np.isfinite(swapped)):
                     # ECAPA is an external model fed degenerate gated input; a
                     # non-finite cosine (e.g. a NaN embedding) would make
@@ -662,12 +732,23 @@ def _assign_overlaps(
             "orig_end": float(ovl["emit_end"]),
             "pairing": pairing,
             "emit_pieces": emit_pieces,
+            # Attribution diagnostic — the decision without the audio, JSON-safe.
+            # `idx` is the routing-region index (joins to routing.json's
+            # `overlap_regions`), not this loop's dense position.
+            "diag": {
+                "idx": int(ovl["idx"]),
+                "pairing": pairing,
+                "cos_straight": _diag_cos(cos_straight),
+                "cos_swapped": _diag_cos(cos_swapped),
+            },
         })
         if (i_ovl + 1) % 10 == 0 or i_ovl + 1 == n:
             _log(
                 f"  assigned {i_ovl+1}/{n} overlaps "
                 f"({time.perf_counter()-t_start:.1f}s elapsed)"
             )
+        if progress is not None:
+            progress(i_ovl + 1, n)
     return assignments
 
 
@@ -967,15 +1048,27 @@ class AssemblyStage(Stage):
                 external_pairings=ctx.overlap_speaker_assignment,
                 overlap_min_duration_s=cfg.overlap_min_duration_s,
                 anchor_min_duration_s=cfg.anchor_min_duration_s,
+                progress=self._progress,
             )
+            # Attribution diagnostics: one compact record per overlap (pairing +
+            # the two ECAPA cosine sums, no audio). Mirrors `ctx.diarization_diag`
+            # — io.write_pipeline_outputs writes it verbatim into metadata.json.
+            ctx.assembly_diag = [a["diag"] for a in assignments]
         elif ctx.overlap_regions:
+            ovl_audio, ovl_src = assembly_audio, audio_source
+            if (cfg.nosep_overlap_source == "raw" and ctx.audio is not None
+                    and assembly_audio is not ctx.audio):
+                ovl_audio, ovl_src = ctx.audio, "raw mixture (nosep_overlap_source=raw)"
             _log(
                 f"no separated streams; filling "
                 f"{len(ctx.overlap_regions)} overlap region(s) from the "
-                f"{audio_source} (all speakers)"
+                f"{ovl_src} (policy={cfg.nosep_overlap_policy})"
             )
             assignments = _mixture_fill_overlaps(
-                ctx.overlap_regions, speakers, assembly_audio, sr,
+                ctx.overlap_regions, speakers, ovl_audio, sr,
+                policy=cfg.nosep_overlap_policy,
+                turns_df=(ctx.diarization.segments_df
+                          if ctx.diarization is not None else None),
             )
         else:
             assignments = []

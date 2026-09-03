@@ -1,10 +1,11 @@
 # SPMamba paper-faithful scaling run — 32k.   [full 6/256, emb_ks=8, paper optimizer]
 #
-# The whole 128k_paper_final.yaml recipe scaled to 32k; see 16k_full.yaml header for
-# the rationale. Identical to 128k_paper_final EXCEPT train_max_samples (32000) and the
-# W&B target. Paper recipe: Adam lr 1e-3 / wd 0 / ReduceLROnPlateau(0.5, 10) / grad_clip
-# 5.0 / epochs 500 cap, early-stop 20 / no curriculum / all-8 validation.
-# Cost: ~5.5 h/epoch. (early-stop 20 tail ~4-5 days; lower to cap it.)
+# HEADER REWRITTEN 2026-07-29 — see 16k_full.yaml for the full rationale. Same recipe
+# scaled to 32k: paper architecture + optimizer (Adam lr 1e-3 / wd 0 / factor 0.5,
+# patience 2 / clip 5.0), harness matched to the reduced config-1 runs (3-stage
+# curriculum, {SER,SE} validation, early-stop 6) so the full-vs-reduced overlay is
+# direct. NOT comparable to the 128k finals (all-8 SI-SDRi, different corpus+val set).
+# Cost: ~5.4 h/epoch (4070-extrapolated from measured 2.70 @16k; 3080 ≈ +10%).
 
 data:
   dataset_type: polsess
@@ -36,9 +37,9 @@ training:
   # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
-  weight_decay: 0.0        # Paper -> pure Adam.
+  weight_decay: 4.885301855720965e-06  
   lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
-  lr_patience: 2          # Paper ReduceLROnPlateau patience.
+  lr_patience: 1          # Paper ReduceLROnPlateau patience.
   grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none.
   num_epochs: 500          # Paper cap; early stopping ends it far sooner.
   early_stopping_patience: 6   # Paper.
@@ -56,9 +57,5 @@ training:
 
   curriculum_learning:
     - epoch: 1
-      variants: ["C", "R"]
-    - epoch: 3
-      variants: ["C", "R", "SR", "S"]
-    - epoch: 6
       variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
       lr_scheduler: start
