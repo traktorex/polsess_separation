@@ -491,7 +491,7 @@ class PostSeparationProcessingConfig:
     checkpoint_path: str = field(
         default_factory=lambda: os.getenv(
             "AP_BWE_CHECKPOINT",
-            "/home/user/AP-BWE/checkpoints/8kto16k/g_8kto16k",
+            os.path.expanduser("~/AP-BWE/checkpoints/8kto16k/g_8kto16k"),
         )
     )
 

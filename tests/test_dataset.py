@@ -21,7 +21,7 @@ def test_dataset_all_variants():
 
 _POLSESS_ROOT = os.getenv(
     "POLSESS_DATA_ROOT",
-    "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
+    str(Path.home() / "datasets/PolSESS_C_both/PolSESS_C_both"),
 )
 
 

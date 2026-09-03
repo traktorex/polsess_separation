@@ -1,11 +1,11 @@
 """Run pyannote diarization on every CLARIN 2-speaker recording.
 
 Reads every `<id>.wav` from
-`/home/user/datasets/clarin_all_2speakers/clarin_download/`, runs the
+`~/datasets/clarin_all_2speakers/clarin_download/`, runs the
 exact same diarization stage the production ASR pipeline uses
 (`pyannote/speaker-diarization-3.1`, `num_speakers=2`, mono 16 kHz),
 and writes one `<id>.json` per recording to
-`/home/user/datasets/clarin_all_2speakers/diarization/`.
+`~/datasets/clarin_all_2speakers/diarization/`.
 
 The output schema matches `asr_pipeline.stages.diarization.DiarizationStage.spill()`:
 
@@ -45,8 +45,8 @@ from asr_pipeline.io import load_audio_as_mono                   # noqa: E402
 from asr_pipeline.stages.diarization import DiarizationStage     # noqa: E402
 
 
-INPUT_DIR = Path("/home/user/datasets/clarin_all_2speakers/clarin_download")
-OUTPUT_DIR = Path("/home/user/datasets/clarin_all_2speakers/diarization")
+INPUT_DIR = Path.home() / "datasets/clarin_all_2speakers/clarin_download"
+OUTPUT_DIR = Path.home() / "datasets/clarin_all_2speakers/diarization"
 SAMPLE_RATE = 16_000
 
 
