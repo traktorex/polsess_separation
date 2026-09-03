@@ -54,8 +54,7 @@ script; no generator exists in this repo.
 
 ## How to regenerate
 
-**Regeneration command: TBD (author).** No W&B export script produced this
-file — see "Provenance" above. The original data source (the W&B project) no
-longer exists, so a from-scratch regeneration isn't possible; only manual
-append of new rows (matching this header) is. If a future export script is
-written, this section should link it here.
+**Not regenerable:** the source W&B project was deleted on 2026-02-10, so this
+CSV is the recovered ledger, not a reproducible export. No W&B export script
+produced it — see "Provenance" above. Only manual append of new rows (matching
+this header) is possible.

@@ -2,7 +2,10 @@
 
 Source-of-truth CSVs for the pipeline-config sweep, produced by
 `scripts/dump_sweep_results.py`. All files live under
-`~/datasets/eval/clarin_fragments/`.
+`~/datasets/eval/clarin_fragments/`. That eval tree is the author's local
+working data — the fragment-level CSVs documented here are **not** part of this
+repository, and this file is the column dictionary for them, not a pointer to
+checked-in data.
 
 The config set scored = `GROUPS["definitive"] ∪ GROUPS["phase2"] ∪ {"baseline"}`
 from `scripts/sweep_pipeline.py` (87 configs on the dev split as of writing),

@@ -1,5 +1,13 @@
 # Experiment Log
 
+> [!IMPORTANT]
+> **Historical working log — frozen.** This is the raw working log kept while the
+> experiments were running; it was last edited on 2026-04-14 and is no longer
+> maintained. It is superseded by chapters 5–6 of the thesis, which are the
+> authoritative account of these results. Links into the `polsess-separation`
+> W&B project are dead (that project was deleted on 2026-02-10, see the note
+> below); links into `polsess-thesis-experiments` are still live.
+
 ## Overview
 
 **Project**: PolSESS Speech Separation for Polish ASR  
@@ -63,7 +71,7 @@
 
 #### Stage 1: Wide Search (2K samples)
 
-**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage1/dprnn.yaml) | **Sweep**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
+**Config**: [`dprnn.yaml`](3-hyperparam-opt/dprnn/stage1/dprnn.yaml) | **Sweep**: [ocjl0lhr](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/ocjl0lhr)
 
 | Metric            | Value                        |
 | ----------------- | ---------------------------- |
@@ -85,7 +93,7 @@
 
 #### Stage 2: Narrowed Search (4K samples)
 
-**Config**: [`dprnn.yaml`](sweeps/3-hyperparam-opt/stage2/dprnn.yaml) | **Sweep**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
+**Config**: [`dprnn.yaml`](3-hyperparam-opt/dprnn/stage2/dprnn.yaml) | **Sweep**: [va7wk46n](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/va7wk46n)
 
 | Metric      | Value                             |
 | ----------- | --------------------------------- |
@@ -109,10 +117,10 @@
 Two parallel strategies:
 
 **3a - Hyperband**: [hj7sbz6c](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/hj7sbz6c) | 69 runs (25 finished) | **4.08 dB** best | 47.6h |
-**Config**: [`sweeps/3-hyperparam-opt/stage3/dprnn.yaml`](sweeps/3-hyperparam-opt/stage3/dprnn.yaml)  
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage3/dprnn.yaml`](3-hyperparam-opt/dprnn/stage3/dprnn.yaml)  
 
 **3b - Conservative**: [1wtvbmiu](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/1wtvbmiu) | 41 runs (40 finished) | 3.74 dB best | 57.1h |
-**Config**: [`sweeps/3-hyperparam-opt/stage3/dprnn_conservative.yaml`](sweeps/3-hyperparam-opt/stage3/dprnn_conservative.yaml) 
+**Config**: [`sweeps/3-hyperparam-opt/dprnn/stage3/dprnn_conservative.yaml`](3-hyperparam-opt/dprnn/stage3/dprnn_conservative.yaml) 
 
 **Stage 3 Search Space** (further narrowed):
 - LR: [7e-4, 2e-3]
@@ -151,7 +159,7 @@ Two parallel strategies:
 
 **Strategy**: Single wide search on 8K samples (no progressive scaling)
 
-**Config**: [`dprnn_onestage_8k.yaml`](sweeps/3-hyperparam-opt/baselines/dprnn_onestage_8k.yaml)  
+**Config**: [`dprnn_onestage_8k.yaml`](3-hyperparam-opt/dprnn/baselines/dprnn_onestage_8k.yaml)  
 **Sweep**: [zp95xdye](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/zp95xdye)
 
 | Metric            | Value                  |
@@ -182,7 +190,7 @@ Two parallel strategies:
 
 **Phase 1 - Proxy Sweep** (20 epochs, 16K samples)
 
-**Config**: [`dprnn_fulldata_16k_proxy.yaml`](sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k_proxy.yaml)  
+**Config**: [`dprnn_fulldata_16k_proxy.yaml`](3-hyperparam-opt/dprnn/baselines/dprnn_fulldata_16k_proxy.yaml)  
 **Sweep**: [igozsq0r](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/sweeps/igozsq0r)
 
 | Metric            | Value                                                       |
@@ -266,16 +274,16 @@ From 330+ runs across all 3-stage sweeps:
 
 ## Tools & Scripts
 
-- **Analysis**: [`analyze_results.py`](sweeps/3-hyperparam-opt/stage3/analyze_results.py)
-- **Validation scripts**: [`run_validation.sh`](experiments/dprnn/3-hyperparamopt-3stage-vals/run_validation.sh), [`run_validation.sh`](experiments/dprnn/3-hyperparamopt-expA-vals/run_validation.sh)
-- **Baseline configs**: [`baselines/`](sweeps/3-hyperparam-opt/baselines/)
-- **Config generator**: [`generate_lr_sweeps.py`](sweeps/3-hyperparam-opt/baselines/generate_lr_sweeps.py)
+- **Analysis**: `analyze_results.py` (script removed)
+- **Validation scripts**: [`run_validation.sh`](../experiments/dprnn/3-hyperparamopt-3stage-vals/run_validation.sh), [`run_validation.sh`](../experiments/dprnn/3-hyperparamopt-expA-vals/run_validation.sh)
+- **Baseline configs**: [`baselines/`](3-hyperparam-opt/dprnn/baselines/)
+- **Config generator**: `generate_lr_sweeps.py` (script removed)
 
 ---
 
 ### ConvTasNet & SPMamba HPO (2-Stage)
 
-**Status**: Stage 2 sweeps ✅ Complete | Validation 🔄 Running  
+**Status**: Stage 2 sweeps ✅ Complete | Validation ✅ Complete  
 **Strategy**: Shortened **2-stage** approach (2K → 8K → 16K validation, skipping 4K stage)
 
 **Rationale**: DPRNN 3-Stage produced the best SI-SDR (4.67 dB) and highest average across validated configs. However, DPRNN Stage 1→3 showed that the intermediate Stage 2 (4K) mostly confirmed Stage 1 findings — the major search space refinements came from Stage 1 alone. Skipping Stage 2 halves the compute while preserving the core benefit of progressive refinement.
@@ -334,7 +342,7 @@ From 330+ runs across all 3-stage sweeps:
 
 **Key Findings**: Only 4/20 runs converged (rest killed by Hyperband). Top-3 ran 36–42 epochs before manual stop (no further improvement). LR sweet spot ~4.6e-4 to 7.0e-4. Weight decay tiny (1e-6 to 5e-6).
 
-#### Validation (16K samples, 3 seeds) — 🔄 Running
+#### Validation (16K samples, 3 seeds) — ✅ Complete
 
 **Configs**: [`convtasnet/3-hyperparamopt-stage2-vals/`](../experiments/convtasnet/3-hyperparamopt-stage2-vals/), [`spmamba/3-hyperparamopt-stage2-vals/`](../experiments/spmamba/3-hyperparamopt-stage2-vals/)
 
@@ -356,7 +364,7 @@ From 330+ runs across all 3-stage sweeps:
 | 2    | autumn-sweep-10  | 5.12 dB   | ✅ Complete        | 5.89 dB         | 6.12, 5.66 dB      | [p31xq30e](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/p31xq30e), [gowj82y1](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/gowj82y1) |
 | 3    | cerulean-sweep-2 | 5.10 dB   | ✅ Complete        | 5.93 dB         | 6.06, 5.80 dB      | [o558tsi7](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/o558tsi7), [1kx9xeb8](https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-separation/runs/1kx9xeb8) |
 
-**Notes**: Running 2 instead of 3 validation runs for SPMamba due to the runs taking 2 days each.
+**Notes**: Ran 2 instead of 3 validation runs for SPMamba — each run took about 2 days.
 
 ---
 
@@ -467,7 +475,7 @@ Two sweeps in polsess-thesis-experiments:
 
 **Average: 5.16 dB** — slight improvement over non-posenc baselines (5.10 dB avg), but notably faster convergence (epoch 20–30 vs epoch 40 originally).
 
-### HPO — Single-Stage with Positional Encoding (🔄 Running)
+### HPO — Single-Stage with Positional Encoding (✅ Complete)
 
 **Strategy**: Single-stage Bayesian sweep directly on full 16K dataset, 60 epochs, no curriculum learning. All variants from epoch 1, early stopping patience 8.
 
@@ -475,11 +483,12 @@ Two sweeps in polsess-thesis-experiments:
 
 **Search space**: LR, weight_decay, grad_clip, lr_factor, lr_patience, dropout, chunk_size
 
-**Status**: 9 runs launched, 3 finished, 2 running. Best so far: **6.08 dB** (soft-sweep-6).
+**Status**: Completed. The figures below are the snapshot taken when this log was
+frozen (9 runs launched, 3 finished, 2 running at that moment); best at that point
+**6.08 dB** (soft-sweep-6). The selected configuration and the final numbers are
+reported in the thesis, not here.
 
-Top configs will be documented once sweep completes.
-
-**Preliminary best: 6.08 dB** — improvement of **+0.92 dB** over pos-enc baselines (5.16 dB), **+0.14 dB** over previous best HPO without pos-enc (5.94 dB glowing-sweep-9).
+**Best recorded in this log: 6.08 dB** — improvement of **+0.92 dB** over pos-enc baselines (5.16 dB), **+0.14 dB** over previous best HPO without pos-enc (5.94 dB glowing-sweep-9).
 
 ---
 
@@ -553,7 +562,7 @@ Ran the same HPO-best config with and without AMP to check if AMP hurts SPMamba:
 
 ---
 
-## MambaTasNet HPO (🔄 Running)
+## MambaTasNet HPO (✅ Complete)
 
 **Purpose**: MambaTasNet-XS baseline (3.33 dB) shows heavy overfitting — HPO targeting weight_decay and regularization.
 
@@ -564,11 +573,12 @@ Ran the same HPO-best config with and without AMP to check if AMP hurts SPMamba:
 
 **Search space**: LR [5e-5, 1e-2], weight_decay [5e-7, 1e-3], grad_clip [0.5, 5.0], lr_factor [0.3, 0.9], lr_patience {1,2,3,4}
 
-**Status**: 7 runs, 4 finished, 1 running. Best so far: **4.05 dB** (rural-sweep-5, +0.72 dB over baseline).
+**Status**: Completed. The figures below are the snapshot taken when this log was
+frozen (7 runs, 4 finished, 1 running at that moment); best at that point **4.05 dB**
+(rural-sweep-5, +0.72 dB over baseline). The sweep has since finished; the selected
+configuration and its validation results are reported in the thesis, not here.
 
-Top configs will be documented once sweep completes.
-
-**Early observations**: High weight decay (>1e-4) and very low LR (<2e-4) hurt. Best runs use LR ~1.5-2e-3, very low WD (~1e-6). One run collapsed (rose-sweep-6, NaN from AMP).
+**Observations recorded at the time**: High weight decay (>1e-4) and very low LR (<2e-4) hurt. Best runs use LR ~1.5-2e-3, very low WD (~1e-6). One run collapsed (rose-sweep-6, NaN from AMP).
 
 ---
 

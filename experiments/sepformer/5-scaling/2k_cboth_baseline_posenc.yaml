@@ -3,9 +3,10 @@
 # Recipe is byte-identical to {16,32,64}k_baseline_posenc.yaml; only the data size,
 # W&B naming, and corpus differ.
 #
-# CORPUS: PolSESS_C_both (pilot corpus, same as the 8k column) -- ALWAYS launch with
-#   --data-root .../PolSESS_C_both/PolSESS_C_both   (config sets none; env-var
-#   inheritance caused the 8fi21rue corpus trap) and check the printed `Root:` line.
+# CORPUS: PolSESS_C_both (pilot corpus, same as the 8k column). The config sets no data
+#   root, so the run was launched with --data-root .../PolSESS_C_both/PolSESS_C_both and
+#   the printed `Root:` line was checked -- env-var inheritance had earlier caused the
+#   8fi21rue corpus trap.
 # NB corpus_PolSESS_C_both_train_final.csv has interleaved duplicates: the first
 # 2000 rows contain ~1861 unique items (~7% dupes). Nominal 2k, effective ~1.86k.
 

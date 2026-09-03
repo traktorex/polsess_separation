@@ -1,7 +1,7 @@
 # SPMamba paper-full scaling run — 16k.   [full 6/256, emb_ks=8, paper optimizer]
 #
 # HEADER REWRITTEN 2026-07-29 to match what the file actually runs (the old header
-# described the never-launched 128k_paper_final.yaml: all-8 validation, no curriculum,
+# described the never-launched 6-final-training/128k_full_final.yaml: all-8 validation, no curriculum,
 # early-stop 20 — none of which is true of this body).
 #
 # PURPOSE: the capacity-attribution arm for the reduced-SPMamba saturation (ch5 §5.5).
@@ -45,7 +45,7 @@ model:
     eps: 1.0e-5
 
 training:
-  # ---- Paper recipe (verbatim from 128k_paper_final / spmamba-wsj0.yml) ----
+  # ---- Paper recipe (verbatim from 6-final-training/128k_full_final.yaml / spmamba-wsj0.yml) ----
   seed: 42
   lr: 0.001                # Paper (Adam).
   weight_decay: 4.885301855720965e-06  

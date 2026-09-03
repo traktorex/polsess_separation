@@ -25,9 +25,9 @@
 # bym7223m, 13.62 all-8 test / 8.75 {SER,SE} val 3-seed mean) — same lr, batch
 # size, decay, clipping, scheduler, patience, validation variants, curriculum
 # and seed. Capacity is the ONLY variable. This deliberately mirrors the
-# MossFormer2 depth-11-vs-24 design (arc 5.5): do not re-tune the optimizer for
-# the smaller model, or capacity gets confounded with optimizer settings. NB the
-# retired `size_variants/sepformer_small.yaml` did exactly that (bs 8, lr 1e-3,
+# MossFormer2 depth-11-vs-24 design (see thesis ch5): do not re-tune the optimizer for
+# the smaller model, or capacity gets confounded with optimizer settings. NB an
+# earlier, since-removed "sepformer-small" variant did exactly that (bs 8, lr 1e-3,
 # HPO'd HPs, 3-stage curriculum with C) — it is not usable as this control.
 #
 # Read: reduced flattens 32k -> 64k like reduced-SPMamba did => the ceiling is

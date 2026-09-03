@@ -1,0 +1,73 @@
+# MossFormer2 SepFormer-matched (~26.4M) @ 64k — second C_new_64 replicate.
+#
+# Why this file exists: a differently-tuned, differently-seeded repeat of the 64k
+# matched run, to test whether the C_new_64 result is a corpus property or an HPO
+# accident. It takes the 128k matched-sweep winner's optimiser settings (lr 2.15e-4,
+# wd 2.41e-7, grad_clip 3.07, attn_dropout 0.070) and seed 123, where
+# mossformer2_matched_64k.yaml used the canonical recipe (lr 3e-4, wd 0, clip 5.0,
+# attn_dropout default 0.1) and seed 42. Architecture, corpus, curriculum and
+# validation variants are unchanged.
+#
+# NAMING WARNING: the run directory is `mossformer2-matched-64k-withC`, but the
+# curriculum below is the usual seven-variant diet WITHOUT C — the same diet as every
+# other C_new_64 arm. This is NOT the with-C control; that is the separate
+# `mossformer2-matched-64k-withC-fixed` run (curriculum_learning: null, i.e. all eight
+# variants including C), which has no config file of its own because it was launched
+# by resuming a checkpoint. See scripts/sweep_pipeline.py (arms `v41_mf2_matched64k_r2`
+# and `v41_withc_*`) for how both are used.
+#
+# `save_all_checkpoints: true` — every improvement is kept, because the downstream
+# probe reads an epoch ladder rather than a single best checkpoint.
+#
+# As-run: W&B run mossformer2-matched-64k-withC, seed 123, RTX 3080, 2026-08-24,
+# git c77f3b3; stopped at epoch 14 (val SI-SDR 8.674 on {SER, SE}).
+# Corpus: PolSESS_C_new_64.
+#
+# Reconstructed from the checkpoint's config.yaml on 2026-09-03 (the file was used
+# for training but never committed).
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # Large transformer — keep batch small
+  num_workers: 1
+  prefetch_factor: 1
+  task: SB
+  train_max_samples: 64000
+  val_max_samples: null
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2             # Number of speakers
+    num_blocks: 11   # GFSMN depth — trimmed from 24 to match SepFormer's ~26M
+    attn_dropout: 0.07030979282783663  # 128k matched-sweep winner (upstream default 0.1)
+
+training:
+  seed: 123
+  lr: 0.00021453268112520653
+  weight_decay: 2.411171709120079e-07
+  grad_clip_norm: 3.069697862323048
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: true
+  use_wandb: true
+  wandb_project: polsess-separation-64k
+  wandb_entity: null
+  wandb_run_name: mossformer2-matched-64k-withC
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule (mirrors the SepFormer baseline)
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

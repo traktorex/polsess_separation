@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run all 6 MambaTasNet-XS HPO validation experiments sequentially
+# Run all 9 MambaTasNet-XS HPO validation experiments sequentially
 # 3 configs × 3 seeds each
 #
 # Top-3 from sweep mamba-tasnet-xs (gbyurf31):
@@ -25,5 +25,5 @@ for config_num in 1 2 3; do
 done
 
 echo ""
-echo "All 6 validation runs complete!"
+echo "All 9 validation runs complete!"
 echo "Review results in WandB to compare configs across seeds."

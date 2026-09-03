@@ -16,12 +16,11 @@
 #   - all-8 SI-SDRi -> directly comparable to the matched MF2 / SepFormer / SPMamba 128k
 #     finals (matched 17.04 dB, SepFormer 16.0 dB).
 #
-# COST WARNING: ~2x the matched 128k per-epoch (batch 1 vs 2, ~2.1x params) -> roughly
-# 6-7 h/epoch (ESTIMATE from matched's 3.4 h; MEASURE epoch 1). If early stopping lands in
-# the 60-80 epoch band (matched/SepFormer profile) that is ~3-4 weeks wall-clock — a large
-# slice of the 2-month runway. RECOMMENDATION: run the 16k/32k/64k curve first; the
-# capacity signal usually shows by 64k, and only launch this 128k point if the curve earns
-# it (same staged plan as the deferred SPMamba 128k). Watch peak VRAM on the 3080 (10 GB).
+# COST: ~2x the matched 128k per-epoch (batch 1 vs 2, ~2.1x params) -> roughly 6-7 h/epoch
+# (estimated from matched's 3.4 h), i.e. ~3-4 weeks wall-clock if early stopping lands in the
+# 60-80 epoch band (matched/SepFormer profile). The staged plan was followed: the 16k/32k/64k
+# curve ran first (checkpoints {16,32,64}k_mossformer2_full_42_*), and this 128k point was
+# launched only afterwards. As-run checkpoint: mossformer2_full_128k_final_123 (seed 123).
 
 data:
   dataset_type: polsess
