@@ -4,7 +4,7 @@
 `file://` is not enough for the real app: ONNX Runtime Web `fetch()`es its
 .wasm runtime and the .onnx models, and cross-origin rules on `file://` block
 that. This is the thin static server for those checks — correct MIME types,
-no caching (agents edit files between runs), localhost only.
+no caching (files change between runs), localhost only.
 
     ~/playwright_venv/bin/python webapp_ondevice/devcheck/serve.py webapp_ondevice/site
     python3 webapp_ondevice/devcheck/serve.py webapp_ondevice/site --port 8123

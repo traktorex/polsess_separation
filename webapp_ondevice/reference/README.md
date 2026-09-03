@@ -186,7 +186,7 @@ and re-run OSD.
 | `6d88daa2` (950 s, Polish conv.) | 93.76 % | 81.0 % | 0.715 | 33/38 |
 | LibriCSS `OV40_session1_seg6` (17 s, dense overlap) | 87.41 % | 79.6 % | 0.728 | 1/1 |
 
-**Verdict: usable. Ship it.** Losing the 4–8 kHz band costs ~20 % of overlap
+**Verdict: usable.** Losing the 4–8 kHz band costs ~20 % of overlap
 *frames* and ~13 % of overlap *regions* — a real but graceful degradation, and
 critically it is **conservative in the right direction**:
 
@@ -201,7 +201,7 @@ confusion, 442dd69e (rows = native 16 kHz, cols = 8 k→16 k)
 Almost nothing moves *into* `overlap` (1 frame from non-speech, 0.5 % of solo).
 The failure mode on 8 kHz material is therefore **"a real overlap goes
 unrouted"** — the user hears an unseparated overlap — and **not** "a solo region
-is routed to the separator", which is the M2 phantom-stream embarrassment the
+is routed to the separator", which is the M2 phantom-stream failure the
 whole OSD-gated scope decision exists to avoid. The risk item can be closed.
 
 Caveat for whoever builds the example clips: **do not assume a PolSESS mixture
@@ -210,9 +210,9 @@ reads as overlap.** Over 12 random `PolSESS_C_final_128_v2/test/mix` clips
 as ~100 % non-speech or ~100 % solo. That is *not* the bandwidth — level is
 fine (RMS 0.09–0.15) and peak-normalising changes nothing. It is content: those
 mixtures carry loud scene/event layers and the two speakers are not always
-simultaneously active. **Validate every candidate showcase clip through
-`osd_reference.py run` before putting it in the demo**, or the "fully
-overlapped" example will render as a flat solo bar.
+simultaneously active. Candidate showcase clips are therefore checked with
+`osd_reference.py run` before being added to the demo; without that check a
+"fully overlapped" example can render as a flat solo bar.
 
 ## 7. Parity vectors (`vectors/`)
 
@@ -255,10 +255,11 @@ behavioural difference from the server.
 ### Provenance / licensing of the vector audio
 
 * `clarin_442dd69e_sparse.wav` — 20 s excerpt of
-  `~/datasets/clarin_gotowy/gotowy/442dd69e.wav` (CLARIN-PL). Fine as a private
-  test fixture in this repo; **the plan's open question about publishing CLARIN
-  audio is unresolved**, so do not copy it into `site/` as an example clip
-  without an answer.
+  `~/datasets/clarin_gotowy/gotowy/442dd69e.wav` (CLARIN-PL), a test fixture in
+  this repo. `site/examples/` contains one CLARIN-PL excerpt
+  (`rozmowa_przeplot.wav`, fragment 85cb678a) and one PolSESS test mixture; the
+  CC BY 4.0 LibriCSS excerpt in `reference/vectors/` is the licence-safe
+  alternative if the demo is published.
 * `libricss_ov40_dense.wav` — 20 s excerpt of LibriCSS
   (`~/datasets/LibriCSS_2spk/record/segments/OV40_session4_seg8.wav`),
   LibriSpeech-derived, CC BY 4.0 — publishable with attribution, and therefore

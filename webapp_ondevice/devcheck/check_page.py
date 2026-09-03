@@ -1,17 +1,18 @@
-#!/home/user/playwright_venv/bin/python
+#!/usr/bin/env python3
 """Load a page in headless Chromium, screenshot it, and report what broke.
 
-Verification harness for the Road 2 on-device demo (`webapp_ondevice/site/`).
-Implementation agents cannot open a browser window, so this script is how they
-see the app: it drives the page, captures a screenshot, and — crucially —
-prints every console message, uncaught exception, and failed network request,
-then turns that into an exit code.
+Verification harness for the Road 2 on-device demo (`webapp_ondevice/site/`),
+used during development in place of opening a browser by hand: it drives the
+page, captures a screenshot, and — crucially — prints every console message,
+uncaught exception, and failed network request, then turns that into an exit
+code.
 
 Runs under the shared Playwright venv (built for the Road 1 webapp checks):
 
     ~/playwright_venv/bin/python webapp_ondevice/devcheck/check_page.py ...
 
-The shebang points at that interpreter, so `./check_page.py ...` works too.
+Run it with that interpreter explicitly — Playwright is not installed in the
+project's main venv.
 
 Exit codes
     0  clean: no error-level console messages, no page errors, no failed requests

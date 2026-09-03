@@ -1,8 +1,8 @@
 """Parity tests for the shared SI-SDR/SI-SDRi helper (survey gap 12).
 
 `compute_sisdr_and_sisdri` replaced copy-pasted baseline logic in
-`evaluate.evaluate_model` and `Trainer._compute_sisdri`. We cannot re-run a real
-checkpoint here (GPU busy), so we assert on CPU/fp32 synthetic tensors that the
+`evaluate.evaluate_model` and `Trainer._compute_sisdri`. This test uses synthetic
+signals rather than a real checkpoint: on CPU/fp32 tensors it asserts that the
 helper reproduces the *pre-refactor formulas of both call sites* exactly. The
 reference formulas below are transcribed verbatim from the code that was
 replaced and serve as the golden reference implementation.

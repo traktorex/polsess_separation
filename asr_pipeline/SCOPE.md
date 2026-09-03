@@ -1,14 +1,15 @@
 # ASR Pipeline — Scope Contract
 
 **What this is.** The author's intent model for `asr_pipeline/`, written down so it
-stops living only in his head. Agents (review loops included) read this before
-changing code under `asr_pipeline/`. When a reviewer instinct ("add a fallback",
-"handle this edge case") conflicts with this file, this file wins. When this file
-conflicts with the author, the author wins — then this file gets updated.
+stops living only in his head. Anyone changing code under `asr_pipeline/`
+(review passes included) reads this first. When a reviewer instinct ("add a
+fallback", "handle this edge case") conflicts with this file, this file wins.
+When this file conflicts with the author, the author wins — then this file gets
+updated.
 
 Status: v1.1, drafted 2026-06-10 from a structured interview, approved by the
 author the same day. `UNDECIDED` markers are real open questions reserved for
-the author — not placeholders to be quietly resolved by an agent.
+the author — not placeholders for a contributor to quietly resolve.
 v1.2 (2026-06-10, author-approved): ledger sites renamed line numbers → symbols;
 four fallback sites touched by the deep-review pass added as rows; the
 BWE-ImportError REMOVE verdict verified already absent (see ledger footnote).
@@ -146,7 +147,7 @@ splitting at all). The (no-sep, no-enh) arm is `pipeline_minimal` in
 Once the thesis decision is made and written down, losing branches may be
 deleted — git remembers them.
 
-## 7. Rules for agents
+## 7. Contribution rules
 
 - New dependencies / config knobs / fallback branches: *free within reason* —
   "reason" means it serves Life 1 or visibly unblocks Life 2. "Might be useful
@@ -213,8 +214,8 @@ deployment work starts:
 
 ## 10. Open questions
 
-These are the **author's** decisions. Agents do not resolve them on their own
-initiative — `UNDECIDED` means frozen until the author rules.
+These are the **author's** decisions. Contributors do not resolve them on their
+own initiative — `UNDECIDED` means frozen until the author rules.
 
 1. Phantom 3rd speaker (GPS-navigation case): error, ignore-the-extra-cluster,
    or merge-into-nearest? Needs a decision informed by real recordings.

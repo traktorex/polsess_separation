@@ -79,7 +79,7 @@ served from the job's copied `debug.log` after completion.
 `metadata.json`, `debug.log`, `enhanced_full.wav` (served from `<job>/spill/` — enhancement
 A/B diagnostic panel). Reject anything else (404) — no path traversal.
 
-## v1.1 ratified deltas (orchestrator, 2026-07-28 night)
+## v1.1 changes, 2026-07-28
 
 Implemented additions accepted into the contract:
 - `GET /api/jobs?limit=N` — compact recent-jobs rows (feeds the home page list).
@@ -89,9 +89,9 @@ Implemented additions accepted into the contract:
   `light=1` nulls `gt` too (gallery needs only the flag; the detail `ids=` fetch carries the payload).
 - `result.files` carries `"enhanced_full"` when `<job>/spill/enhanced_full.wav` exists (jobs yes, frozen examples no).
 - `result.diarization` additionally carries `"overlaps"` (hook 3; `null` when absent).
-- **Interpretations (binding):** `eta_s` = seconds REMAINING (monotone-decreasing; full estimate while queued;
+- **Field interpretations:** `eta_s` = seconds REMAINING (monotone-decreasing; full estimate while queued;
   `null` on terminal jobs). `queue_position` = queued jobs ahead (0 = running/next). Log `offset` = LINE index.
-- **Per-job spill (binding):** every job runs with `spill_intermediate: true`, `artifact_dir = <job_dir>/spill`
+- **Per-job spill:** every job runs with `spill_intermediate: true`, `artifact_dir = <job_dir>/spill`
   — the source of `partial` and `enhanced_full.wav`. Deferred-to-later diagnostics (per-overlap separation
   plots, BWE spectrograms) can mine the same spill dir in a future rev without contract changes.
 
@@ -119,9 +119,9 @@ GT transcripts and scores appear ONLY here.
   warnings must surface (§4.3).
 - Polish UI copy; stage names and load/run stay English. Speaker lanes rendered from `speakers` — no hardcoded 2.
 
-## v1.2 ratified deltas (orchestrator, 2026-07-28 — author feedback round 1)
+## v1.2 changes, 2026-07-28 (author feedback round 1)
 
-Ratified after live headless-browser verification. The sections above still describe v1.1 verbatim;
+Verified with a live headless-browser run. The sections above still describe v1.1 verbatim;
 where they conflict (the `~800 buckets` note), this section wins.
 
 ### 1. Example rows carry `stratum`, `metrics`, `gt_swapped`

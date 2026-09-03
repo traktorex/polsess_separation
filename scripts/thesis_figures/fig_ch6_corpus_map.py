@@ -7,8 +7,8 @@ wypowiedzi w czasie mowy fragmentu (nakładanie / unia mowy), wyznaczony z
 SUROWEJ diaryzacji Sortformer wdrożonego potoku — ta sama definicja i to samo
 źródło co wiersz „Udział nakładania" Tabeli 6.4 (ustalenie autora 2026-08-25:
 statystyki nakładania z diaryzacji, nie z referencji; wcześniejsza oś z doboru
-pyannote wycofana). Pełna dokumentacja źródła i cross-checki:
-thesis/claude-writing/ch67/67_s64_overlap_diar.md.
+pyannote wycofana). Pełna dokumentacja źródła i cross-checki znajdują się
+w notatkach autora do pracy.
 
 Rysunek ma unieść jedno zdanie rozdziału, którego proza inaczej tylko dowodzi
 słownie: **warstwy LOW / MID / HIGH to warstwy ZŁOŻONOŚCI AKUSTYCZNEJ, nie

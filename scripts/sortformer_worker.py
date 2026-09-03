@@ -19,7 +19,7 @@ MODELS. Two model ids run through this one worker, dispatched by whether
     in a few chunks with the Arrival-Order Speaker Cache carried across them.
     Same ``SortformerEncLabelModel`` class, same ``diarize()`` call, same
     (T, 4) @ 0.08 s output contract — probe-verified
-    (``docs/sweep_plan/SORTFORMER_V21_PROBE.md``). NVIDIA Open Model License
+    (``thesis-log/sweep_plan/SORTFORMER_V21_PROBE.md``). NVIDIA Open Model License
     (commercial use OK). Loads in the SAME NeMo 2.7.3 venv — no new environment.
 
 VENV RECIPE (persistent, ``~/sortformer_venv`` — rebuilt fresh, NOT copied from
@@ -58,7 +58,7 @@ I/O PROTOCOL (mirrors ``coherex_worker.py``):
         num_heads    4
         model        the model id
 
-PARITY. Reproduces ``docs/sweep_plan/sortformer_probe.py``'s frame cache exactly
+PARITY. Reproduces ``thesis-log/sweep_plan/sortformer_probe.py``'s frame cache exactly
 (same ``model.diarize`` call, same batch collapse to (T,4)) — the probe's cached
 ``_eend_cache/sortformer/<frag>.npz`` is the ground-truth check for this worker.
 The turn-building / thresholding lives in the STAGE, not here: this worker only
@@ -79,7 +79,7 @@ import numpy as np
 
 
 # Sortformer emits one activity frame every 0.08 s — v1 and streaming-v2.1 alike
-# (model card / probe constant, docs/sweep_plan/SORTFORMER_V21_PROBE.md).
+# (model card / probe constant, thesis-log/sweep_plan/SORTFORMER_V21_PROBE.md).
 FRAME_SHIFT_S = 0.08
 
 
