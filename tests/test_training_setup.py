@@ -25,7 +25,8 @@ except ImportError:  # pragma: no cover - depends on pytest import mode
 class _FakeVariantDataset(Dataset):
     """Dataset stub that ignores paths and just yields tiny random tensors."""
 
-    def __init__(self, data_root, subset="train", task="ES", max_samples=None, allowed_variants=None):
+    def __init__(self, data_root, subset="train", task="ES", max_samples=None, allowed_variants=None,
+                 sample_rate=None):
         self.subset = subset
         self.task = task
         self.allowed_variants = allowed_variants
@@ -51,6 +52,7 @@ def _stub_config(tmp_path, *, per_variant=False, validation_variants=None,
     cfg.data.train_max_samples = train_max
     cfg.data.val_max_samples = val_max
     cfg.data.num_workers = 0
+    cfg.data.sample_rate = 8000
     cfg.training.deterministic = deterministic
     cfg.training.per_variant_validation = per_variant
     cfg.training.validation_variants = validation_variants

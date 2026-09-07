@@ -155,7 +155,7 @@ def run_evaluation(checkpoint_path: str, device: str,
                    no_stoi: bool = False):
     """Run evaluate.py logic for a single checkpoint."""
     from config import Config
-    from evaluate import evaluate_by_variant
+    from evaluate import evaluate_by_variant, checkpoint_sample_rate
 
     model, checkpoint = load_model_for_inference(checkpoint_path, device)
     info = extract_checkpoint_info(Path(checkpoint_path), checkpoint)
@@ -170,6 +170,10 @@ def run_evaluation(checkpoint_path: str, device: str,
     task = checkpoint.get("config", {}).get("data", {}).get("task")
     if task:
         config.data.task = task
+    # The sampling rate is a property of the trained model (8 kHz for every
+    # checkpoint that predates the field); it picks PESQ nb/wb + STOI rate and
+    # makes PolSESSDataset refuse a corpus stored at a different rate.
+    config.data.sample_rate = checkpoint_sample_rate(checkpoint)
 
     # Run evaluation by variant (evaluate_by_variant forces batch_size=1)
     results = evaluate_by_variant(

@@ -6,6 +6,9 @@ nieintruzyjne) i `fig_ch6_indomain_pesq_stoi.py` (PolSESS_128k, w domenie) —
 pokazują każde PO TRZY metryki (SI-SDR(i) | PESQ | STOI) jednego źródła
 (decyzja autora 2026-08-28: stratyfikacja per-źródło; wcześniejszy
 `fig_ch6_ladder.py`, 3×SI-SDR w jednym rysunku, jest tym samym zastąpiony).
+AKTUALIZACJA 2026-09-04: rozdział wrócił do `fig_ch6_ladder.py` (jeden rysunek,
+3×SI-SDR(i), PESQ/STOI = jedno zdanie w prozie); trójka per-źródło zostaje jako
+zapis układu z 2026-08-28, nie regenerować do rozdziału bez ponownej decyzji.
 Rysunki różnią się WYŁĄCZNIE źródłem osi X. Oś Y, kolejność paneli, podział na
 rodziny separatorów, kolory, znaczniki, linia „bez separacji" i formatowanie
 liczb muszą być identyczne, bo rysunki porównuje się między sobą w pionie

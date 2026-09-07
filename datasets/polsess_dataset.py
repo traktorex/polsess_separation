@@ -1,12 +1,13 @@
 """PolSESS Dataset for Speech Enhancement/Separation with MM-IPC augmentation."""
 
 import pandas as pd
+import soundfile as sf
 import torch
 import torchaudio
 import random
 from torch.utils.data import Dataset
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 class PolSESSDataset(Dataset):
@@ -19,6 +20,11 @@ class PolSESSDataset(Dataset):
         task: 'ES' (single speaker) or 'EB' (both speakers)
         allowed_variants: MM-IPC variants (None = all, ['SER'] = specific, ['SER','SR'] = subset)
         max_samples: Maximum number of samples to load (None = all samples)
+        sample_rate: Expected sampling rate of the corpus files in Hz (None =
+            don't check). The loader itself is rate-agnostic — it returns the
+            files as stored — so this is purely a guard: the first mix file's
+            header is compared against it at construction and a mismatch raises,
+            because a model trained on the wrong rate fails silently otherwise.
     """
 
     INDOOR_VARIANTS = ["SER", "SR", "ER", "R", "C"]
@@ -31,11 +37,13 @@ class PolSESSDataset(Dataset):
         task="ES",
         allowed_variants=None,
         max_samples=None,
+        sample_rate: Optional[int] = None,
     ):
         self.data_root = Path(data_root)
         self.subset = subset
         self.task = task
         self.max_samples = max_samples
+        self.sample_rate = sample_rate
         self._allowed_variants = None  # Private attribute
 
         # Automatically derive CSV filename from data_root
@@ -49,6 +57,26 @@ class PolSESSDataset(Dataset):
 
         # Apply filtering via property setter
         self.allowed_variants = allowed_variants
+
+        if sample_rate is not None:
+            self._check_sample_rate(sample_rate)
+
+    def _check_sample_rate(self, expected: int):
+        """Raise if the corpus files are not stored at ``expected`` Hz.
+
+        Reads only the header of the first mix file in the (unfiltered) split —
+        every file in a PolSESS render shares one rate, so one probe suffices.
+        """
+        if len(self.full_metadata) == 0:
+            return
+        first_mix = self.data_root / self.subset / "mix" / self.full_metadata.iloc[0]["mixFile"]
+        actual = sf.info(str(first_mix)).samplerate
+        if actual != expected:
+            raise ValueError(
+                f"PolSESS corpus at {self.data_root} is stored at {actual} Hz but the "
+                f"config says data.sample_rate={expected}. Point data_root at a corpus "
+                f"rendered at {expected} Hz or set data.sample_rate: {actual}."
+            )
 
     @property
     def allowed_variants(self):

@@ -80,6 +80,7 @@ def build_dataloaders(config, summary_info, logger=None):
         task=config.data.task,
         max_samples=config.data.train_max_samples,
         allowed_variants=train_variants,
+        sample_rate=config.data.sample_rate,
     )
 
     # persistent_workers is intentionally left at its default (False). Curriculum
@@ -116,6 +117,7 @@ def build_dataloaders(config, summary_info, logger=None):
                 task=config.data.task,
                 max_samples=config.data.val_max_samples,
                 allowed_variants=[variant],
+                sample_rate=config.data.sample_rate,
             )
             per_variant_val_loaders[variant] = DataLoader(
                 v_dataset,
@@ -136,6 +138,7 @@ def build_dataloaders(config, summary_info, logger=None):
             task=config.data.task,
             max_samples=config.data.val_max_samples,
             allowed_variants=config.training.validation_variants,
+            sample_rate=config.data.sample_rate,
         )
         val_loader = DataLoader(
             val_dataset,

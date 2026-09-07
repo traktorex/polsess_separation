@@ -167,6 +167,14 @@ class DataConfig:
     num_workers: int = 4
     prefetch_factor: int = 2
     task: str = "ES"  # ES=single speaker, EB=both speakers, SB=separate both
+    # Corpus sampling rate in Hz (PolSESS ships 8 kHz; a 16 kHz render uses the
+    # same folder layout). The loaders are rate-agnostic, so this field is
+    # provenance plus a guard: PolSESSDataset checks the first mix file against
+    # it at construction (a 16 kHz config pointed at the 8 kHz corpus fails
+    # loud instead of silently training at the wrong rate), the value lands in
+    # every checkpoint's embedded config, and evaluate.py reads it back to pick
+    # the PESQ mode (nb @ 8 kHz, wb @ 16 kHz) and the STOI rate.
+    sample_rate: int = 8000
     train_max_samples: Optional[int] = None
     val_max_samples: Optional[int] = None
     polsess: Optional[PolSESSParams] = None
@@ -343,6 +351,7 @@ class Config:
 
         lines.extend([
             f"  Task: {self.data.task}",
+            f"  Sample rate: {self.data.sample_rate} Hz",
             f"  Batch size: {self.data.batch_size}",
             f"  Workers: {self.data.num_workers} (prefetch={self.data.prefetch_factor})",
         ])
@@ -790,7 +799,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     and then apply common sweep overrides found in the sweep config.
 
     Supported sweep override keys: model_B, model_H, weight_decay,
-    grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
+    grad_clip_norm, batch_size, sample_rate, lr, epochs, num_epochs, device, seed,
     task, model_type, lr_factor, lr_patience, curriculum_learning,
     validation_variants, dropout, chunk_size, rnn_type.
     Note: dropout and chunk_size are routed to the active model's params
@@ -827,6 +836,7 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         # Data
         "task":                     (config.data, "task"),
         "batch_size":               (config.data, "batch_size"),
+        "sample_rate":              (config.data, "sample_rate"),
         # Model
         "model_type":               (config.model, "model_type"),
     }

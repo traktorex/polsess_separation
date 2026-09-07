@@ -33,8 +33,28 @@ from utils import (
 
 logger = logging.getLogger("polsess")
 
-# PolSESS dataset sample rate
-SAMPLE_RATE = 8000
+# Sampling rate the checkpoint was trained at, when its embedded config predates
+# the `data.sample_rate` field (every checkpoint before 2026-09-07; all 8 kHz).
+LEGACY_SAMPLE_RATE = 8000
+
+
+def pesq_mode_for(sample_rate: int) -> str:
+    """PESQ operating mode for a sampling rate: narrowband @ 8 kHz, wideband @ 16 kHz.
+
+    These are the only two rates ITU-T P.862 defines, so anything else is an
+    error rather than a silent nearest-match.
+    """
+    if sample_rate == 8000:
+        return "nb"
+    if sample_rate == 16000:
+        return "wb"
+    raise ValueError(f"PESQ is defined for 8 kHz and 16 kHz only, got {sample_rate} Hz")
+
+
+def checkpoint_sample_rate(checkpoint: dict) -> int:
+    """Sampling rate a checkpoint was trained at, from its embedded config."""
+    data_cfg = (checkpoint.get("config") or {}).get("data") or {}
+    return int(data_cfg.get("sample_rate", LEGACY_SAMPLE_RATE))
 
 # Long-format per-sample CSV schema (one row per evaluated sample).
 PER_SAMPLE_COLUMNS = ("run", "variant", "sample_idx", "si_sdr", "si_sdri", "pesq", "stoi")
@@ -48,8 +68,12 @@ def evaluate_model(
     compute_stoi: bool = True,
     use_amp: bool = False,
     task: str = "ES",
+    sample_rate: int = LEGACY_SAMPLE_RATE,
 ) -> dict:
     """Evaluate model on a dataset and compute metrics.
+
+    ``sample_rate`` is the rate of the audio the dataloader yields; it selects
+    the PESQ mode (nb/wb) and the STOI rate. SI-SDR is rate-free.
 
     Scores are accumulated per batch and averaged; callers use ``batch_size=1``
     (see ``evaluate_by_variant`` and the Libri2Mix path) so every accumulated
@@ -67,9 +91,11 @@ def evaluate_model(
     pesq_metric = None
     stoi_metric = None
     if compute_pesq:
-        pesq_metric = PerceptualEvaluationSpeechQuality(SAMPLE_RATE, "nb").to(device)
+        pesq_metric = PerceptualEvaluationSpeechQuality(
+            sample_rate, pesq_mode_for(sample_rate)
+        ).to(device)
     if compute_stoi:
-        stoi_metric = ShortTimeObjectiveIntelligibility(SAMPLE_RATE).to(device)
+        stoi_metric = ShortTimeObjectiveIntelligibility(sample_rate).to(device)
 
     si_sdr_scores = []
     si_sdri_scores = []
@@ -318,6 +344,7 @@ def evaluate_by_variant(
             task=config.data.task,
             allowed_variants=[variant],
             max_samples=max_samples,
+            sample_rate=config.data.sample_rate,  # guard: corpus rate must match
         )
 
         dataloader = DataLoader(
@@ -336,6 +363,7 @@ def evaluate_by_variant(
             compute_stoi=compute_stoi,
             use_amp=False,
             task=config.data.task,
+            sample_rate=config.data.sample_rate,
         )
 
         results[variant] = variant_results
@@ -532,6 +560,12 @@ def main():
             logger.info(f"Auto-detected task from checkpoint: {ckpt_task}")
             config.data.task = ckpt_task
 
+    # The sampling rate always follows the checkpoint: it is a property of the
+    # trained model, not of the eval invocation. Checkpoints saved before the
+    # field existed are all 8 kHz.
+    config.data.sample_rate = checkpoint_sample_rate(checkpoint)
+    logger.info(f"  Sample rate: {config.data.sample_rate} Hz")
+
     # Run evaluation
     if args.dataset == "polsess":
         results = evaluate_by_variant(
@@ -567,6 +601,7 @@ def main():
             dataset = Libri2MixDataset(
                 args.librimix_root,
                 subset=args.librimix_subset,
+                sample_rate=config.data.sample_rate,  # wav8k/ or wav16k/
                 mix_type=mix_type,
                 max_samples=args.max_samples,
             )
@@ -587,6 +622,7 @@ def main():
                 compute_stoi=not args.no_stoi,
                 use_amp=False,
                 task="SB",
+                sample_rate=config.data.sample_rate,
             )
 
             results[variant_name] = result
