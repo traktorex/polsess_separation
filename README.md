@@ -4,9 +4,9 @@ Codebase for a master's thesis on monaural speech separation and its use as a
 front end for Polish automatic speech recognition. Two halves:
 
 1. **Separation training** — PyTorch implementations of ConvTasNet, DPRNN,
-   SepFormer, MossFormer2, SPMamba, Mamba-TasNet and DPMamba, trained on the
-   PolSESS corpus, which simulates realistic acoustic conditions (reverberation,
-   background scenes, event sounds). Thesis chapters 4–5.
+   SepFormer, MossFormer2, TF-MossFormer, SPMamba, Mamba-TasNet and DPMamba,
+   trained on the PolSESS corpus, which simulates realistic acoustic conditions
+   (reverberation, background scenes, event sounds). Thesis chapters 4–5.
 2. **ASR pipeline** — `asr_pipeline/`: diarization → routing → enhancement →
    separation → post-processing → assembly → transcription, evaluated on real
    conversational Polish speech from the CLARIN corpus, plus two demonstration
@@ -37,13 +37,14 @@ polsess_separation/
 │   ├── conv_tasnet.py, dprnn.py, sepformer.py, factory.py
 │   ├── spmamba.py, mamba_tasnet.py, dpmamba.py   # require mamba-ssm (Linux + CUDA)
 │   ├── mamba/                 # BiMamba blocks, adapted from xi-j/Mamba-TasNet
-│   └── mossformer2/           # Vendored from ClearerVoice-Studio + project wrapper
+│   ├── mossformer2/           # Vendored from ClearerVoice-Studio + project wrapper
+│   └── tf_mossformer/         # Re-implemented from arXiv:2607.21128 on a TF-Locoformer copy
 ├── datasets/                  # polsess / libri2mix / echoset loaders + registry
 ├── training/                  # trainer.py (loop, AMP, curriculum) + setup.py (shared builders)
 ├── utils/                     # common, model_utils, metrics, wandb_logger, logger, warning_filters
 ├── experiments/               # YAML training configs, one directory per architecture
 ├── sweeps/                    # W&B sweep definitions + historical run ledger
-├── tests/                     # pytest suite (55 files, 1441 tests)
+├── tests/                     # pytest suite (58 files, 1495 tests)
 ├── docs/                      # MM-IPC notes, sweep-CSV schema, generated/ artifacts
 ├── scripts/                   # Benchmarks, audits, CLARIN helpers, thesis_figures/
 ├── asr_pipeline/              # Pipeline package: stages/, eval/, configs/, vendor/, SCOPE.md
@@ -70,6 +71,7 @@ Brouhaha) through separate isolated venvs whose pins conflict with it — see
 ```bash
 python train.py --config experiments/dprnn/dprnn_baseline.yaml
 python train.py --config experiments/mossformer2/6-final-training/128k_matched_final.yaml
+python train.py --config experiments/tf_mossformer/s_8k.yaml
 python train.py --config experiments/dprnn/dprnn_baseline.yaml --no-wandb --seed 123
 python train.py --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 ```
@@ -102,7 +104,7 @@ Metrics: SI-SDR / SI-SDRi (dB), PESQ-WB (1–5), STOI (0–1).
 ```bash
 wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml   # returns a sweep id
 wandb agent <sweep_id>                                        # run inside tmux
-pytest                                                        # 55 files, 1441 tests
+pytest                                                        # 58 files, 1495 tests
 pytest tests/test_model.py -v
 pytest --cov=. --cov-report=html
 ```
@@ -167,8 +169,8 @@ while a curriculum is active.
 **Mixed precision.** AMP is on by default. SpeechBrain's `EPS=1e-8` underflows
 to zero in float16 and produces NaN SI-SDR, so `utils.apply_eps_patch` raises it
 to `1e-4` for the ConvTasNet SpeechBrain lobe. Most models train in float16 with
-a GradScaler; Mamba models and MossFormer2 use bfloat16 without one (dispatch by
-`model_type` in `training/trainer.py`).
+a GradScaler; Mamba models, MossFormer2 and TF-MossFormer use bfloat16 without
+one (dispatch by `model_type` in `training/trainer.py`).
 
 **Benchmarks and audits.** `scripts/benchmark_inference.py --cross-check` (MACs,
 latency, RTF, peak inference VRAM), `scripts/benchmark_training.py` (throughput,
@@ -230,7 +232,9 @@ ConvTasNet [1809.07454](https://arxiv.org/abs/1809.07454) · DPRNN
 [2312.11825](https://arxiv.org/abs/2312.11825) · SPMamba
 [2404.02063](https://arxiv.org/abs/2404.02063) · DPMamba
 [2403.18257](https://arxiv.org/abs/2403.18257) · Mamba-TasNet
-[2407.09732](https://arxiv.org/abs/2407.09732) ·
+[2407.09732](https://arxiv.org/abs/2407.09732) · TF-MossFormer
+[2607.21128](https://arxiv.org/abs/2607.21128) · TF-Locoformer
+[2408.03440](https://arxiv.org/abs/2408.03440) ·
 [SpeechBrain](https://github.com/speechbrain/speechbrain). MM-IPC follows Kleć
 et al.'s approach for PolSESS.
 
@@ -240,6 +244,8 @@ Upstream implementations vendored so a checkpoint or architecture loads without
 pulling in a whole framework:
 
 - `models/mossformer2/` — MossFormer2, from [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio) (Apache-2.0)
+- `models/tf_mossformer/` — TF-MossFormer ([arXiv:2607.21128](https://arxiv.org/abs/2607.21128)),
+  re-implemented from the paper on a copy of [TF-Locoformer](https://github.com/merlresearch/tf-locoformer), MERL (Apache-2.0) — no upstream code was released
 - `models/mamba/` — BiMamba blocks adapted from [xi-j/Mamba-TasNet](https://github.com/xi-j/Mamba-TasNet) (GPL-3.0), on top of `mamba-ssm` (Apache-2.0)
 - `asr_pipeline/vendor/ap_bwe/` — [AP-BWE](https://github.com/yxlu-0102/AP-BWE) (MIT)
 - `asr_pipeline/vendor/tiger/` — [TIGER](https://github.com/JusperLee/TIGER) (MIT)

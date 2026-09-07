@@ -41,6 +41,14 @@ MODELS = [
     ("DPMamba-S",       "s",       "experiments/dpmamba/dpmamba_s.yaml"),
     ("DPMamba-M",       "m",       "experiments/dpmamba/dpmamba_m.yaml"),
     ("DPMamba-L",       "l",       "experiments/dpmamba/dpmamba_l.yaml"),
+    # TF-MossFormer (arXiv:2607.21128) is post-hand-in work, so it is appended
+    # rather than slotted next to the other transformer rows: the thesis table's
+    # order is fixed and these rows are not in it. The 8 kHz configs are the ones
+    # listed because `benchmark_inference.py` hard-codes SAMPLE_RATE = 8000;
+    # `experiments/tf_mossformer/s_16k.yaml` would be timed at the wrong rate.
+    ("TF-MossFormer-S", "s",       "experiments/tf_mossformer/s_8k.yaml"),
+    ("TF-MossFormer-M", "m",       "experiments/tf_mossformer/m_8k.yaml"),
+    ("TF-MossFormer-L", "l",       "experiments/tf_mossformer/l_8k.yaml"),
 ]
 
 # Mamba-family models need CUDA + mamba-ssm for their forward pass (they

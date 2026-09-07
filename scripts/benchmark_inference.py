@@ -43,6 +43,28 @@ both found and fixed on 2026-07-30:
    Fix: `_patch_einsum` (see its docstring for why patching `torch.einsum` alone
    is not enough).
 
+3. **`F.scaled_dot_product_attention` was invisible.** SDPA is one fused aten op,
+   so none of ptflops' Python-level patches (`matmul` / `bmm` / `addmm` /
+   `F.softmax`) ever fire inside it: an attention core written with SDPA
+   contributed *zero* MACs. That is how TF-Locoformer and TF-MossFormer write
+   both their global and their windowed attention, and it is also the path
+   `nn.MultiheadAttention` takes when `need_weights=False`. Fix: `_patch_sdpa`
+   counts `B·h·L_q·L_k·d` for QK^T plus the same for A·V — and, when a **boolean
+   `attn_mask`** is passed, only the *unmasked* entries (`mask.sum()`, not
+   `L_q·L_k`), so a banded/sliding-window attention is charged its true banded
+   cost rather than a dense one. TF-MossFormer's local branch is exactly that:
+   at w_T=31 over T=501 frames the band is 6% of the dense matrix, and counting
+   it dense would overstate the model by ~16x on that branch. A float mask is
+   counted over its finite entries; `is_causal=True` is counted as the exact
+   triangle when L_q == L_k and dense otherwise (nothing in this repo uses it).
+   The softmax normalisation itself is not counted here — it is not a
+   multiply-accumulate and it is inside the fused kernel. (`_mha_terms` *does*
+   carry a softmax row, because on that path ptflops' own `F.softmax` patch
+   sees it; the two paths are consistent to within 1/(2·d_head) of the core.)
+   `calibrate_mha_counting` runs with this patch installed, so if a future torch
+   starts routing `nn.MultiheadAttention` through SDPA the calibration flips
+   `_mha_hook` off the core rather than double-counting it.
+
 Ops that no hook can see, and what is done about them:
   * **Mamba selective scan** (`selective_scan_cuda`, `causal_conv1d`) — counted
     analytically by `_mamba_hooks`. The reference figure 9·B·L·D·N from
@@ -80,7 +102,8 @@ HOW TO CITE
 -----------
     scripts/benchmark_inference.py -> docs/generated/benchmark_inference.csv
     MACs: ptflops 0.7.5, PyTorch backend, with the MultiheadAttention,
-    einsum and Mamba corrections documented in the script docstring.
+    einsum, scaled_dot_product_attention and Mamba corrections documented in
+    the script docstring.
     Latency: median of N=50 forward passes, batch_size=1, after 10 warmup passes.
 
 USAGE
@@ -198,6 +221,105 @@ def _unpatch_einsum(patched: list) -> None:
     for module in patched:
         module.einsum = original
     torch.einsum = original
+
+
+# --------------------------------------------------------------------------- #
+# F.scaled_dot_product_attention counting
+# --------------------------------------------------------------------------- #
+
+def _sdpa_density(attn_mask, is_causal: bool, q_len: int, k_len: int) -> float:
+    """Fraction of the (q_len, k_len) score matrix that is actually attended.
+
+    A boolean mask (True = attend) is the case that matters: TF-MossFormer's
+    local branch is dense SDPA with a banded mask, and charging it for the full
+    matrix would overstate it by 1/density. The mask may broadcast over the
+    batch/head dimensions, so the density is read off the mask itself
+    (`sum / numel`) rather than assuming its shape — that gives `mask.sum()`
+    unmasked entries per batch element either way.
+    """
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            keep = int(attn_mask.sum())
+        else:
+            # Float masks are additive: -inf entries are the excluded ones.
+            keep = int(torch.isfinite(attn_mask).sum())
+        total = attn_mask.numel()
+        return keep / total if total else 1.0
+    if is_causal and q_len == k_len:
+        return (q_len + 1) / (2 * k_len)  # q_len*(q_len+1)/2 out of q_len*k_len
+    return 1.0
+
+
+def _sdpa_macs(query, key, value, attn_mask=None, is_causal: bool = False) -> int:
+    """MACs of one `F.scaled_dot_product_attention` call.
+
+    Shapes are `(..., L, E)`: every leading dimension is a batch dimension, and
+    torch folds the heads into them, so the usual `(B, h, L, d)` layout gives a
+    batch volume of B*h. Two multiply-accumulate terms, both over the attended
+    score entries only:
+
+        QK^T   batch * L_q * L_k * E     (E   = query/key head dim)
+        A·V    batch * L_q * L_k * E_v   (E_v = value head dim)
+    """
+    q_len, e_qk = query.shape[-2], query.shape[-1]
+    k_len = key.shape[-2]
+    e_v = value.shape[-1]
+    batch = reduce(lambda a, b: a * b, query.shape[:-2], 1)
+    density = _sdpa_density(attn_mask, is_causal, q_len, k_len)
+    return int(batch * q_len * k_len * (e_qk + e_v) * density)
+
+
+def _patch_sdpa(collector: list) -> list:
+    """Route every reachable `scaled_dot_product_attention` alias through a counter.
+
+    SDPA is a single fused aten op, so ptflops' Python-level patches never see
+    inside it. Same two-level patching as `_patch_einsum`: the canonical
+    `torch.nn.functional.scaled_dot_product_attention` (which `F.sdpa(...)` call
+    sites resolve through, including `torch.nn.functional`'s own
+    `multi_head_attention_forward`) plus any module that bound the function into
+    its own namespace with `from torch.nn.functional import ...` at import time.
+
+    Uses `module.__dict__.get` rather than `getattr` for the same reason
+    `_patch_einsum` does — SpeechBrain's lazy module proxies raise from
+    `__getattr__` for optional dependencies.
+
+    Returns the list of patched module objects, for `_unpatch_sdpa`.
+    """
+    original = torch.nn.functional.scaled_dot_product_attention
+
+    def wrapper(*args, **kwargs):
+        # Signature: (query, key, value, attn_mask=None, dropout_p=0.0,
+        # is_causal=False, scale=None, ...). Read positionally-or-by-keyword and
+        # forward the call untouched — the vendored TF-Locoformer passes
+        # everything by keyword, other call sites pass q/k/v positionally.
+        try:
+            query = args[0] if len(args) > 0 else kwargs["query"]
+            key = args[1] if len(args) > 1 else kwargs["key"]
+            value = args[2] if len(args) > 2 else kwargs["value"]
+            attn_mask = args[3] if len(args) > 3 else kwargs.get("attn_mask")
+            is_causal = args[5] if len(args) > 5 else kwargs.get("is_causal", False)
+            collector.append(_sdpa_macs(query, key, value, attn_mask, is_causal))
+        except Exception:  # never let accounting break the forward pass
+            pass
+        return original(*args, **kwargs)
+
+    wrapper.original = original
+    patched = []
+    for module in list(sys.modules.values()):
+        if module is None:
+            continue
+        if module.__dict__.get("scaled_dot_product_attention") is original:
+            module.scaled_dot_product_attention = wrapper
+            patched.append(module)
+    torch.nn.functional.scaled_dot_product_attention = wrapper
+    return patched
+
+
+def _unpatch_sdpa(patched: list) -> None:
+    original = torch.nn.functional.scaled_dot_product_attention.original
+    for module in patched:
+        module.scaled_dot_product_attention = original
+    torch.nn.functional.scaled_dot_product_attention = original
 
 
 # --------------------------------------------------------------------------- #
@@ -321,7 +443,9 @@ def _mamba_hooks() -> dict:
 def count_macs(model: nn.Module, num_samples: int, device: str) -> Optional[int]:
     """Total MACs of one forward pass on a (1, 1, num_samples) input."""
     einsum_macs: list = []
-    patched = _patch_einsum(einsum_macs)
+    sdpa_macs: list = []
+    patched_einsum = _patch_einsum(einsum_macs)
+    patched_sdpa = _patch_sdpa(sdpa_macs)
     try:
         hooks = _mamba_hooks()
         hooks[nn.MultiheadAttention] = _mha_hook
@@ -335,10 +459,11 @@ def count_macs(model: nn.Module, num_samples: int, device: str) -> Optional[int]
         print(f"    MAC counting failed: {exc}")
         return None
     finally:
-        _unpatch_einsum(patched)
+        _unpatch_sdpa(patched_sdpa)
+        _unpatch_einsum(patched_einsum)
     if macs is None or macs <= 0:
         return None
-    return int(macs) + int(sum(einsum_macs))
+    return int(macs) + int(sum(einsum_macs)) + int(sum(sdpa_macs))
 
 
 def calibrate_mha_counting(device: str) -> bool:
@@ -350,6 +475,14 @@ def calibrate_mha_counting(device: str) -> bool:
     than trusted: count a reference attention block both ways and keep the
     setting whose total equals the closed form. Raises if neither matches, which
     is the honest outcome — a silently wrong MAC count is worse than a crash.
+
+    The SDPA patch is installed here too, exactly as in `count_macs`, so the
+    calibration sees what the real runs see. On today's torch it never fires:
+    `need_weights=True` forces the `bmm` + `F.softmax` path. If a future torch
+    routes `nn.MultiheadAttention` through `F.scaled_dot_product_attention`
+    instead, the two accountings stop agreeing to the MAC (`_sdpa_macs` has no
+    softmax row, `_mha_terms` does) and this raises — which is the point: the
+    decomposition would need re-deriving before any transformer row is quoted.
     """
     global _MHA_CORE_FROM_PATCH
     seq_len, dim, heads = 32, 64, 4
@@ -370,13 +503,18 @@ def calibrate_mha_counting(device: str) -> bool:
 
     for core_from_patch in (True, False):
         _MHA_CORE_FROM_PATCH = core_from_patch
-        got, _ = get_model_complexity_info(
-            reference, (seq_len, dim), as_strings=False,
-            print_per_layer_stat=False, verbose=False,
-            input_constructor=lambda shape: torch.randn(1, *shape, device=device),
-            custom_modules_hooks={nn.MultiheadAttention: _mha_hook},
-        )
-        if got == expected:
+        sdpa_macs: list = []
+        patched_sdpa = _patch_sdpa(sdpa_macs)
+        try:
+            got, _ = get_model_complexity_info(
+                reference, (seq_len, dim), as_strings=False,
+                print_per_layer_stat=False, verbose=False,
+                input_constructor=lambda shape: torch.randn(1, *shape, device=device),
+                custom_modules_hooks={nn.MultiheadAttention: _mha_hook},
+            )
+        finally:
+            _unpatch_sdpa(patched_sdpa)
+        if got + sum(sdpa_macs) == expected:
             return core_from_patch
 
     _MHA_CORE_FROM_PATCH = None

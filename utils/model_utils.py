@@ -69,6 +69,10 @@ def compile_for_model_type(
         per-shape static specialization. Fixed-length training crops compile once;
         a new length triggers a one-time static recompile. (If this ever regresses
         on another torch build, fall back to skipping compile for mossformer2.)
+      - TF-MossFormer: compiled with dynamic=False, same reason — it uses the
+        same rotary-embedding-torch library as MossFormer2, plus a banded
+        attention mask whose shape is a function of the sequence length. Static
+        per-shape specialization compiles each crop length once.
       - Everything else: torch.compile defaults.
     """
     if model_type in MAMBA_MODELS:
@@ -78,7 +82,7 @@ def compile_for_model_type(
                 "(incompatible with mamba_ssm CUDA kernels)."
             )
         return model
-    if model_type == "mossformer2":
+    if model_type in ("mossformer2", "tf_mossformer"):
         return apply_torch_compile(model, logger=logger, dynamic=False)
     return apply_torch_compile(model, logger=logger)
 

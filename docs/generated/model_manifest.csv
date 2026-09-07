@@ -15,3 +15,6 @@ dpmamba,xs,experiments/dpmamba/dpmamba_xs.yaml,SB,2,2265857,2.2659,,ok
 dpmamba,s,experiments/dpmamba/dpmamba_s.yaml,SB,2,8136193,8.1362,,ok
 dpmamba,m,experiments/dpmamba/dpmamba_m.yaml,SB,2,15869441,15.8694,,ok
 dpmamba,l,experiments/dpmamba/dpmamba_l.yaml,SB,2,59788289,59.7883,,ok
+tf_mossformer,s,experiments/tf_mossformer/s_8k.yaml,SB,2,5917308,5.9173,5.92,ok
+tf_mossformer,m,experiments/tf_mossformer/m_8k.yaml,SB,2,17338020,17.338,17.34,ok
+tf_mossformer,l,experiments/tf_mossformer/l_8k.yaml,SB,2,26003364,26.0034,26.0,ok

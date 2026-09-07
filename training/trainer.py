@@ -64,7 +64,19 @@ class Trainer:
         self.logger = logger or logging.getLogger("polsess")
         self.wandb_logger = wandb_logger
 
-        self.optimizer = torch.optim.Adam(
+        # Optimizer choice (config.training.optimizer, default "adam" = every
+        # run before 2026-09). AdamW exists because papers that specify it with a
+        # decoupled weight decay (TF-MossFormer / TF-Locoformer: wd 1e-2) are not
+        # reproduced by Adam with the same number. getattr keeps SimpleNamespace
+        # test configs and pre-2026-09 checkpoint configs working.
+        optimizer_name = str(getattr(config.training, "optimizer", "adam")).lower()
+        optimizer_classes = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
+        if optimizer_name not in optimizer_classes:
+            raise ValueError(
+                f"Unknown optimizer: {optimizer_name!r}. Supported: "
+                f"{', '.join(sorted(optimizer_classes))}."
+            )
+        self.optimizer = optimizer_classes[optimizer_name](
             model.parameters(),
             lr=config.training.lr,
             weight_decay=config.training.weight_decay,
@@ -98,6 +110,13 @@ class Trainer:
         # Per-variant SI-SDRi from the previous epoch (for the delta row in the table).
         self.prev_variant_sisdri = None
         self.current_epoch = 0
+        # Linear LR warmup (config.training.warmup_steps, default 0 = disabled).
+        # Counts *optimizer* steps, not batches, so it is unaffected by gradient
+        # accumulation, and it is persisted in the checkpoint so a --resume
+        # partway through warmup continues rather than restarting it.
+        self.warmup_steps = int(getattr(config.training, "warmup_steps", 0) or 0)
+        self.warmup_target_lr = config.training.lr
+        self.global_step = 0
         # Consecutive NaN/Inf batch counter — persists across epoch boundaries,
         # reset by any finite-loss batch. See MAX_CONSECUTIVE_NAN_BATCHES.
         self.consecutive_nan_batches = 0
@@ -126,6 +145,13 @@ class Trainer:
         overflow at low attn_dropout / higher LR (128k sweep, 2026-06-05). bf16
         has fp32's exponent range, so the squared activations cannot overflow.
 
+        TF-MossFormer: bf16 autocast, no GradScaler — same overflow profile as
+        MossFormer2 (it is the same group's successor architecture): two chained
+        multiplicative Conv-Swish gates on top of a masked softmax, so the
+        activation magnitudes compound exactly where fp16 runs out of exponent.
+        It also does its own STFT and needs fp32 for torch.complex, which the
+        model handles internally (see models/tf_mossformer/__init__.py).
+
         Other models: fp16 autocast + GradScaler — standard mixed precision.
         """
         if not self.use_amp or device != "cuda":
@@ -136,13 +162,29 @@ class Trainer:
         # Dispatch on model_type rather than class name: torch.compile wraps the
         # model in OptimizedModule, which would silently defeat a class-name check.
         if self.config.model.model_type in MAMBA_MODELS or (
-            self.config.model.model_type == "mossformer2"
+            self.config.model.model_type in ("mossformer2", "tf_mossformer")
         ):
             self.scaler = None
             self.amp_dtype = torch.bfloat16
         else:
             self.scaler = torch.amp.GradScaler("cuda", init_scale=256)
             self.amp_dtype = torch.float16
+
+    def _apply_lr_warmup(self):
+        """Set the LR for the optimizer step about to be taken (linear warmup).
+
+        Step k (0-based) runs at ``lr * (k + 1) / warmup_steps``, so the first
+        step is ~0 and step ``warmup_steps - 1`` is the full configured LR. Once
+        ``global_step >= warmup_steps`` this writes nothing ever again and
+        ReduceLROnPlateau owns the LR, exactly as before this knob existed.
+        With ``warmup_steps == 0`` (the default) it returns immediately, so no
+        LR is ever written by warmup.
+        """
+        if self.warmup_steps <= 0 or self.global_step >= self.warmup_steps:
+            return
+        scale = (self.global_step + 1) / self.warmup_steps
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = self.warmup_target_lr * scale
 
     def _get_curriculum_variants(self, epoch):
         """Get allowed variants for current epoch from curriculum schedule.
@@ -292,6 +334,12 @@ class Trainer:
         # checkpoints → default 0 (as if resuming right after an improvement).
         self.epochs_without_improvement = checkpoint.get("epochs_without_improvement", 0)
 
+        # Optimizer-step counter for LR warmup; missing in pre-2026-09
+        # checkpoints -> 0. Those runs had no warmup, and any run resumed from
+        # one is far past 4k steps in practice, so restarting at 0 only matters
+        # if warmup is newly enabled on a resume (which would be a fresh recipe).
+        self.global_step = checkpoint.get("global_step", 0)
+
         self.logger.info(
             f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
             f"resuming at epoch {self.current_epoch}"
@@ -383,6 +431,9 @@ class Trainer:
             # call must still record this checkpoint's own score as the best.
             "best_val_sisdr": max(self.best_val_sisdr, val_sisdr),
             "epochs_without_improvement": self.epochs_without_improvement,
+            # Optimizer-step counter, so a --resume partway through an LR warmup
+            # continues it instead of restarting from ~0 (no-op when warmup is off).
+            "global_step": self.global_step,
             "config": config_dict,
         }
 
@@ -530,6 +581,7 @@ class Trainer:
             is_last_batch = (batch_idx + 1) == len(self.train_loader)
 
             if is_accum_step or is_last_batch:
+                self._apply_lr_warmup()
                 if self.scaler:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
@@ -546,6 +598,7 @@ class Trainer:
                     self.optimizer.step()
 
                 self.optimizer.zero_grad()
+                self.global_step += 1
 
             # Weight by actual batch size for correct averaging
             batch_size = len(mix)

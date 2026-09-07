@@ -82,6 +82,43 @@ class MossFormer2Params:
 
 
 @dataclass
+class TFMossFormerParams:
+    """TF-MossFormer (Zhao et al. 2026, arXiv:2607.21128) model-specific parameters.
+
+    Re-implemented from the paper on the vendored Apache-2.0 TF-Locoformer
+    skeleton (no TF-MossFormer code was ever released) — see
+    models/tf_mossformer/. STFT-domain: the model does its own stft/istft, so
+    `n_fft` and `hop_length` are in SAMPLES and there is deliberately no
+    `sample_rate` field (same choice as SPMambaParams). The paper's 8 kHz
+    geometry is 128/64 (16 ms / 8 ms); a 16 kHz corpus holding the same frame
+    rate uses 256/128 and doubles F from 65 to 129.
+
+    Paper sizes (Table 1), all sharing the defaults not listed here:
+        S  D=96,  num_blocks=4, ffn_hidden_dim=256  ->  5.92M  (paper 5.9/6.0M)
+        M  D=128, num_blocks=6, ffn_hidden_dim=384  -> 17.34M  (paper 16.9M)
+        L  D=128, num_blocks=9, ffn_hidden_dim=384  -> 26.00M  (paper 25.4M)
+    The defaults below are size S. The 2.5% excess on M/L is the paper's own
+    inconsistency; the reconciliation is recorded in
+    models/tf_mossformer/local_global_attention.py (LocalGlobalMHSA docstring).
+    """
+
+    C: int = 2  # Output sources (number of speakers)
+    D: int = 96  # Embedding dim; also the attention dim (Table 1 has no separate value)
+    num_blocks: int = 4  # TF blocks (each = one frequency module + one temporal module)
+    ffn_hidden_dim: int = 256  # Conv-SwiGLU hidden dim (macaron: one FFN before and one after attention)
+    conv_kernel_size: int = 4  # Conv1d/Deconv1d kernel in the Conv-SwiGLU FFNs
+    conv_stride: int = 1  # Conv1d/Deconv1d stride in the Conv-SwiGLU FFNs
+    n_heads: int = 4  # Attention heads, shared by the local and global paths
+    num_groups: int = 4  # Groups in RMSGroupNorm
+    window_t: int = 31  # Local-attention window on frames (paper w_T)
+    window_f: int = 7  # Local-attention window on frequency bins (paper w_F)
+    gate_kernel_size: int = 4  # Conv1d kernel of the two convolution gates
+    n_fft: int = 128  # STFT size in samples (Hann, win_length = n_fft, center=True)
+    hop_length: int = 64  # STFT hop in samples
+    attn_dropout: float = 0.0  # Dropout on both attention paths (FFN dropout stays 0)
+
+
+@dataclass
 class DPRNNParams:
     """DPRNN (Dual-Path RNN) model-specific parameters."""
 
@@ -190,11 +227,12 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, mossformer2, dprnn, spmamba, mamba_tasnet, dpmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, mossformer2, tf_mossformer, dprnn, spmamba, mamba_tasnet, dpmamba
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
     mossformer2: Optional[MossFormer2Params] = None
+    tf_mossformer: Optional[TFMossFormerParams] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
     mamba_tasnet: Optional[MambaTasNetParams] = None
@@ -208,6 +246,8 @@ class ModelConfig:
             self.sepformer = SepFormerParams()
         elif self.model_type == "mossformer2" and self.mossformer2 is None:
             self.mossformer2 = MossFormer2Params()
+        elif self.model_type == "tf_mossformer" and self.tf_mossformer is None:
+            self.tf_mossformer = TFMossFormerParams()
         elif self.model_type == "dprnn" and self.dprnn is None:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
@@ -221,6 +261,18 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     lr: float = 1e-3
+    # Optimizer: "adam" (default, the setting every run before 2026-09 used) or
+    # "adamw". Adam applies weight_decay as an L2 term added to the gradient,
+    # AdamW as true decoupled decay — a paper that specifies AdamW with
+    # weight_decay 1e-2 (e.g. TF-MossFormer / TF-Locoformer) is not reproduced by
+    # Adam with the same number. Trainer raises ValueError on any other value.
+    optimizer: str = "adam"
+    # Linear LR warmup over the first N *optimizer* steps: step k (0-based) runs
+    # at lr * (k + 1) / N, so the first step is ~0 and step N-1 is the full lr;
+    # after that ReduceLROnPlateau owns the LR exactly as before. 0 (default)
+    # disables warmup entirely — no code touches the LR. The step counter is
+    # persisted in the checkpoint, so warmup does not restart on --resume.
+    warmup_steps: int = 0
     weight_decay: float = 1e-4
     grad_clip_norm: float = 5.0
     lr_factor: float = 0.95
@@ -314,6 +366,7 @@ class Config:
             "convtasnet": "C",
             "sepformer": "C",
             "mossformer2": "C",
+            "tf_mossformer": "C",
             "dprnn": "C",
             "spmamba": "n_srcs",
             "mamba_tasnet": "C",
@@ -402,6 +455,15 @@ class Config:
                 f"  Backbone: MossFormer + gated-FSMN, blocks={p.num_blocks}, attn_dropout={p.attn_dropout}",
                 f"  Output: C={p.C}",
             ])
+        elif mt == "tf_mossformer":
+            p = self.model.tf_mossformer
+            lines.extend([
+                f"  STFT: n_fft={p.n_fft}, hop_length={p.hop_length}, window=hann",
+                f"  Backbone: TF-Locoformer blocks={p.num_blocks}, D={p.D}, ffn_hidden={p.ffn_hidden_dim}",
+                f"  Attention: heads={p.n_heads}, windows w_T={p.window_t}/w_F={p.window_f}, "
+                f"gate_kernel={p.gate_kernel_size}, attn_dropout={p.attn_dropout}",
+                f"  Output: C={p.C}",
+            ])
         elif mt == "spmamba":
             p = self.model.spmamba
             lines.extend([
@@ -435,17 +497,24 @@ class Config:
             "Training:",
             f"  Epochs: {self.training.num_epochs}",
             f"  LR: {self.training.lr:.2e}",
+            f"  Optimizer: {self.training.optimizer}"
+            + (
+                f" (linear warmup over {self.training.warmup_steps} steps)"
+                if self.training.warmup_steps
+                else ""
+            ),
             f"  Weight decay: {self.training.weight_decay:.2e}",
             f"  Grad clip norm: {self.training.grad_clip_norm}",
             f"  LR scheduler: factor={self.training.lr_factor}, patience={self.training.lr_patience}",
             f"  Seed: {self.training.seed}",
-            # Mirrors Trainer._setup_amp dispatch: Mamba + MossFormer2 train in
-            # bf16 (no GradScaler), everything else fp16 + GradScaler.
+            # Mirrors Trainer._setup_amp dispatch: Mamba + MossFormer2 +
+            # TF-MossFormer train in bf16 (no GradScaler), everything else
+            # fp16 + GradScaler.
             f"  AMP: {self.training.use_amp}"
             + (
                 " (bf16, no GradScaler)"
                 if self.training.use_amp
-                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2")
+                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2", "tf_mossformer")
                 else " (fp16 + GradScaler)" if self.training.use_amp else ""
             ),
         ])
@@ -525,6 +594,9 @@ def load_config_from_dict(config_dict: dict) -> Config:
     mossformer2_dict = model_dict.pop("mossformer2", None)
     mossformer2_params = MossFormer2Params(**mossformer2_dict) if mossformer2_dict else None
 
+    tf_mossformer_dict = model_dict.pop("tf_mossformer", None)
+    tf_mossformer_params = TFMossFormerParams(**tf_mossformer_dict) if tf_mossformer_dict else None
+
     dprnn_dict = model_dict.pop("dprnn", None)
     dprnn_params = DPRNNParams(**dprnn_dict) if dprnn_dict else None
 
@@ -547,6 +619,7 @@ def load_config_from_dict(config_dict: dict) -> Config:
         convtasnet=convtasnet_params,
         sepformer=sepformer_params,
         mossformer2=mossformer2_params,
+        tf_mossformer=tf_mossformer_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
         mamba_tasnet=mamba_tasnet_params,
@@ -587,6 +660,8 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["sepformer"] = value
         elif key == "mossformer2" and value is not None:
             model_dict["mossformer2"] = value
+        elif key == "tf_mossformer" and value is not None:
+            model_dict["tf_mossformer"] = value
         elif key == "dprnn" and value is not None:
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
@@ -595,7 +670,10 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["mamba_tasnet"] = value
         elif key == "dpmamba" and value is not None:
             model_dict["dpmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "mossformer2", "dprnn", "spmamba", "mamba_tasnet", "dpmamba"]:
+        elif key not in [
+            "convtasnet", "sepformer", "mossformer2", "tf_mossformer", "dprnn",
+            "spmamba", "mamba_tasnet", "dpmamba",
+        ]:
             model_dict[key] = value
 
     config_dict = {
@@ -800,10 +878,11 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
 
     Supported sweep override keys: model_B, model_H, weight_decay,
     grad_clip_norm, batch_size, sample_rate, lr, epochs, num_epochs, device, seed,
-    task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants, dropout, chunk_size, rnn_type.
+    task, model_type, optimizer, warmup_steps, lr_factor, lr_patience,
+    curriculum_learning, validation_variants, dropout, chunk_size, rnn_type.
     Note: dropout and chunk_size are routed to the active model's params
-    (DPRNN, SepFormer, or MossFormer2 — where dropout maps to attn_dropout).
+    (DPRNN, SepFormer, MossFormer2 or TF-MossFormer — where dropout maps to
+    attn_dropout).
     Any sweep key that isn't consumed by one of the mappings above (e.g. an
     architecture knob for SPMamba/Mamba-family models, which aren't covered
     here) is reported via a warning rather than silently dropped.
@@ -827,6 +906,8 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         "num_epochs":               (config.training, "num_epochs"),
         "seed":                     (config.training, "seed"),
         "use_amp":                  (config.training, "use_amp"),
+        "optimizer":                (config.training, "optimizer"),
+        "warmup_steps":             (config.training, "warmup_steps"),
         "early_stopping_patience":  (config.training, "early_stopping_patience"),
         "save_all_checkpoints":     (config.training, "save_all_checkpoints"),
         "curriculum_learning":      (config.training, "curriculum_learning"),
@@ -873,6 +954,10 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     # Special cases: MossFormer2 architecture overrides (nested)
     if "dropout" in sweep_config and config.model.mossformer2 is not None:
         config.model.mossformer2.attn_dropout = sweep_config.dropout
+
+    # Special cases: TF-MossFormer architecture overrides (nested)
+    if "dropout" in sweep_config and config.model.tf_mossformer is not None:
+        config.model.tf_mossformer.attn_dropout = sweep_config.dropout
 
     # Gap 15: warn on unconsumed sweep keys instead of silently dropping them
     # (this is how an SPMamba/Mamba-family architecture knob in a sweep YAML

@@ -67,6 +67,13 @@ CONFIGS = [
     ("dpmamba",      "s",       "experiments/dpmamba/dpmamba_s.yaml"),
     ("dpmamba",      "m",       "experiments/dpmamba/dpmamba_m.yaml"),
     ("dpmamba",      "l",       "experiments/dpmamba/dpmamba_l.yaml"),
+    # TF-MossFormer: post-hand-in work, appended rather than grouped with the
+    # other transformer rows. The 8 kHz configs are the representative ones;
+    # s_16k.yaml has the same parameter count as s_8k.yaml (n_fft/hop do not
+    # change any weight shape), so listing it would add a duplicate row.
+    ("tf_mossformer", "s",      "experiments/tf_mossformer/s_8k.yaml"),
+    ("tf_mossformer", "m",      "experiments/tf_mossformer/m_8k.yaml"),
+    ("tf_mossformer", "l",      "experiments/tf_mossformer/l_8k.yaml"),
 ]
 
 # Documented counts (millions) from CLAUDE.md / thesis prose, for cross-check.
@@ -77,6 +84,16 @@ DOCUMENTED_MILLIONS = {
     ("sepformer", "default"): 25.68,
     ("mossformer2", "matched"): 26.41,
     ("mossformer2", "full"): 55.74,
+    # TF-MossFormer: our own measured counts under the literal reading of the
+    # paper's Fig. 2(c), NOT the paper's tabulated 6.0 / 16.9 / 25.4 M. The two
+    # disagree by up to 2.6% because the paper's own three rows are mutually
+    # inconsistent (its S row implies 11.8-13.1 D^2 of added machinery per
+    # module where M/L imply 9.8-10.0) — thesis/x_notes/tf_mossformer/
+    # tf_mossformer_spec.md §4. Anchoring on the paper's numbers would make this
+    # cross-check fire on a correct implementation.
+    ("tf_mossformer", "s"): 5.92,
+    ("tf_mossformer", "m"): 17.34,
+    ("tf_mossformer", "l"): 26.00,
 }
 
 # Absolute tolerance (millions) for the documented cross-check — documented

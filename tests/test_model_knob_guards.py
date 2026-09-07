@@ -14,10 +14,13 @@ SPMamba's `window` constructor param is similarly cosmetic: `forward()`
 hardcodes `torch.hann_window(...)` regardless of what's passed. That
 constructor now asserts `window == "hann"` for the same reason.
 
-MossFormer2 and SPMamba (for the stride check) are intentionally excluded:
-MossFormer2 doesn't expose a `stride` parameter at all, and SPMamba's
+MossFormer2, SPMamba (for the stride check) and TF-MossFormer are intentionally
+excluded: MossFormer2 doesn't expose a `stride` parameter at all; SPMamba's
 `stride` is a genuine STFT hop length (not fed to a SpeechBrain Encoder), so
-the kernel_size//2 lock does not apply to it.
+the kernel_size//2 lock does not apply to it; and TF-MossFormer has no
+SpeechBrain encoder either — its `conv_stride` is the Conv-SwiGLU FFN's own
+Conv1d/Deconv1d stride and its STFT geometry is `n_fft`/`hop_length`, all of
+which its forward pass genuinely honours (no cosmetic knob to guard).
 """
 
 import pytest

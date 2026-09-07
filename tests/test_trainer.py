@@ -4,6 +4,7 @@ These tests are lightweight and avoid any dependency on the full PolSESS
 dataset. They exercise `train_epoch`, `validate` and a 1-epoch `train` run.
 """
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -799,3 +800,150 @@ def test_no_provenance_writes_no_manifest(tmp_path):
     ckpt_files = list(save_dir.rglob("*.pt"))
     loaded = torch.load(ckpt_files[0], weights_only=False)
     assert "provenance" not in loaded
+
+
+# ---------------------------------------------------------------------------
+# AMP dispatch + the two generic recipe knobs (optimizer, LR warmup)
+# ---------------------------------------------------------------------------
+
+def test_amp_dispatch_by_model_type(tmp_path):
+    """_setup_amp must put TF-MossFormer on bf16 without a GradScaler.
+
+    Same profile as MossFormer2 (chained multiplicative gates + masked softmax
+    overflow fp16). config.py's summary AMP line hardcodes the same tuple and
+    will silently lie if only one of the two is updated —
+    tests/test_config_yaml.py::test_tf_mossformer_summary pins that side.
+    """
+    trainer = _make_trainer(tmp_path)
+    trainer.use_amp = True
+
+    for model_type in ("tf_mossformer", "mossformer2"):
+        trainer.config.model.model_type = model_type
+        trainer._setup_amp(trainer.model, "cuda")
+        assert trainer.scaler is None, f"{model_type} must not use a GradScaler"
+        assert trainer.amp_dtype is torch.bfloat16, f"{model_type} must train in bf16"
+
+    trainer.config.model.model_type = "convtasnet"
+    trainer._setup_amp(trainer.model, "cuda")
+    assert trainer.amp_dtype is torch.float16
+    assert trainer.scaler is not None
+
+
+def test_optimizer_knob_selects_adamw(tmp_path):
+    """training.optimizer='adamw' builds AdamW; the default stays Adam."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.optimizer = "adamw"
+    train_loader = DataLoader(SyntheticDataset(4), batch_size=2, collate_fn=polsess_collate_fn)
+    val_loader = DataLoader(SyntheticDataset(2), batch_size=2, collate_fn=polsess_collate_fn)
+    trainer = Trainer(DummyModel(), train_loader, val_loader, cfg, device="cpu")
+    assert isinstance(trainer.optimizer, torch.optim.AdamW)
+
+    # Default (the attribute is absent from this SimpleNamespace config, exactly
+    # like a pre-2026-09 checkpoint config) -> Adam, unchanged behaviour.
+    assert isinstance(_make_trainer(tmp_path).optimizer, torch.optim.Adam)
+
+
+def test_optimizer_knob_rejects_unknown_name(tmp_path):
+    """An unknown optimizer name fails loudly at Trainer init, not mid-run."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.optimizer = "lion"
+    train_loader = DataLoader(SyntheticDataset(4), batch_size=2, collate_fn=polsess_collate_fn)
+    val_loader = DataLoader(SyntheticDataset(2), batch_size=2, collate_fn=polsess_collate_fn)
+    with pytest.raises(ValueError, match="lion"):
+        Trainer(DummyModel(), train_loader, val_loader, cfg, device="cpu")
+
+
+def _lr(trainer):
+    return trainer.optimizer.param_groups[0]["lr"]
+
+
+def test_warmup_linear_schedule(tmp_path):
+    """LR at step 0, mid-warmup, at warmup_steps, and after it."""
+    trainer = _make_trainer(tmp_path)
+    base = trainer.warmup_target_lr
+    trainer.warmup_steps = 10
+
+    trainer.global_step = 0
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base / 10)  # first step is ~0, never full LR
+
+    trainer.global_step = 4
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base * 0.5)
+
+    trainer.global_step = 9  # last warmup step reaches the configured LR
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base)
+
+    # Past warmup the LR belongs to ReduceLROnPlateau; warmup must never write
+    # to it again (otherwise it would undo every plateau reduction).
+    trainer.global_step = 10
+    trainer.optimizer.param_groups[0]["lr"] = base / 8  # pretend the plateau fired
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base / 8)
+
+
+def test_warmup_disabled_by_default_is_a_no_op(tmp_path):
+    """warmup_steps=0 (the default) must not touch the LR at all."""
+    trainer = _make_trainer(tmp_path)
+    assert trainer.warmup_steps == 0
+
+    trainer.optimizer.param_groups[0]["lr"] = 7e-5
+    for trainer.global_step in (0, 1, 1000):
+        trainer._apply_lr_warmup()
+        assert _lr(trainer) == pytest.approx(7e-5)
+
+    # And a real epoch leaves the LR exactly where the config put it, so the
+    # plateau scheduler sees the same sequence it always did.
+    trainer = _make_trainer(tmp_path)
+    trainer.train_epoch()
+    assert _lr(trainer) == pytest.approx(trainer.config.training.lr)
+    assert trainer.global_step == 2  # 4 samples / batch_size 2
+
+
+def test_warmup_applies_during_train_epoch(tmp_path):
+    """The warmup is wired into the optimizer step, not just callable."""
+    trainer = _make_trainer(tmp_path)
+    trainer.warmup_steps = 4
+    base = trainer.warmup_target_lr
+
+    trainer.train_epoch()  # 2 optimizer steps
+
+    assert trainer.global_step == 2
+    assert _lr(trainer) == pytest.approx(base * 0.5)
+
+
+def test_global_step_persists_across_resume(tmp_path):
+    """Warmup must not restart on --resume: the step counter is checkpointed."""
+    src = _make_trainer(tmp_path)
+    src.global_step = 1234
+
+    ckpt = src._serialize_checkpoint_data(epoch=3, val_sisdr=1.0)
+    assert ckpt["global_step"] == 1234
+    path = tmp_path / "gstep.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))
+    assert tgt.global_step == 1234
+
+
+def test_global_step_absent_in_old_checkpoint_is_tolerated(tmp_path):
+    """Pre-2026-09 checkpoints have no global_step; resuming them defaults to 0."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 2,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 4.0,
+    }
+    path = tmp_path / "old_nostep.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))  # must not raise
+    assert tgt.global_step == 0

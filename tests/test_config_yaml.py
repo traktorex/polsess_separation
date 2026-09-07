@@ -349,6 +349,19 @@ class TestConfigValidation:
         captured = capsys.readouterr()
         assert "forces convtasnet" not in captured.out
 
+    def test_c_forcing_for_tf_mossformer(self, capsys):
+        """TF-MossFormer's output-count field is C, and the task overrides it."""
+        from config import TFMossFormerParams
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(model_type='tf_mossformer',
+                              tf_mossformer=TFMossFormerParams(C=2)),
+            training=TrainingConfig()
+        )
+        assert config.model.tf_mossformer.C == 1
+        captured = capsys.readouterr()
+        assert "task=ES forces tf_mossformer.C 2->1" in captured.out
+
     def test_c_forcing_uses_n_srcs_attr_for_spmamba(self, capsys):
         """SPMamba's output-count field is named n_srcs, not C."""
         from config import SPMambaParams
@@ -597,6 +610,41 @@ class TestConfigSummary:
         assert "Model: layers=6, input_dim=64" in s
         assert "LSTM: hidden=256" in s
         assert "Output: n_srcs=1" in s
+
+    def test_tf_mossformer_summary(self):
+        """Test summary includes TF-MossFormer-specific params."""
+        from config import TFMossFormerParams
+        config = Config(
+            data=DataConfig(task='SB'),
+            model=ModelConfig(model_type='tf_mossformer', tf_mossformer=TFMossFormerParams()),
+            training=TrainingConfig(use_amp=True)
+        )
+        s = config.summary()
+
+        assert "Architecture: tf_mossformer" in s
+        assert "STFT: n_fft=128, hop_length=64, window=hann" in s
+        assert "Backbone: TF-Locoformer blocks=4, D=96, ffn_hidden=256" in s
+        assert "windows w_T=31/w_F=7" in s
+        assert "Output: C=2" in s
+        # The AMP line mirrors Trainer._setup_amp; if the two drift the summary
+        # silently lies about how the run is trained.
+        assert "AMP: True (bf16, no GradScaler)" in s
+
+    def test_optimizer_and_warmup_in_summary(self):
+        """The D7 trainer knobs surface in the summary."""
+        config = Config(
+            data=DataConfig(task='ES'),
+            model=ModelConfig(),
+            training=TrainingConfig(optimizer='adamw', warmup_steps=4000),
+        )
+        s = config.summary()
+        assert "Optimizer: adamw (linear warmup over 4000 steps)" in s
+
+        default = Config(
+            data=DataConfig(task='ES'), model=ModelConfig(), training=TrainingConfig()
+        ).summary()
+        assert "Optimizer: adam" in default
+        assert "warmup" not in default
 
     def test_runtime_info_in_summary(self):
         """Test that runtime_info values appear in summary when provided."""

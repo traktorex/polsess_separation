@@ -32,6 +32,7 @@ MODEL_TYPE_TO_PARAMS_CLASS_NAME = {
     "convtasnet": "ConvTasNetParams",
     "sepformer": "SepFormerParams",
     "mossformer2": "MossFormer2Params",
+    "tf_mossformer": "TFMossFormerParams",
     "dprnn": "DPRNNParams",
     "spmamba": "SPMambaParams",
     "mamba_tasnet": "MambaTasNetParams",
