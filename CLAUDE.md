@@ -26,7 +26,7 @@ This code will be reviewed by academic supervisors. Prioritize: clarity over cle
 
 ## Keeping This File Current
 
-After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md. Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments. Subsystem detail goes into the nested `asr_pipeline/CLAUDE.md` / `webapp/CLAUDE.md`; experiment results, decision history and "X was removed on DATE" notes belong in the thesis log and git history, not here.
+After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md. Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, one-off experiments, or a single-setting change in one function — even when it changes observable behaviour. The bar is: would a fresh session make a wrong decision without this line? If the answer is only "it wouldn't know the history", the note belongs in the commit message, not here. Subsystem detail goes into the nested `asr_pipeline/CLAUDE.md` / `webapp/CLAUDE.md`; experiment results, decision history and "X was removed on DATE" notes belong in the thesis log and git history, not here.
 
 ## Dataset Variants
 

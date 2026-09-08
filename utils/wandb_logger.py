@@ -93,6 +93,19 @@ class WandbLogger:
                     entity=entity,
                     name=run_name,
                     config=config_dict,
+                    # Console logs: by default the SDK writes one ``output.log``
+                    # per process, so a resumed run *replaces* the earlier
+                    # session's console log in the W&B "Logs" tab. Multipart
+                    # mode writes timestamped parts under ``logs/`` instead, so
+                    # resumed sessions append. With both chunk limits at 0 the
+                    # parts would only upload at run finish, hence the time
+                    # rollover: each part uploads when closed, keeping the tab
+                    # near-live (a tqdm bar spanning a boundary just freezes
+                    # its last line in the earlier part).
+                    settings=wandb.Settings(
+                        console_multipart=True,
+                        console_chunk_max_seconds=600,
+                    ),
                 )
                 if resume_id:
                     init_kwargs["id"] = resume_id
