@@ -22,7 +22,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Rectangle
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch06"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch06"
 
 # --- wspólna paleta rozdziału 6 ------------------------------------------
 INK, INK2, GRID, AXIS, MUTED = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7", "#898781"

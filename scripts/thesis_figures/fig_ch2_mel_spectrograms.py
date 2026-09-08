@@ -40,7 +40,7 @@ import pandas as pd
 from matplotlib.ticker import FuncFormatter
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch02"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch02"
 DATA = Path.home() / "datasets" / "PolSESS_C_final_128_v2" / "test"
 CSV = DATA / "corpus_PolSESS_C_final_128_v2_test_final.csv"
 

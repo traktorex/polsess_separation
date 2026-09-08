@@ -68,7 +68,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch05"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch05"
 
 INK, INK2, GRID, AXIS = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7"
 SF, SPM, MF2 = "#eb6834", "#2a78d6", "#7b52ab"  # fixed ch5 palette

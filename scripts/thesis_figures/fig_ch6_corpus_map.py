@@ -56,7 +56,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from asr_pipeline.eval.stats import assign_strata  # noqa: E402
 
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch06"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch06"
 EVAL = Path.home() / "datasets" / "eval" / "clarin_fragments"
 SPLIT_CSV = REPO / "asr_pipeline" / "eval" / "clarin_split.csv"
 

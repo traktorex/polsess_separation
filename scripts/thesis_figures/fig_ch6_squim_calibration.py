@@ -51,7 +51,7 @@ from matplotlib.ticker import FuncFormatter
 from scipy.stats import spearmanr
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch06"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch06"
 DEFAULT_CSV = (REPO / "thesis" / "thesis-log" / "sweep_plan" / "b7_squim"
                / "b7_scores.csv")
 

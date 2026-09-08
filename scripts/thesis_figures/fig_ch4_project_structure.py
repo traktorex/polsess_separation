@@ -35,7 +35,7 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 from matplotlib.path import Path as MplPath
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch04"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch04"
 
 INK, INK2 = "#0b0b0b", "#52514e"          # tekst główny / opisy po prawej
 

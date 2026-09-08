@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch05"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch05"
 
 # one color per architecture (fixed assignment — keep identical across ch5 figures)
 COLOR = {

@@ -44,7 +44,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from utils import load_model_for_inference  # noqa: E402
 
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch02"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch02"
 DEFAULT_AUDIO = (Path.home() / "datasets" / "PolSESS_C_new_64" / "PolSESS_C_new_64"
                  / "train" / "clean" / "000mqbomjtudfgw5.wav")
 DEFAULT_CKPT = (REPO / "checkpoints" / "sepformer" / "SB"

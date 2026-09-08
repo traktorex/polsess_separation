@@ -28,7 +28,7 @@ import pandas as pd
 
 REPO = Path(__file__).resolve().parents[2]
 DATA = REPO / "thesis" / "thesis-log" / "sweep_plan" / "ch5_hpo_analysis"
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch05"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch05"
 
 INK, INK2, GRID, AXIS = "#0b0b0b", "#52514e", "#e1e0d9", "#c3c2b7"
 SEPFORMER, CONVTASNET = "#eb6834", "#eda100"

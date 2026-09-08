@@ -49,7 +49,7 @@ from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_OUT = REPO / "thesis" / "thesis-writing" / "figures" / "ch06"
+DEFAULT_OUT = REPO / "thesis" / "my-writing" / "figures" / "ch06"
 DEFAULT_CSV = (Path.home() / "datasets" / "eval" / "clarin_fragments" / "_forensics"
                / "swap_family" / "ensemble_anatomy" / "kcurve_test.csv")
 

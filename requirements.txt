@@ -33,6 +33,7 @@ seaborn>=0.13.0      # sweep analysis plots
 huggingface_hub>=0.20.0  # asr_pipeline preflight + vendored model downloads
 fastapi>=0.110.0     # webapp/ showcase backend
 uvicorn>=0.27.0      # webapp/ server (webapp/run.sh)
+python-multipart>=0.0.9  # webapp/ upload forms (FastAPI Form/File); was only a transitive dep before 2026-09
 
 # --- Optional, not installed by default ---------------------------------------
 # Mamba-family models (SPMamba, Mamba-TasNet, DPMamba) need Linux + CUDA and a

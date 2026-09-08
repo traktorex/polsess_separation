@@ -102,3 +102,4 @@ webapp/examples_manifest.json
 # Ignored here so that a leftover working copy (~300 MB of ONNX blobs kept so the
 # branch is runnable on checkout) stays invisible on main.
 webapp_ondevice/
+/venv_t214

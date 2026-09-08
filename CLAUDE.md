@@ -203,6 +203,8 @@ MM-IPC subtracts layers from the full mix by inverted phase cancellation, e.g. "
 
 **Main (`venv/`)** — all models except SPMamba3. Alias: `polsess_venv`. `requirements.txt` is the installable core set (optional extras — mamba-ssm, ASR pipeline, B1 git dependency — are commented blocks); `requirements-freeze.txt` is the exact `pip freeze`. Third-party attribution and vendored-code licences: `THIRD_PARTY.md`.
 
+**torch 2.14 (`venv_t214/`)** — post-thesis upgrade candidate built 2026-09-08: torch 2.14.0+cu130, triton 3.8, cuDNN 9.24, speechbrain 1.1.1, mamba-ssm 2.3.2.post1 from source. Same pins as `venv/` otherwise; eval parity verified to 1e-5 dB, training throughput +5–18 % on fp16 models and TF-MossFormer, flat on MossFormer2/SPMamba. Not yet the default: `webapp/run.sh` and the `polsess_venv` alias still point at `venv/`. Gotcha for any torch ≥ 2.14 build: the mamba-ssm / causal-conv1d sdists hard-code `-std=c++17` and ATen now requires C++20 — patch `setup.py` to `-std=c++20` and install with `--no-build-isolation` (official wheels stop at torch 2.10; `setup.sh`'s `MAMBA_FORCE_BUILD` fallback hits the same wall).
+
 **SPMamba3 (`venv_mamba3/`)** — torch 2.11.0+cu130, triton 3.6.0, Mamba-3 kernels; clone of the main venv with Mamba-3 files copied from a bare clone of `state-spaces/mamba`. Extra deps: `tilelang`, `quack-kernels`, `cuda-bindings`, `nvidia-cutlass-dsl`. Side project, not in the thesis.
 
 ## Cloud Setup

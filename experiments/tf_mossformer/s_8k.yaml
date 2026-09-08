@@ -103,7 +103,7 @@ training:
   weight_decay: 0.01       # AdamW decoupled decay (the project's other configs use 0).
   grad_clip_norm: 5.0
   lr_factor: 0.5           # Halve on plateau.
-  lr_patience: 3           # ...after 3 stagnant validation epochs (project default is 1).
+  lr_patience: 1           # ...after 3 stagnant validation epochs (project default is 1).
   num_epochs: 150          # Cap; early stopping governs.
   early_stopping_patience: 10
   use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
