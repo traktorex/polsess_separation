@@ -23,6 +23,7 @@ Important: when launching subagents, use only Opus agents (unless the user speci
 - `PolSESS_C_both` = `C_both_16k_faulty` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
 - `PolSESS_C_new_64` = `C_new_64` — correct 64k dataset generated 2026-04-15. Use `train_max_samples=16000` / `32000` / full for 16k / 32k / 64k scaling experiments.
 - `PolSESS_C_final_128_v2` - 128k dataset for final training runs. contains other languages speech alongside Polish.
+- `PolSESS_C_128_16kHz` — the **16 kHz twin of 128_v2** (same six-run recipe, `dataSources_v3`, `outputFreq = 16000`; generated 2026-09-07/08). Same layout as 128_v2: `train/` 128,000 rows interleaved indoor/outdoor, `val/` = 1,000-item stratified subset hardlinked from `val_big/` (12,800), `test/` 12,800. Assembled with `scripts/dataset_audit/merge_16khz_halves.py` (CSV interleave + rename-moves + verification; re-runnable per split) and `build_small_val.py` / `link_small_val_wavs.py --root`. Two generator mishaps were quarantined, not deleted: `/mnt/c/datasety/_stray_PolSESS_C_128_16kHz/` holds the 6,400-item accidental re-run of outdoor train and the outdoor-test files a mis-named run wrote into indoor test — nothing in there is referenced by any CSV.
 
 ## W&B Projects
 
