@@ -1,14 +1,16 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
 ## Repository Overview
 
-PyTorch implementation of speech separation using ConvTasNet, SepFormer, DPRNN, SPMamba, Mamba-TasNet, and DPMamba architectures on the PolSESS dataset. Part of a master's thesis on speech separation for downstream Polish ASR preprocessing.
+PyTorch speech separation on the PolSESS dataset — ConvTasNet, SepFormer, DPRNN, MossFormer2, TF-MossFormer, SPMamba, Mamba-TasNet, DPMamba — plus an ASR pipeline (`asr_pipeline/`) and a defense-demo webapp (`webapp/`) that consume the trained separators. Master's thesis on speech separation as preprocessing for Polish ASR. `README.md` is the reader-facing overview; this file holds what an agent needs beyond it. The thesis has already been handed in — we're in post-thesis development era.
 
-Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian vault on Windows, tracked by its own git repo (ignored here). Read freely; when editing thesis content, `cd thesis/` so `thesis/CLAUDE.md` stacks in on top of this file.
+Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian vault on Windows with its own git repo (ignored here). Read freely; when editing thesis content, `cd thesis/` so `thesis/CLAUDE.md` stacks on top of this file.
 
-Repository cleanup 2026-09-03 (branch `chore/cleanup`): one-off GT-annotation tooling, rejected-arm scripts (PixIT, wxdiar), never-run experiment configs, internal planning docs (`docs/fable_plans/`, `docs/LIFE1_CODE_AUDIT.md`, `docs/CONFIG_GUIDE.md`) and `plot_notebook.ipynb` were deleted; all recoverable from git history. The audit and rationale: `thesis/x_notes/handin_audit_2026-09-03.md`.
+Subsystem guidance lives beside the code and loads when you work there: `asr_pipeline/CLAUDE.md` (stages, configs, CLI, eval, CLARIN datasets, helper scripts) and `webapp/CLAUDE.md`.
+
+The on-device browser demo lives on branch `experiment/webapp-ondevice`, is not in the thesis, and must not be re-added to `main`.
 
 ## Style
 
@@ -18,27 +20,27 @@ Avoid unnecessary verbosity by using CoT to structure your response.
 
 Important: when launching subagents, use only Opus agents (unless the user specifies differently). You may decide to use Sonnet subagents for the easiest work. Never launch Fable subagents — with one standing exception (approved 2026-07-25): agents whose job is synthesis/adjudication or premium prose editing (`review-synthesizer`, `code-review-synthesizer`, `redaktor`) pin `model: fable` in their frontmatter, because deciding between conflicting reviewers merits the strongest reasoning. Do not extend the exception to other agents without asking.
 
+## Thesis Code Principles
+
+This code will be reviewed by academic supervisors. Prioritize: clarity over cleverness, simplicity over abstraction, reproducibility. Prefer explicit implementations that match cited papers. Don't over-engineer — no deep inheritance, no speculative features. Experiment logging is handled outside this repo.
+
+## Keeping This File Current
+
+After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md. Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments. Subsystem detail goes into the nested `asr_pipeline/CLAUDE.md` / `webapp/CLAUDE.md`; experiment results, decision history and "X was removed on DATE" notes belong in the thesis log and git history, not here.
+
 ## Dataset Variants
 
-- `PolSESS_C_both` = `C_both_16k_faulty` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
+- `PolSESS_C_both` — old 8k-effective dataset (half was duplicated). Used for early baselines, HPO, and HPO validation runs.
 - `PolSESS_C_new_64` = `C_new_64` — correct 64k dataset generated 2026-04-15. Use `train_max_samples=16000` / `32000` / full for 16k / 32k / 64k scaling experiments.
-- `PolSESS_C_final_128_v2` - 128k dataset for final training runs. contains other languages speech alongside Polish.
-- `PolSESS_C_128_16kHz` — the **16 kHz twin of 128_v2** (same six-run recipe, `dataSources_v3`, `outputFreq = 16000`; generated 2026-09-07/08). Same layout as 128_v2: `train/` 128,000 rows interleaved indoor/outdoor, `val/` = 1,000-item stratified subset hardlinked from `val_big/` (12,800), `test/` 12,800. Assembled with `scripts/dataset_audit/merge_16khz_halves.py` (CSV interleave + rename-moves + verification; re-runnable per split) and `build_small_val.py` / `link_small_val_wavs.py --root`. Two generator mishaps were quarantined, not deleted: `/mnt/c/datasety/_stray_PolSESS_C_128_16kHz/` holds the 6,400-item accidental re-run of outdoor train and the outdoor-test files a mis-named run wrote into indoor test — nothing in there is referenced by any CSV.
+- `PolSESS_C_final_128_v2` — 128k dataset for final training runs. Contains other-language speech alongside Polish.
+- `PolSESS_C_128_16kHz` — 16 kHz twin of 128_v2 (same six-run recipe, `dataSources_v3`, `outputFreq = 16000`; generated 2026-09-07/08). Same layout: `train/` 128,000 rows interleaved indoor/outdoor, `val/` = 1,000-item stratified subset hardlinked from `val_big/` (12,800), `test/` 12,800. (currently only on the 3080 machine)
 
 ## W&B Projects
 
 - `polsess-separation` — standalone runs (baselines, HPO validation), uses `PolSESS_C_both`.
 - `polsess-thesis-experiments` — sweeps.
 - `polsess-separation-real16k` / `polsess-separation-32k` / `polsess-separation-64k` — scaling runs on subsets of `PolSESS_C_new_64` (NB only the 16k project carries the `real` prefix).
-- `polsess-separation-128k` - final runs on 128k dataset.
-
-## Thesis Code Principles
-
-This code will be reviewed by academic supervisors. Prioritize: clarity over cleverness, simplicity over abstraction, reproducibility. Prefer explicit implementations that match cited papers. Don't over-engineer — no factories for <4 variants, no deep inheritance, no speculative features. Experiment logging is handled outside this repo.
-
-## Keeping This File Current
-
-After any substantial change — new top-level script or subsystem, new env var, new dataset/model/task variant, new gotcha worth flagging, removed commands, or changed config precedence — propose a targeted edit to this CLAUDE.md. Update in place; don't rewrite from scratch. Skip for routine bugfixes, refactors, or one-off experiments.
+- `polsess-separation-128k` — final runs on the 128k dataset.
 
 ## Key Commands
 
@@ -52,17 +54,12 @@ python train.py --resume checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
 
 **Evaluation:**
 ```bash
-# PolSESS (all MM-IPC variants)
-python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt
-# Specific variant
+python evaluate.py --checkpoint checkpoints/dprnn/SB/run_name/dprnn_SB_best.pt   # PolSESS, all MM-IPC variants
 python evaluate.py --checkpoint path/to/model.pt --variant SER
-# Fast (skip PESQ/STOI)
-python evaluate.py --checkpoint path/to/model.pt --no-pesq --no-stoi
-# Libri2Mix
+python evaluate.py --checkpoint path/to/model.pt --no-pesq --no-stoi               # fast
 python evaluate.py --checkpoint path/to/model.pt --dataset librimix --librimix-root /home/user/datasets/LibriMix/Libri2Mix
-# Save CSV
 python evaluate.py --checkpoint path/to/model.pt --output results.csv
-# Batch eval of the thesis checkpoint set (reads experiments/thesis_eval_manifest.csv by default;
+# Batch eval of the thesis checkpoint set (experiments/thesis_eval_manifest.csv by default;
 # bs=1 exact per-sample scoring → aggregate CSV + <stem>_per_sample.csv, provenance columns)
 python evaluate_all.py --resume
 ```
@@ -73,118 +70,64 @@ pytest
 pytest --cov=. --cov-report=html
 pytest tests/test_model.py -v
 ```
-The suite (1495 tests, 2026-09-07) collects and runs on a CPU-only machine without `mamba-ssm`: Mamba-family, CUDA and dataset-dependent tests skip instead of erroring.
+The suite runs on a CPU-only machine without `mamba-ssm`: Mamba-family, CUDA and dataset-dependent tests skip instead of erroring.
 
 **Sweeps:**
 ```bash
-# Launch a W&B sweep (the sweep YAML points at train_sweep.py as the program)
-wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml
-# then run agents against the returned sweep ID
+wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml   # sweep YAML points at train_sweep.py; then run agents against the sweep ID
 ```
 
-**Benchmarks (thesis data — the *objective* axes of the ch5 multi-axis table; quality/epochs/wall-clock-to-convergence are run-result facts and come from W&B, not from here):**
+**Benchmarks (objective axes of the ch5 multi-axis table; quality/epochs/wall-clock come from W&B, not from here):**
 ```bash
 python scripts/benchmark_inference.py --cross-check   # MACs, latency+IQR, RTF, peak infer VRAM
 python scripts/benchmark_training.py                  # train-only throughput @ trained bs AND bs=1, peak train VRAM
 ```
-Both read one shared architecture list (`scripts/benchmark_models.py`) and write to `docs/generated/benchmark_{inference,training}.csv` with `gpu/torch/cuda/ptflops` provenance columns; the chapter's Tab 5.10 numbers come from the 2026-08-20 session (the current `docs/generated/` CSVs); the superseded 2026-04 CSVs in `scripts/` are historical only. MAC counting needs four corrections ptflops does not make on its own — `nn.MultiheadAttention` double count, invisible `einsum`, invisible `F.scaled_dot_product_attention` (fused aten op; counted at its banded cost when a boolean `attn_mask` is passed, which is how TF-MossFormer's local branch works — added 2026-09-07, unit-tested in `tests/test_benchmark_macs.py`), Mamba scan FLOPs-vs-MACs — all documented in the inference script's docstring and audited in `thesis/thesis-log/sweep_plan/ch5_test_evals/BENCHMARK_AUDIT.md`. Counting is device-independent (`--device cpu` works for non-Mamba models); everything timed must run on one machine in one session.
+Both read the shared architecture list in `scripts/benchmark_models.py` and write `docs/generated/benchmark_{inference,training}.csv` with provenance columns. ptflops needs four corrections (MHA double count, `einsum`, `F.scaled_dot_product_attention` incl. banded cost under a boolean mask, Mamba scan FLOPs-vs-MACs) — documented in the inference script's docstring, tested in `tests/test_benchmark_macs.py`, audited in `thesis/thesis-log/sweep_plan/ch5_test_evals/BENCHMARK_AUDIT.md`. Counting is device-independent (`--device cpu` for non-Mamba); everything timed must run on one machine in one session. The 2026-04 CSVs in `scripts/` are superseded.
 
-**Thesis audit artifacts (citable, CPU-only):**
+**Thesis audit artifacts (citable, CPU-only unless noted):**
 ```bash
 python scripts/audit_mmipc.py           # MM-IPC reconstruction lossless to the 16-bit PCM floor (exit≠0 on violation)
-python scripts/audit_split_leakage.py   # train↔{val,test} path disjointness (val∩test scene sharing reported informational)
+python scripts/audit_split_leakage.py   # train↔{val,test} path disjointness
 python scripts/model_manifest.py        # per-config param counts → docs/generated/model_manifest.{csv,md}
-python scripts/squim_validation.py all  # B7 SQUIM-vs-true-metrics validation over a separator quality ladder (GPU, ~30 min;
-                                        #   prereg + outputs: thesis/thesis-log/sweep_plan/{B7_SQUIM_PREREG.md,b7_squim/})
+python scripts/squim_validation.py all  # B7 SQUIM-vs-true-metrics validation (GPU, ~30 min; thesis/thesis-log/sweep_plan/b7_squim/)
 ```
 
 **Interactive:**
 ```bash
 jupyter notebook test_model_interactive.ipynb
-jupyter notebook asr/explore_pipeline.ipynb   # interactive frontend for the asr_pipeline/ package (see ASR section)
+jupyter notebook asr/explore_pipeline.ipynb   # per-stage frontend for asr_pipeline/
 ```
 
-**ASR pipeline (CLI front door — preflights env/checkpoints before any model load):**
+**ASR pipeline** (details in `asr_pipeline/CLAUDE.md`; read `asr_pipeline/SCOPE.md` before changing code there):
 ```bash
 python -m asr_pipeline run --config asr_pipeline/configs/sweep_best_e31_refineplus.yaml \
     --input rec.wav --write-outputs <eval_root> --set diarization.backend=pyannote
-python -m asr_pipeline batch --split clarin_dev --mode no_enh        # or --manifest/--glob/--inputs + --out-root
+python -m asr_pipeline batch --split clarin_dev --mode no_enh
 python -m asr_pipeline score --eval-root <eval_root> --out-dir <csv_dir>
 ```
 
-**Showcase webapp (`webapp/` — thesis-defense demo UI over the ASR pipeline):**
+**Showcase webapp** (details in `webapp/CLAUDE.md`):
 ```bash
-./webapp/run.sh                                  # real server, port ${WEBAPP_PORT:-8871}, HF_HUB_OFFLINE=1; preflight at startup
-venv/bin/python -m webapp.dev_server --port 8899 # GPU-free dev harness (FakeRunner replays a timed run; --fail-stage for error UI)
-venv/bin/python -m webapp.examples_build         # regenerate examples_manifest.json (gitignored) from the frozen v41_merge eval tree
-pytest tests/test_webapp_backend.py              # backend suite (no GPU, no asr_pipeline import)
+./webapp/run.sh                                  # real server, port ${WEBAPP_PORT:-8871}
+venv/bin/python -m webapp.dev_server --port 8899 # GPU-free dev harness
+pytest tests/test_webapp_backend.py
 ```
-FastAPI + vanilla ES modules (no build step, no CDN); a pure READ-ONLY consumer of `asr_pipeline` (SCOPE §1 — the job queue lives here, never in the package). One worker thread, one job at a time (12 GB GPU, phase-major). Every job runs with per-job `spill_intermediate` → `<job>/spill` (source of mid-run `partial` results + the enhancement A/B panel). Contract = `webapp/API.md` (binding). Jobs land in `$WEBAPP_JOBS_ROOT` (default `~/webapp_jobs`). Polish UI, English technical terms; GT/scores appear ONLY on the examples page.
-
-**On-device demo (`webapp_ondevice/`) — MOVED OFF `main` 2026-09-04.** The Road-2 client-side
-demo (pyannote-seg-3.0 ONNX OSD → routing → int8 separator, all in-browser) was an experiment that
-nothing else in the repository depends on and that the thesis deliberately does not describe
-(ch7 Q2 ruling). The full tree, its `build/NOTES.md` provenance and the JS-parity reference vectors
-live on branch `experiment/webapp-ondevice`; `git checkout experiment/webapp-ondevice` restores it
-(the gitignored `site/models/` + `site/vendor/` blobs are still on disk here, so it runs after a
-checkout without re-exporting). Don't re-add it to `main`.
 
 ## Architecture Overview
 
 **Configuration (`config.py`):** Dataclasses (`DataConfig`, `ModelConfig`, `TrainingConfig`) with nested model/dataset params. Priority: defaults < env vars < YAML < CLI args. Use `get_config_from_args()` for CLI, `load_config_for_run(wandb.config)` for sweeps.
 
-**Model Registry (`models/__init__.py`):** Dict-based. `get_model("name")` returns class. Mamba models auto-excluded without `mamba-ssm`.
-- `convtasnet` (~8.7M for SB/C=2; the oft-quoted 8.64M is the ES/C=1 build — see `docs/generated/model_manifest.md`), `sepformer` (~26M), `mossformer2` (matched ~26M / full ~55.7M), `dprnn` (~2-3M), `tf_mossformer` (S/M/L: 5.92 / 17.34 / 26.00M) — cross-platform
-  - `mossformer2` = MossFormer2 (Zhao et al. 2023, arXiv:2312.11825): transformer + gated-FSMN hybrid. The model files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio (`train/speech_separation/models/mossformer2/`); `models/mossformer2/__init__.py` is the project wrapper. Pure PyTorch (deps: `einops`, `rotary-embedding-torch`), so cross-platform. Single `N` knob = encoder dim = transformer dim (the two must match upstream); `num_blocks` is GFSMN depth (24 = paper full, 11 ≈ SepFormer-matched); `attn_dropout` (default 0.1, upstream hard-coded) covers attention-path dropout — FSMN-gate dropout stays fixed at 0.1. Sweep override key `dropout` routes to `attn_dropout`. Configs: `experiments/mossformer2/mossformer2_{matched,full}.yaml`.
-  - `tf_mossformer` = TF-MossFormer (Zhao et al. 2026, arXiv:2607.21128): a time-frequency separator that replaces TF-Locoformer's self-attention with convolution-gated **local + global** attention. **A re-implementation from the paper — no upstream code exists (verified: not on arXiv, GitHub, ClearerVoice-Studio, ModelScope or HF) — built on the vendored TF-Locoformer skeleton**; never call it "vendored TF-MossFormer". `models/tf_mossformer/tf_locoformer_blocks.py` is an Apache-2.0 derived copy of `asr_pipeline/vendor/tf_locoformer/`'s standalone file (a separate copy on purpose: `models/` must not import from the liftable pipeline package), `local_global_attention.py` and `__init__.py` are original code. Param caveat to quote wherever the size is: our measured S/M/L = **5.92 / 17.34 / 26.00M** against the paper's 6.0 (5.9 in its abstract) / 16.9 / 25.4M — we build the literal reading of its Fig. 2(c), and the paper's own three rows are mutually inconsistent (its S row implies 11.8-13.1 D² of added machinery per module where M/L imply 9.8-10.0), so M/L land ~2.5% high; reconciliation in `thesis/x_notes/tf_mossformer/tf_mossformer_spec.md` §4. Knobs (paper Table 1): `D` embedding dim, `num_blocks` B, `ffn_hidden_dim` H, `conv_kernel_size`/`conv_stride` (Conv-SwiGLU), `n_heads`, `num_groups` (RMSGroupNorm), `window_t`/`window_f` (local attention windows, 31 frames / 7 bins), `gate_kernel_size` (Conv-Gate), `n_fft`/`hop_length` (**samples**, like SPMamba — no `sample_rate` field), `attn_dropout`. Sweep override key `dropout` routes to `attn_dropout`. Sizes S = D96/B4/H256, M = D128/B6/H384, L = D128/B9/H384. Configs: `experiments/tf_mossformer/{s,m,l}_8k.yaml` (+ `s_16k.yaml`, BLOCKED — see the sampling-rate bullet). Its configs are the only ones using the paper's own recipe (`optimizer: adamw`, `warmup_steps: 4000`, wd 1e-2, plateau patience 3) rather than the project's canonical transformer recipe; the paper's lr 1e-3 is at batch 4, which does not fit 12 GB (spills to shared memory), so the configs run the batch that fits with the LR rescaled linearly — S bs 2 / lr 5e-4, M and L bs 1 / lr 2.5e-4 — no gradient accumulation (author ruling 2026-09-07). Measured on a 4070: S ≈ 4.4 GiB and ~29 min per 16k epoch compiled at bs 2; M 6.1 GiB, L 9.2 GiB at bs 1.
-- `spmamba` (~1.2M), `mamba_tasnet` (XS/S/M/L: 2.2-59.0M), `dpmamba` (XS/S/M/L: 2.3-59.8M) — Linux + CUDA only (measured builds: `docs/generated/model_manifest.md`)
+**Model Registry (`models/__init__.py`):** Dict-based. `get_model("name")` returns class. Mamba models auto-excluded without `mamba-ssm`. Measured param counts per config: `docs/generated/model_manifest.md`.
+- Cross-platform: `convtasnet` (~8.7M for SB; the oft-quoted 8.64M is the ES/C=1 build), `sepformer` (~26M), `dprnn` (~2-3M), `mossformer2` (matched ~26M / full ~55.7M), `tf_mossformer` (S/M/L: 5.92 / 17.34 / 26.00M).
+- Linux + CUDA only: `spmamba` (~1.2M), `mamba_tasnet` and `dpmamba` (XS/S/M/L: ~2.2-60M). `models/mamba/` holds BiMamba blocks adapted from xi-j/Mamba-TasNet.
+- `mossformer2` (Zhao et al. 2023, arXiv:2312.11825): files in `models/mossformer2/` are **vendored** from ClearerVoice-Studio; `__init__.py` is the project wrapper. Single `N` knob = encoder dim = transformer dim (must match upstream); `num_blocks` = GFSMN depth (24 paper-full, 11 ≈ SepFormer-matched); `attn_dropout` covers the attention path only (FSMN-gate dropout fixed at 0.1). Sweep key `dropout` routes to `attn_dropout`. Configs: `experiments/mossformer2/`.
+- `tf_mossformer` (Zhao et al. 2026, arXiv:2607.21128): TF separator with convolution-gated local + global attention. **Re-implemented from the paper — no upstream code exists**; never call it "vendored". `tf_locoformer_blocks.py` is a deliberate separate copy of the Apache-2.0 TF-Locoformer file in `asr_pipeline/vendor/` (`models/` must not import from the liftable pipeline package); `local_global_attention.py` and `__init__.py` are original. Our sizes run ~2.5% above the paper's M/L rows because the paper's own rows are mutually inconsistent — quote the caveat wherever the size appears; reconciliation in `thesis/x_notes/tf_mossformer/tf_mossformer_spec.md` §4. Knobs follow paper Table 1 (`D`, `num_blocks`, `ffn_hidden_dim`, `conv_kernel_size`/`conv_stride`, `n_heads`, `num_groups`, `window_t`/`window_f`, `gate_kernel_size`, `n_fft`/`hop_length` in **samples**, `attn_dropout`; sweep key `dropout` → `attn_dropout`). Its configs (`experiments/tf_mossformer/{s,m,l}_8k.yaml`) are the only ones on the paper's recipe (`adamw`, `warmup_steps: 4000`, wd 1e-2, plateau patience 3); the paper's bs 4 / lr 1e-3 doesn't fit 12 GB, so they run the batch that fits with LR scaled linearly (S bs 2 / 5e-4, M and L bs 1 / 2.5e-4, no accumulation — author ruling 2026-09-07). 4070: S ≈ 4.4 GiB and ~29 min per 16k epoch, M 6.1 GiB, L 9.2 GiB.
 
-**Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports: `polsess`, `libri2mix`, `echoset`.
-- `echoset` (added 2026-07-31) — reverberant 2-speaker corpus (Matterport3D RIRs), 16 kHz, 6 s items. **CORPUS DELETED 2026-08-03 (author-approved, 26 GB reclaimed): the loader and registry entry are retained as the record of a negative result, but `~/datasets/EchoSet/` no longer exists — re-download before any use.** Why it was dropped: it ships only `spk{1,2}_reverb.wav`, i.e. reverberant targets, while PolSESS SB targets are dry (`_compute_clean` returns the `clean/` speech), so a PolSESS-trained model — which dereverberates — is penalised for it: a probe scores SI-SDRi ≈ **−2.92 dB** where the same code path scores +19.79 on Libri2Mix. Disqualified for generalization numbers, not merely caveated. (Unrelated and unaffected: `asr_pipeline/configs/b1_tiger_echoset.yaml` + `vendor/tiger/` concern the **TIGER checkpoint trained on EchoSet**, `JusperLee/TIGER-speech`, not this corpus.) See `thesis/thesis-log/sweep_plan/ch5_test_evals/CH5_TEST_EVALS_NOTES.md`.
+**Dataset Registry (`datasets/__init__.py`):** Dict-based. `get_dataset("name")` returns class. Supports `polsess`, `libri2mix`, `echoset`. The EchoSet corpus was deleted 2026-08-03 (loader kept as the record of a negative result): its targets are reverberant while PolSESS SB targets are dry, so PolSESS-trained models score ≈ −2.9 dB SI-SDRi there — disqualified for generalization numbers. Notes: `thesis/thesis-log/sweep_plan/ch5_test_evals/CH5_TEST_EVALS_NOTES.md`. (Unrelated: `asr_pipeline/configs/b1_tiger_echoset.yaml` is the TIGER checkpoint *trained on* EchoSet.)
 
-**ASR subsystem (`asr/`):** Notebooks driving the productionised CLARIN pipeline. The pre-CLARIN one-shot REAL-M/LibriMix eval flow and the original Gradio POC notebook were removed from the repository (superseded by `asr_pipeline/`; they lived in the gitignored `asr/archive/` and are recoverable from git history).
-- `clarin_fragments.ipynb` / `clarin_subset_review.ipynb`: select + review the CLARIN test fragments (uses `scripts/clarin_fragment_finder.py`).
-- `explore_pipeline.ipynb`: interactive frontend for the productionised `asr_pipeline/` package — per-stage knobs, re-run any stage in isolation, one model on GPU at a time.
-- `evaluate_pipeline.ipynb`: two-layer evaluation (L2 audio quality + L3 WER) of `asr_pipeline/` output against the CLARIN debleed (oracle) channels, backed by `asr_pipeline/eval/`.
+**Training Flow:** `train.py` → config → `training/setup.py` builders (`build_dataloaders` / `build_trainer`, shared with `train_sweep.py`) → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning). Every checkpoint embeds a provenance manifest (`utils.collect_run_manifest`: git SHA+dirty, library versions, GPU, hostname, seed, argv, W&B run id) and writes `run_manifest.yaml` beside `config.yaml`; `--resume` reuses the saved W&B run id (`resume="must"`). Old checkpoints without these keys load fine.
 
-**`asr_pipeline/` package** — productionised pipeline. **Before changing code here, read `asr_pipeline/SCOPE.md`** — the scope contract (purpose, error philosophy, fallback ledger, rules for agents); it overrides reviewer instincts, and its `UNDECIDED` items are reserved for the author. `Pipeline` orchestrator runs seven stages in fixed order:
-1. **diarization** — `pyannote` (dataclass/`default.yaml` default: `speaker-diarization-3.1`, HF token via `$HF_TOKEN`) or `sortformer` (NVIDIA Sortformer v1 offline EEND via isolated NeMo venv subprocess `scripts/sortformer_worker.py`, reached through `$SORTFORMER_VENV_PY` — no default, missing → loud crash). `num_speakers=2`, mono 16 kHz. The **shipped best config** (`configs/sweep_best_e31_refineplus.yaml`, adopted 2026-07-04) uses `backend: sortformer` + `sortformer_head_policy: merge` (the "fold": surplus-head runs re-assigned to the top-2 speakers by ECAPA2 match instead of discarded); streaming v2.1 model ids get the offline very-high-latency preset automatically in the worker (Life-2 track, NVIDIA Open license). Long recordings (> `sortformer_long_audio_threshold_s`, default 240 s) are auto-routed from the O(T²)-memory offline v1 model to the streaming `sortformer_long_audio_model_id` (default `diar_streaming_sortformer_4spk-v2.1`) via the same worker, with a loud warning — v1 OOMs past ~5-6 min on 12 GB; set the threshold to 0 to disable.
-2. **routing** — split overlap vs solo regions.
-3. **enhancement** — ClearerVoice backends: `frcrn_se_16k` (interim default, SCOPE §10 q7), `mossformer_gan_se_16k`. (Vendored MP-SENet backend removed 2026-06-11; ModelScope ZipEnhancer + the invalid `mossformer2_se_48k` dropped 2026-07-06; final default ruling deferred.)
-4. **separation** — MossFormer2 matched-128k checkpoint by default (`checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt` — NB the `_e46` sibling dir, epoch 45, val_sisdr 17.04; the older `final_42/` dir holds the e23 checkpoint and is NOT what ships — a stale reference here misdirected the 2026-08-05 B9 spike. Family swapped in 2026-06-13, ~0.6 dB SI-SDRi over the prior SepFormer 128k on val; runs at `separator_sample_rate=8000` like its predecessor). Dataclass defaults and `configs/default.yaml` agree; a pin test enforces that *consistency*, not the literal checkpoint — swappable by editing both the dataclass default and `default.yaml` (the generic `load_model_for_inference` reads `model_type` from the checkpoint config, so any trained architecture loads). `separator_backend` (default `repo`) additionally accepts `speechbrain` (checkpoint_path = HF id, cached under `checkpoints/external/speechbrain/`), `clearvoice` (model name, e.g. `MossFormer2_SS_16K` — 2 s one-pass window, adapter refuses longer input), `sr_corrnet` (HF id; `sr-corrnet-ss` pip pkg; NB its WHAMR checkpoint degenerates on clean input by domain prior — smoke with noisy audio), `tf_locoformer` (LOCAL .pth; model vendored at `asr_pipeline/vendor/tf_locoformer/`), `tiger` (HF id, 16 kHz; vendored at `vendor/tiger/`) and `mossformer2_dp` (HF id; dual-path variant vendored at `vendor/mossformer2_dp/` — different arch from `models/mossformer2`) for the B1 external-separator experiment; arm configs `configs/b1_*.yaml`. Runs on overlap fragments only. Sweepable-knob inventory across all stages: `asr_pipeline/SWEEP_KNOBS.md`.
-5. **post_separation_processing** — VAD mask + optional BWE (`naive` / `ap_bwe`; FlowHigh dropped 2026-07-06). Always-on (downstream depends on its `_gated` arrays); set `backend: naive` to apply only the mask. `configs/default.yaml` ships `backend: ap_bwe` (dataclass default is `naive`).
-6. **assembly** — stitch per-speaker streams, ECAPA anchor for speaker identity across pieces.
-7. **transcription** — `whisperx` / `coherex` backends (base openai-`whisper` dropped 2026-07-06); default = WhisperX `large-v2`. Alignment is per-language: `align_model_name=None` (default) lets WhisperX pick its per-language wav2vec2 default — for `pl` that is `jonatasgrosman/wav2vec2-large-xlsr-53-polish` (unchanged), set explicitly to override. English preset at `asr_pipeline/configs/english.yaml`. (rationale in `asr_pipeline/configs/README.md`). The `coherex` backend runs Cohere Transcribe via Diffio-AI/CohereX in an **isolated venv subprocess** (`scripts/coherex_worker.py`, reached via `$COHEREX_VENV_PY` — its deps conflict with the main venv, same isolation as Brouhaha; `model_name` = the Cohere model id, e.g. `CohereLabs/cohere-transcribe-03-2026`). It loads the model per `transcribe` call, so it targets interactive/single-recording use (`explore_pipeline`), not batch eval. Investigation verdict: WhisperX-large-v2 still beats Cohere ceiling-vs-ceiling on the dev set (~3.3 cpWER); the backend exists for choosability, not because Cohere won.
-
-`PipelineConfig.input_bandlimit_hz` (default 0 = off) band-limits the INPUT at load — decimate to `2*hz` and interpolate back — for the "what if the recordings were 8 kHz" ablation (`4000`, paired with `post_separation_processing.backend: naive`); the model stages stay at 16 kHz because every one of them except the separator is a 16 kHz model.
-
-Phase-major execution (one model on GPU at a time). Config via nested dataclasses + YAML. `PipelineConfig.deterministic` (default `true`) forces deterministic cuDNN algorithms at `Pipeline.__init__` — the enhancement conv stage is otherwise the pipeline's *only* run-to-run nondeterminism source (≈1e-7 float noise in `enhanced_full` that WhisperX can amplify into a flipped token; every other stage is deterministic given fixed input). Costs a ~2× enhancement-stage slowdown (no conv autotuning); set `false` for non-reproducible-but-faster dev runs. Configs in `asr_pipeline/configs/`: `default.yaml` (POC-equivalent), `p4_fixed_pad.yaml` / `p5_full_length.yaml` (ablation knobs). Debug log at `/tmp/asr_pipeline_debug.log` (override `ASR_PIPELINE_DEBUG_LOG`) — survives the WSL stdout bridge dropping. Config serializers (`save_pipeline_config_to_yaml`, the `metadata.json` snapshot in `io.write_pipeline_outputs`) mask `diarization.hf_token` as `REDACTED` so live tokens never land in output files.
-
-The package has a CLI front door: `python -m asr_pipeline run|batch|score`. `run`/`batch` call `asr_pipeline/preflight.py` (fail-loud env/checkpoint checks — missing `$SORTFORMER_VENV_PY` etc. fails in seconds, **before** any model load; `num2words` warn-only, SCOPE §10 q2) and accept repeatable `--set stage.knob=value` dotted overrides (`config.apply_overrides` — the one override mechanism; the sweep script imports it). `asr_pipeline/batch.py` `run_batch` owns the batch loop: per-recording failure isolation (`failures.csv`, batch continues — SCOPE §4.2), completion sentinel = `metadata.json` in the target subdir (`--force` re-runs), `--mode full|no_sep|no_enh|minimal` ablation presets, and the single home of the GPU-teardown block. `scripts/sweep_pipeline.py`'s run loop delegates to it while pinning its legacy `transcript_A.txt` sentinel, so completed sweep trees never recompute. `Pipeline(config, on_event=...)` emits per-stage timing events (load vs run seconds split, measured around the actual calls) that land in `metadata.json`/`run_meta.json` — the data that gates the Tier-2 stage-major batch rework.
-
-**`asr_pipeline/eval/`** — two-layer scoring (L2 + L3). `evaluate_recording(rec) → ScoreCard` runs both layers for one recording; `evaluate_many` batches with SQUIM loaded once; `walk_eval_tree` yields `Recording` per directory under the eval root. (L1/DER retired 2026-06-11, SCOPE §10 q8: no valid reference diarization exists — `eval/layer1.py` + the `compute_der`/`parse_rttm` plumbing deleted.)
-- **L2 audio quality** — intrusive SI-SDR / PESQ-WB / STOI (chunked, median-aggregated, speech-presence filtered) when oracle audio is available; non-intrusive TorchAudio-SQUIM (chunked, mean-aggregated) always.
-- **L3 ASR** — cpWER + tcpWER **+ cpCER** (the campaign's primary metric) per ablation mode (full / no-sep / no-enh), ORC-WER on the mixture baseline. Backed by `meeteval`; `compute_layer3` routes through `eval/metrics.per_fragment_metrics`, which also owns the ORC/MIMO combinatorial blow-up guard (long recordings skip those metrics with a printed note instead of hanging — the guard formerly lived only in the explore notebook).
-- **Campaign statistics** — `eval/stats.py`: recording-clustered paired bootstrap, Holm-Bonferroni, Benjamini-Hochberg, micro-averages, strata assignment — extracted bit-identically (fixed-seed golden tests) from `scripts/rescore_stratified.py`, which is now a thin driver with unchanged CLI/output.
-
-Low-level helpers exported for notebook use: `parse_gt_txt`, `parse_transcript_file`, `cpwer_meeteval`, `orc_wer_meeteval`.
-
-**ASR datasets**
-- `~/datasets/clarin_gotowy/gotowy/` — CLARIN debleed eval set (oracle per-speaker channels). Root = `<id>.wav` stereo inputs; `debleed/<id>_{L,R}.wav` = oracle channels; `debleed_enhanced/` = MossFormerGAN-enhanced oracles; `after_pipeline/<id>_{s1,s2}.wav` = pipeline outputs; `transcripts/<id>.txt` = pipeline transcripts; `eval_cache/` = cached references.
-- `~/datasets/clarin_all_2speakers/` — full CLARIN 2-speaker download (no oracle channels). `clarin_download/<id>.wav` raw inputs (+ `Korpus.csv`, `Korpus_with_filename.csv`); `diarization/<id>.json` pyannote outputs; `enhanced_mossformer/<id>.wav` MossFormerGAN-enhanced; `auto_transcription_raw/<id>.{txt,json}` and `auto_transcription_enhanced_mossformer/<id>.{txt,json}` WhisperX transcripts.
-
-**ASR helper scripts (`scripts/`)**
-- `run_pipeline_on_recording.py` — full pipeline on one recording in three ablation modes (`pipeline` / `pipeline_nosep` / `pipeline_noenh`); drives the L3 WER table. Now a thin wrapper over `asr_pipeline.batch.run_batch` (same CLI). (`batch_pipeline_noenh.py` deleted 2026-07-12 — subsumed by `python -m asr_pipeline batch --mode no_enh`.)
-- `prepare_eval_references.py` — cache enhanced oracles + GT-style transcripts for the eval module.
-- `enhance_clarin_debleed.py` — batch MossFormerGAN_SE_16K on oracle debleed channels.
-- `diarize_clarin_2speakers.py` — pyannote over the full 2-speaker download → `diarization/<id>.json`.
-- `transcribe_clarin_2speakers.py` — WhisperX over the full 2-speaker download, raw and MossFormerGAN-enhanced.
-- `score_fragment_acoustics.py` — objective acoustic-complexity scorer for the 128 CLARIN eval fragments (SQUIM, DNSMOS ONNX, Brouhaha SNR/C50, WADA-SNR, LUFS, clipping), calibrated vs the author's 16 by-ear grades; writes `acoustic_scores.csv` + `ACOUSTIC_SCORES_REPORT.md` beside the fragments. Brouhaha runs in an isolated venv (`/tmp/brouhaha_venv`, override `BROUHAHA_VENV_PY`/`BROUHAHA_CKPT`) because its pins (numpy 1.x, pyannote.audio ≤3.3.0) conflict with the main venv; if absent, the script falls back to WADA-SNR and says so in the report.
-- `compare_asr.py` — held-out WhisperX-vs-Cohere comparison via a **fixed-audio ASR-only swap** (holds the dr_refineplus per-speaker streams constant, varies only the transcriber). Prereq: `sweep_pipeline.py --configs dr_refineplus --recordings <ids>` to produce the streams + WhisperX transcripts; then `compare_asr.py --split test` (needs `$COHEREX_VENV_PY`) adds the Cohere pass (reuses the wired `_CohereXBackend`), dumps per-fragment bundles (`whisperx_/cohere_/gt_{A,B}.txt`) for the per-transcript eyeball pass, and scores cpWER/cpCER per-fragment + micro-avg under `<eval>/_forensics/asr_compare/`. `--gt2-root` adds a second, differently-seeded GT for the cross-seed read. Background: cross-arch WER is **reference-seed biased (~±4 pp)** — each hand-corrected GT mildly flatters the ASR it was seeded from (`_forensics/ANCHORING_EYEBALL_SYNTHESIS.md`); read numbers two ways + use the reference-free eyeball as tiebreak.
-
-**Training Flow:** `train.py` → config → `training/setup.py` builders (`build_dataloaders` / `build_trainer`, shared with `train_sweep.py` — the two mains keep only their genuine differences) → `create_model_from_config()` → optional `torch.compile()` → `Trainer` (AMP, grad accumulation, checkpointing, curriculum learning). Every checkpoint embeds a provenance manifest (`utils.collect_run_manifest`: git SHA+dirty, torch/CUDA/cuDNN/mamba-ssm versions, GPU, hostname, seed, argv, W&B run id) and writes a human-readable `run_manifest.yaml` beside `config.yaml`; on `--resume` the saved W&B run id is reused (`resume="must"`). Old checkpoints without these keys load fine.
-
-**Checkpoints:** Saved to `checkpoints/{model_type}/{task}/{run_name}/`. Run name comes from W&B when available, otherwise timestamp. Each directory includes `config.yaml` for reproducibility. By default only the best checkpoint is kept; `save_all_checkpoints: true` keeps every improvement.
+**Checkpoints:** `checkpoints/{model_type}/{task}/{run_name}/`, run name from W&B when available, otherwise timestamp. Each directory includes `config.yaml`. Only the best checkpoint is kept unless `save_all_checkpoints: true`.
 
 ## Experiment Configs
 
@@ -218,16 +161,16 @@ training:
 
 ## Key Technical Details
 
-- **Corpus sampling rate (`data.sample_rate`, default 8000):** every loader and model is rate-agnostic (files are returned as stored; kernel/stride/n_fft are in samples, chunk sizes in frames), so a 16 kHz PolSESS render with the same folder layout trains with no code change — the field is provenance plus a guard. `PolSESSDataset` compares the first mix file's header against it at construction and raises on mismatch (so an 8 kHz config pointed at a 16 kHz corpus, or vice versa, fails at setup rather than training silently at the wrong rate); the value lands in the checkpoint's embedded config, and `evaluate.py` / `evaluate_all.py` always take the rate from the checkpoint (pre-field checkpoints = 8 kHz) to pick PESQ nb-vs-wb, the STOI rate, and the Libri2Mix `wav8k/`/`wav16k/` folder. What does NOT adjust itself: a 16 kHz clip has 2× the samples, so with the default 16/8 encoders (or SPMamba's 256/64 STFT) frame counts, memory and epoch time roughly double — going to 32/16 (512/128) to keep the frame rate is a per-architecture design choice for the 16 kHz YAMLs, not something the code decides. In the ASR pipeline a 16 kHz separator needs `separation.separator_sample_rate: 16000` **and** `post_separation_processing.backend: naive` (AP-BWE would decimate the real 4–8 kHz band away). `experiments/tf_mossformer/s_16k.yaml` is the **first and only** config carrying `sample_rate: 16000`, and it is **BLOCKED**: no 16 kHz PolSESS render exists on disk, so it fails at dataset construction by design (the guard doing its job). It doubles n_fft/hop to 256/128 to hold the frame rate — read its header before unblocking it.
-- **AMP:** Enabled by default. SpeechBrain EPS patched from 1e-8 to 1e-4 in `utils/common.py` to prevent float16 underflow (`apply_eps_patch` — patches **ConvTasNet's SpeechBrain lobe only**; other architectures are unaffected by it). Most models use float16 + GradScaler; Mamba models, **MossFormer2 and TF-MossFormer** use bfloat16 without GradScaler (dispatch on `model_type` in `training/trainer.py:_setup_amp`). MossFormer2's squared-ReLU attention overflows fp16 once activations sharpen — first seen as NaN val SI-SDR (fixed by fp32 validation), then as training NaNs at low `attn_dropout` / higher LR in the 128k sweep. TF-MossFormer is on bf16 for the same failure profile (gated products + masked softmax) and additionally casts to fp32 around `torch.stft` / `torch.complex` / `torch.istft` inside its own forward, exactly as SPMamba does — `torch.complex` rejects bf16, and nothing outside the model does this for it.
-- **Training determinism (`training.deterministic`, tri-state):** unset/`null` (default) = legacy behavior — cuDNN deterministic + no benchmark, `use_deterministic_algorithms` NOT called; `true` = strict opt-in (`torch.use_deterministic_algorithms(warn_only=True)` + `CUBLAS_WORKSPACE_CONFIG`); `false` = `cudnn.benchmark` conv-autotune speedup, non-deterministic. Train DataLoaders use a seeded `torch.Generator` + `worker_init_fn`, so the MM-IPC variant stream is reproducible by contract. Gotcha: curriculum learning mutates the dataset's `allowed_variants` in place and only works because workers re-fork each epoch — never enable `persistent_workers` with a curriculum active.
-- **torch.compile:** Auto-applied on Linux for ~10-20% speedup. Checkpoint loading handles `_orig_mod` prefix. Skipped for Mamba models. `mossformer2` is compiled with `dynamic=False` (per-shape static specialization): its vendored rotary block disables the seq-len cache (`cache_if_possible=False`) and its token-shift/group-rearrange can't be lowered under symbolic shapes — so fixed-length crops compile once, new lengths trigger a one-time static recompile. `tf_mossformer` is also compiled with `dynamic=False` — same rotary library, same reason. Per-architecture dispatch lives in `compile_for_model_type` (`utils/model_utils.py`), shared by `train.py` and `train_sweep.py`.
-- **MM-IPC (Mix Modification by Inverted Phase Cancellation):** Augmentation that randomly varies background complexity during training by subtracting audio layers from the full mix. Indoor variants (with reverb): SER/SR/ER/R. Outdoor variants (no reverb): SE/S/E/C. Letters indicate what's present: S=scene, E=event, R=reverb, C=clean. Implemented via lazy loading in `datasets/polsess_dataset.py`. Validation uses deterministic selection (seeded by sample index).
-- **Curriculum Learning:** Configure in YAML `training.curriculum_learning`. Progressive variant introduction + optional LR scheduler gating. Note: when curriculum learning is active, the LR scheduler is **disabled by default** until a curriculum entry includes `lr_scheduler: start` — omitting this key means the scheduler never runs.
-- **Optimizer + LR warmup (`training.optimizer`, `training.warmup_steps`):** `optimizer` is `adam` (default, every pre-2026-09 run) or `adamw` (decoupled `weight_decay`); `warmup_steps` (default 0 = off) linearly ramps the LR from 0 to `training.lr` over the first N optimizer steps, after which `ReduceLROnPlateau` takes over unchanged. Both exist because TF-MossFormer's published recipe needs them (AdamW, wd 1e-2, warmup to 1e-3 over 4000 steps, plateau ×0.5 patience 3) and reproducing a paper's recipe beats re-tuning it. Both are sweep-overridable and appear in `Config.summary()`. Defaults are byte-compatible with every existing config.
-- **LR scheduler + early stopping (`lr_patience`, `lr_factor`, `early_stopping_patience`):** `ReduceLROnPlateau(mode=max, threshold=1e-4 rel)` cuts after `lr_patience+1` consecutive non-improving epochs; the logged `train_lr` at epoch e is the post-step value (the LR of epoch e+1), so a cut decided at epoch e shows as a drop in the row of epoch e — and the logged `epochs_no_improvement` lags one epoch. Analysis of 419 runs / 1.5k cuts (2026-09-08, `thesis/x_notes/lr_schedule_analysis/FINDINGS.md`): the first epoch at a halved LR is a new best in ~80 % of first cuts, nothing is gained after the 4th cut, and early-stopped runs spend 17–35 % of their epochs after their best — so set `early_stopping_patience = 2·(lr_patience+1)` (6 / 4) instead of 15: saves 7–13 % of epochs at ~0 dB median cost. Patience 1 vs 2 is open (leans to 1; a 6-run test would settle it); never 0; rate-based triggers and fixed LR curves were rejected on that data.
-- **Gradient Accumulation:** `training.grad_accumulation_steps` for effective batch scaling.
-- **Mamba Models (SPMamba, Mamba-TasNet, DPMamba):** Require Linux + CUDA + `mamba-ssm`. AMP uses bfloat16 (no GradScaler) — Mamba CUDA kernels run float32 internally. Mamba-TasNet/DPMamba come in XS/S/M/L size configs. `models/mamba/` contains BiMamba building blocks adapted from xi-j/Mamba-TasNet.
+- **Corpus sampling rate (`data.sample_rate`, default 8000):** loaders and models are rate-agnostic (kernel/stride/n_fft in samples, chunk sizes in frames), so a 16 kHz PolSESS render with the same layout trains without code changes. The field is provenance plus a guard: `PolSESSDataset` checks the first mix file's header at construction and raises on mismatch; `evaluate.py` / `evaluate_all.py` take the rate from the checkpoint (pre-field checkpoints = 8 kHz) to choose PESQ nb/wb, the STOI rate and the Libri2Mix `wav8k/`/`wav16k/` folder. Nothing rescales geometry: at 16 kHz a clip has 2× the samples, so keeping the frame rate (32/16 encoders, 512/128 STFT) is a per-architecture choice in the 16 kHz YAMLs. In the ASR pipeline a 16 kHz separator needs `separation.separator_sample_rate: 16000` **and** `post_separation_processing.backend: naive`. `experiments/tf_mossformer/s_16k.yaml` is the only `sample_rate: 16000` config and is **blocked** until the 16 kHz corpus is on this machine — read its header before unblocking.
+- **AMP:** on by default. SpeechBrain EPS patched 1e-8 → 1e-4 in `utils/common.py` (`apply_eps_patch`, ConvTasNet's SpeechBrain lobe only). Most models: float16 + GradScaler. Mamba models, MossFormer2 and TF-MossFormer: bfloat16 without GradScaler (dispatch on `model_type` in `training/trainer.py:_setup_amp`) — MossFormer2's squared-ReLU attention and TF-MossFormer's gated products overflow fp16. TF-MossFormer casts to fp32 around `torch.stft` / `torch.complex` / `torch.istft` inside its forward, like SPMamba (`torch.complex` rejects bf16). Validation runs in fp32.
+- **Training determinism (`training.deterministic`, tri-state):** unset/`null` = cuDNN deterministic + no benchmark, `use_deterministic_algorithms` not called; `true` = strict (`torch.use_deterministic_algorithms(warn_only=True)` + `CUBLAS_WORKSPACE_CONFIG`); `false` = `cudnn.benchmark`, non-deterministic. Train DataLoaders use a seeded `torch.Generator` + `worker_init_fn`, so the MM-IPC variant stream is reproducible. Gotcha: curriculum learning mutates `allowed_variants` in place and only works because workers re-fork each epoch — never enable `persistent_workers` with a curriculum active.
+- **torch.compile:** auto on Linux (~10-20% speedup); loading handles the `_orig_mod` prefix; skipped for Mamba models. `mossformer2` and `tf_mossformer` compile with `dynamic=False` (their rotary block can't be lowered under symbolic shapes) — fixed-length crops compile once, a new length triggers a one-time recompile. Dispatch: `compile_for_model_type` in `utils/model_utils.py`.
+- **MM-IPC (Mix Modification by Inverted Phase Cancellation):** augmentation that varies background complexity by subtracting layers from the full mix. Indoor (reverb): SER/SR/ER/R/C. Outdoor: SE/S/E/C. Letters indicate what's present: S=scene, E=event, R=reverb (C=clean speech only). Lazy loading in `datasets/polsess_dataset.py`; validation picks variants deterministically (seeded by sample index).
+- **Curriculum Learning:** `training.curriculum_learning` — progressive variant introduction + optional LR-scheduler gating. With a curriculum active the LR scheduler is **disabled** until an entry includes `lr_scheduler: start`.
+- **Optimizer + warmup (`training.optimizer`, `training.warmup_steps`):** `adam` (default, every pre-2026-09 run) or `adamw` (decoupled `weight_decay`); `warmup_steps` (default 0) ramps the LR linearly to `training.lr`, then `ReduceLROnPlateau` takes over. Added for TF-MossFormer's published recipe; sweep-overridable; defaults are byte-compatible with every existing config.
+- **LR scheduler + early stopping:** `ReduceLROnPlateau(mode=max, threshold=1e-4 rel)` cuts after `lr_patience+1` non-improving epochs. Logged `train_lr` at epoch e is the post-step value (the LR of e+1) and `epochs_no_improvement` lags one epoch — verify W&B epoch alignment against box logs. Rule from the 419-run analysis (`thesis/x_notes/lr_schedule_analysis/FINDINGS.md`): set `early_stopping_patience = 2·(lr_patience+1)` (6 / 4) instead of 15; never 0; patience 1 vs 2 is open.
+- **Gradient Accumulation:** `training.grad_accumulation_steps`.
+- **Mamba Models:** Linux + CUDA + `mamba-ssm` (Windows: WSL2 + CUDA toolkit 12.4+). Kernels run float32 internally. Deep Mamba-TasNet configs need `residual_in_fp32: true`; `grad_clip_norm: 1.0` may help. Every Mamba run before 2026-04-19 silently trained and validated in fp16 (compile wrapper defeated the AMP dispatch; fixed in `2327c89`), so pre-fix NaN lore dates from that regime.
 
 ## PolSESS Dataset Structure
 
@@ -246,32 +189,30 @@ PolSESS/
 └── test/
 ```
 
-MM-IPC works by subtracting layers from the full mix using inverted phase cancellation. For example, the "SR" variant (scene + reverb) is created by removing the event layer from the full SER mix.
+MM-IPC subtracts layers from the full mix by inverted phase cancellation, e.g. "SR" (scene + reverb) = full SER mix minus the event layer.
 
 ## Common Pitfalls
 
-1. **NaN in SI-SDR:** AMP underflow — EPS patch should handle it. If not, `use_amp: false`. The trainer skips NaN/Inf batches; after 1000 consecutive NaN batches it aborts the run (`ConsecutiveNaNError` → `SystemExit(1)`, sweep-friendly — see `MAX_CONSECUTIVE_NAN_BATCHES` in `training/trainer.py`).
-2. **Memory overflow:** Reduce `batch_size`, use `grad_accumulation_steps` to compensate.
-3. **Config precedence:** CLI > YAML > env vars > defaults. Additionally, `Config.__post_init__` forces the model's output source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2), overriding whatever the YAML says — it prints a line when it actually changes the value.
-4. **MambaTasNet NaN:** Deep configs need `residual_in_fp32: true`.  `grad_clip_norm: 1.0` (not 5.0) might help too. Historical: every Mamba run before 2026-04-19 silently trained *and validated* in fp16 — torch.compile's `OptimizedModule` wrapper defeated the old class-name AMP dispatch (fixed in `2327c89`; compile disabled for Mamba in `c99b56c`) — so pre-fix NaN lore (including this pitfall's origin) dates from that regime.
-5. **Mamba on Windows:** Requires WSL2 + CUDA toolkit 12.4+. Non-Mamba models work natively.
-6. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr`, not dict access.
-7. **`--resume` extends the epoch budget:** `Trainer.train` iterates `range(current_epoch, current_epoch + num_epochs)`, so `num_epochs` is *additional* epochs, not the total. A run resumed at epoch 30 with `num_epochs: 80` runs to epoch 110, and its early-stopping patience counter restarts at 0. There is no `--epochs` CLI override. For seed replicates or any budget-matched comparison, stop the resumed run at the intended total and report best-within-budget. Note also that `Trainer` logs with an **explicit step** (`wandb.log(metrics, step=self.current_epoch)`). W&B steps are unique and must increase, so when a resume restarts below the highest step already logged, those overlapping epochs add **no new rows** — the history keeps the pre-crash values there and the chart only moves again once the epoch counter passes the previous maximum. A run resumed from an early "best" checkpoint after running well past it can therefore look frozen on W&B for many epochs while training normally. Separately, W&B does not clear the `crashed` badge on `resume="must"`, and the resumed run's console pane is overwritten from line 1 (fresh stdout capture) — both cosmetic.
+1. **NaN in SI-SDR:** AMP underflow — the EPS patch should handle it; otherwise `use_amp: false`. The trainer skips NaN/Inf batches and aborts after 1000 consecutive ones (`ConsecutiveNaNError` → `SystemExit(1)`; `MAX_CONSECUTIVE_NAN_BATCHES` in `training/trainer.py`).
+2. **Memory overflow:** reduce `batch_size` or compensate with `grad_accumulation_steps`.
+3. **Config precedence:** CLI > YAML > env vars > defaults. `Config.__post_init__` forces the model's source count (`C`/`n_srcs`) to match the task (ES→1, SB/EB→2) and prints a line when it changes the value.
+4. **Sweep config access:** `load_config_for_run(wandb.config)` uses `getattr`, not dict access.
+5. **`--resume` extends the epoch budget:** `num_epochs` is *additional* epochs (a run resumed at 30 with `num_epochs: 80` runs to 110) and the early-stopping counter restarts at 0; there is no `--epochs` override. For budget-matched comparisons stop at the intended total and report best-within-budget. `Trainer` logs with `step=epoch`, so a resume that restarts below the highest logged step adds no W&B rows until it passes it — the run looks frozen on W&B while training normally.
 
 ## Virtual Environments
 
-**Main (`venv/`)** — all models except SPMamba3. Alias: `polsess_venv`. `requirements.txt` is the installable core set (optional extras — mamba-ssm, ASR pipeline, B1 git dependency — are listed as commented blocks); `requirements-freeze.txt` is the exact `pip freeze` of this venv. Third-party attribution and vendored-code licences: `THIRD_PARTY.md`.
+**Main (`venv/`)** — all models except SPMamba3. Alias: `polsess_venv`. `requirements.txt` is the installable core set (optional extras — mamba-ssm, ASR pipeline, B1 git dependency — are commented blocks); `requirements-freeze.txt` is the exact `pip freeze`. Third-party attribution and vendored-code licences: `THIRD_PARTY.md`.
 
-**SPMamba3 (`venv_mamba3/`)** — torch 2.11.0+cu130, triton 3.6.0, Mamba-3 kernels. Clone of main venv with Mamba-3 files manually copied from bare repo clone of `state-spaces/mamba`. Additional deps: `tilelang`, `quack-kernels`, `cuda-bindings`, `nvidia-cutlass-dsl`.
+**SPMamba3 (`venv_mamba3/`)** — torch 2.11.0+cu130, triton 3.6.0, Mamba-3 kernels; clone of the main venv with Mamba-3 files copied from a bare clone of `state-spaces/mamba`. Extra deps: `tilelang`, `quack-kernels`, `cuda-bindings`, `nvidia-cutlass-dsl`. Side project, not in the thesis.
 
 ## Cloud Setup
 
-`setup.sh` provisions a fresh cloud GPU instance (Vast.ai / RunPod): clones the repo (`REPO_BRANCH`/`REPO_URL` env-overridable), installs deps, sets env vars; `--rclone` additionally configures the Google Drive remote (headless token flow). Start from a cu128 PyTorch image (`pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel`) — Blackwell GPUs (sm_120) need exactly that; the `-devel` variant has nvcc for a from-source `MAMBA_FORCE_BUILD=TRUE` fallback if the mamba-ssm wheel lacks the arch. `download_dataset.sh` fetches one corpus by name — `DATASET_NAME=PolSESS_C_new_64 ./download_dataset.sh` (default `PolSESS_C_final_128_v2`; pilot `PolSESS_C_both` is a .tar.gz) — and wires `POLSESS_DATA_ROOT` to the directory containing `train/` (auto-detects the double-nested layouts of C_new_64/C_both vs the flat 128_v2). With several corpora on one box, pass `--data-root` per launch rather than trusting the env var. Neither script logs into W&B — run `wandb login` before training (setup.sh's verification warns if credentials are missing).
+`setup.sh` provisions a fresh cloud GPU instance (Vast.ai / RunPod): clones the repo (`REPO_BRANCH`/`REPO_URL` env-overridable), installs deps, sets env vars; `--rclone` additionally configures the Google Drive remote. Start from `pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel` — Blackwell (sm_120) needs exactly that, and `-devel` has nvcc for a `MAMBA_FORCE_BUILD=TRUE` from-source fallback. `DATASET_NAME=PolSESS_C_new_64 ./download_dataset.sh` fetches one corpus (default `PolSESS_C_final_128_v2`) and wires `POLSESS_DATA_ROOT` to the directory containing `train/` (auto-detects the nested layouts). With several corpora on one box, pass `--data-root` per launch rather than trusting the env var. Neither script logs into W&B — run `wandb login` first.
 
 ## Environment Variables
 
-- `POLSESS_DATA_ROOT` — PolSESS dataset path (default in `config.py`)
-- `HF_TOKEN` — HuggingFace token for the ASR pipeline's pyannote diarization stage
-- `AP_BWE_CHECKPOINT` — ASR pipeline post-separation AP-BWE backend (default: `~/AP-BWE/checkpoints/8kto16k/g_8kto16k`; since 2026-09-03 the shipped YAMLs no longer hard-code the path, so the env var is honoured).
-- `COHEREX_VENV_PY` — path to the isolated CohereX venv's python (e.g. `~/asr_model_compare/coherex_venv/bin/python`), required by `transcription.backend: coherex`. No default; missing → loud crash (SCOPE §4, no silent fall-back).
-- `SORTFORMER_VENV_PY` — path to the isolated NeMo venv's python (`~/sortformer_venv/bin/python`), required by `diarization.backend: sortformer` — which the shipped best ASR-pipeline config uses. No default; missing → loud crash (SCOPE §4).
+- `POLSESS_DATA_ROOT` — PolSESS dataset path (default in `config.py`).
+- `HF_TOKEN` — HuggingFace token for the ASR pipeline's pyannote diarization stage.
+- `AP_BWE_CHECKPOINT` — AP-BWE checkpoint for the ASR post-separation stage (default `~/AP-BWE/checkpoints/8kto16k/g_8kto16k`).
+- `SORTFORMER_VENV_PY` — python of the isolated NeMo venv (`~/sortformer_venv/bin/python`); required by `diarization.backend: sortformer`, which the shipped best ASR config uses. No default; missing → loud crash.
+- `COHEREX_VENV_PY` — python of the isolated CohereX venv; required by `transcription.backend: coherex`. No default; missing → loud crash.
