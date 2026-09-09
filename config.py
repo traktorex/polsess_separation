@@ -1,8 +1,9 @@
 """Configuration management for PolSESS speech enhancement training."""
 
 import os
+import warnings
 import yaml
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from utils import ensure_dir
@@ -15,7 +16,7 @@ class PolSESSParams:
     data_root: str = field(
         default_factory=lambda: os.getenv(
             "POLSESS_DATA_ROOT",
-            "/home/user/datasets/PolSESS_C_both/PolSESS_C_both",
+            os.path.expanduser("~/datasets/PolSESS_C_new_64/PolSESS_C_new_64"),
         )
     )
 
@@ -54,7 +55,67 @@ class SepFormerParams:
     d_ffn: int = 1024  # Feed-forward network dimension
     dropout: float = 0.0  # Dropout rate
     chunk_size: int = 250  # Chunk size for dual-path processing
-    hop_size: int = 125  # Hop size between chunks
+    hop_size: int = 125  # Unused — SpeechBrain's Dual_Path_Model always derives hop = K // 2
+    # internally and takes no hop argument (see models/sepformer.py). Kept as a
+    # loadable field (not removed) because many saved checkpoint config.yamls
+    # carry it; load_config_for_run no longer writes to it (nothing reads it).
+    use_positional_encoding: bool = True  # Sinusoidal PE (paper default; False for pre-2026-03 checkpoints)
+
+
+@dataclass
+class MossFormer2Params:
+    """MossFormer2 (Zhao et al. 2023, arXiv:2312.11825) model-specific parameters.
+
+    Vendored from ClearerVoice-Studio's training implementation (see
+    models/mossformer2/). The model owns a learnable Conv1d encoder (stride =
+    kernel_size // 2) and matching ConvTranspose1d decoder. `N` is BOTH the encoder
+    feature dim and the transformer/GFSMN working dim — the two must be equal, so a
+    single knob is exposed (see models/mossformer2/__init__.py). Paper-faithful
+    config is N=512, num_blocks=24 (~55.7M params).
+    """
+
+    N: int = 512  # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: int = 16  # Encoder kernel size (decoder stride = kernel_size // 2)
+    C: int = 2  # Output sources (number of speakers)
+    num_blocks: int = 24  # GFSMN depth (paper uses 24)
+    attn_dropout: float = 0.1  # Self-attention dropout (upstream hard-codes 0.1)
+
+
+@dataclass
+class TFMossFormerParams:
+    """TF-MossFormer (Zhao et al. 2026, arXiv:2607.21128) model-specific parameters.
+
+    Re-implemented from the paper on the vendored Apache-2.0 TF-Locoformer
+    skeleton (no TF-MossFormer code was ever released) — see
+    models/tf_mossformer/. STFT-domain: the model does its own stft/istft, so
+    `n_fft` and `hop_length` are in SAMPLES and there is deliberately no
+    `sample_rate` field (same choice as SPMambaParams). The paper's 8 kHz
+    geometry is 128/64 (16 ms / 8 ms); a 16 kHz corpus holding the same frame
+    rate uses 256/128 and doubles F from 65 to 129.
+
+    Paper sizes (Table 1), all sharing the defaults not listed here:
+        S  D=96,  num_blocks=4, ffn_hidden_dim=256  ->  5.92M  (paper 5.9/6.0M)
+        M  D=128, num_blocks=6, ffn_hidden_dim=384  -> 17.34M  (paper 16.9M)
+        L  D=128, num_blocks=9, ffn_hidden_dim=384  -> 26.00M  (paper 25.4M)
+    The defaults below are size S. The 2.5% excess on M/L is the paper's own
+    inconsistency; the reconciliation is recorded in
+    models/tf_mossformer/local_global_attention.py (LocalGlobalMHSA docstring).
+    """
+
+    C: int = 2  # Output sources (number of speakers)
+    D: int = 96  # Embedding dim; also the attention dim (Table 1 has no separate value)
+    num_blocks: int = 4  # TF blocks (each = one frequency module + one temporal module)
+    ffn_hidden_dim: int = 256  # Conv-SwiGLU hidden dim (macaron: one FFN before and one after attention)
+    conv_kernel_size: int = 4  # Conv1d/Deconv1d kernel in the Conv-SwiGLU FFNs
+    conv_stride: int = 1  # Conv1d/Deconv1d stride in the Conv-SwiGLU FFNs
+    n_heads: int = 4  # Attention heads, shared by the local and global paths
+    num_groups: int = 4  # Groups in RMSGroupNorm
+    window_t: int = 31  # Local-attention window on frames (paper w_T)
+    window_f: int = 7  # Local-attention window on frequency bins (paper w_F)
+    gate_kernel_size: int = 4  # Conv1d kernel of the two convolution gates
+    n_fft: int = 128  # STFT size in samples (Hann, win_length = n_fft, center=True)
+    hop_length: int = 64  # STFT hop in samples
+    attn_dropout: float = 0.0  # Dropout on both attention paths (FFN dropout stays 0)
 
 
 @dataclass
@@ -83,17 +144,55 @@ class SPMambaParams:
     n_srcs: int = 1  # Number of output sources (1 for enhancement, 2 for separation)
     n_fft: int = 256  # FFT size (paper uses 256)
     stride: int = 64  # STFT hop length (paper uses 64)
-    window: str = "hann"  # Window function
+    window: str = "hann"  # Only "hann" is honored; forward() hardcodes it (asserted in SPMamba.__init__)
     n_layers: int = 6  # Number of GridNet blocks (paper uses 6)
-    lstm_hidden_units: int = 256  # Hidden dimension (misleading name, for Mamba blocks)
+    lstm_hidden_units: int = 256  # Unused; kept for API symmetry (see models/spmamba.py docstring)
     attn_n_head: int = 4  # Number of attention heads
     attn_approx_qk_dim: int = 512  # Approximate Q/K dimension for attention
     emb_dim: int = 16  # Embedding dimension
-    emb_ks: int = 4  # Embedding kernel size
+    emb_ks: int = 8  # Embedding kernel size (original librimix config uses 8)
     emb_hs: int = 1  # Embedding hop size
     activation: str = "prelu"  # Activation function
     eps: float = 1.0e-5  # Epsilon for numerical stability
-    sample_rate: int = 16000  # Audio sample rate
+
+
+@dataclass
+class MambaTasNetParams:
+    """Mamba-TasNet model-specific parameters."""
+
+    N: int = 256  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    bot_dim: int = 256  # Bottleneck dimension for Mamba blocks
+    n_mamba: int = 8  # Number of bidirectional Mamba blocks
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    residual_in_fp32: bool = False  # Keep residual stream in fp32 (stabilizes deep models under AMP)
+
+
+@dataclass
+class DPMambaParams:
+    """DPMamba (Dual-Path Mamba) model-specific parameters."""
+
+    N: int = 64  # Encoder/decoder channels
+    kernel_size: int = 16  # Encoder kernel size
+    stride: int = 8  # Encoder stride
+    C: int = 1  # Output sources
+    num_layers: int = 8  # Number of dual-path iterations
+    chunk_size: int = 250  # Chunk length K for dual-path segmentation
+    n_mamba_dp: int = 2  # Total BiMamba blocks across intra+inter (each gets half)
+    d_state: int = 16  # SSM state dimension
+    d_conv: int = 4  # Local convolution width
+    expand: int = 2  # Inner dimension expansion factor
+    bidirectional: bool = True  # Use BiMamba (True) or standard Mamba (False)
+    rms_norm: bool = True  # Use RMSNorm instead of LayerNorm in Mamba blocks
+    skip_around_intra: bool = False  # Residual around intra-chunk (True for M/L configs)
+    residual_in_fp32: bool = False  # Cast residual stream to fp32 between Mamba blocks (prevents bf16 precision loss)
+
 
 
 @dataclass
@@ -105,6 +204,14 @@ class DataConfig:
     num_workers: int = 4
     prefetch_factor: int = 2
     task: str = "ES"  # ES=single speaker, EB=both speakers, SB=separate both
+    # Corpus sampling rate in Hz (PolSESS ships 8 kHz; a 16 kHz render uses the
+    # same folder layout). The loaders are rate-agnostic, so this field is
+    # provenance plus a guard: PolSESSDataset checks the first mix file against
+    # it at construction (a 16 kHz config pointed at the 8 kHz corpus fails
+    # loud instead of silently training at the wrong rate), the value lands in
+    # every checkpoint's embedded config, and evaluate.py reads it back to pick
+    # the PESQ mode (nb @ 8 kHz, wb @ 16 kHz) and the STOI rate.
+    sample_rate: int = 8000
     train_max_samples: Optional[int] = None
     val_max_samples: Optional[int] = None
     polsess: Optional[PolSESSParams] = None
@@ -120,12 +227,16 @@ class ModelConfig:
     """Common model configuration across all architectures."""
 
     model_type: str = (
-        "convtasnet"  # Model selector: convtasnet, sepformer, dprnn, spmamba
+        "convtasnet"  # Model selector: convtasnet, sepformer, mossformer2, tf_mossformer, dprnn, spmamba, mamba_tasnet, dpmamba
     )
     convtasnet: Optional[ConvTasNetParams] = None
     sepformer: Optional[SepFormerParams] = None
+    mossformer2: Optional[MossFormer2Params] = None
+    tf_mossformer: Optional[TFMossFormerParams] = None
     dprnn: Optional[DPRNNParams] = None
     spmamba: Optional[SPMambaParams] = None
+    mamba_tasnet: Optional[MambaTasNetParams] = None
+    dpmamba: Optional[DPMambaParams] = None
 
     def __post_init__(self):
         """Initialize model-specific params if not provided."""
@@ -133,15 +244,35 @@ class ModelConfig:
             self.convtasnet = ConvTasNetParams()
         elif self.model_type == "sepformer" and self.sepformer is None:
             self.sepformer = SepFormerParams()
+        elif self.model_type == "mossformer2" and self.mossformer2 is None:
+            self.mossformer2 = MossFormer2Params()
+        elif self.model_type == "tf_mossformer" and self.tf_mossformer is None:
+            self.tf_mossformer = TFMossFormerParams()
         elif self.model_type == "dprnn" and self.dprnn is None:
             self.dprnn = DPRNNParams()
         elif self.model_type == "spmamba" and self.spmamba is None:
             self.spmamba = SPMambaParams()
+        elif self.model_type == "mamba_tasnet" and self.mamba_tasnet is None:
+            self.mamba_tasnet = MambaTasNetParams()
+        elif self.model_type == "dpmamba" and self.dpmamba is None:
+            self.dpmamba = DPMambaParams()
 
 
 @dataclass
 class TrainingConfig:
     lr: float = 1e-3
+    # Optimizer: "adam" (default, the setting every run before 2026-09 used) or
+    # "adamw". Adam applies weight_decay as an L2 term added to the gradient,
+    # AdamW as true decoupled decay — a paper that specifies AdamW with
+    # weight_decay 1e-2 (e.g. TF-MossFormer / TF-Locoformer) is not reproduced by
+    # Adam with the same number. Trainer raises ValueError on any other value.
+    optimizer: str = "adam"
+    # Linear LR warmup over the first N *optimizer* steps: step k (0-based) runs
+    # at lr * (k + 1) / N, so the first step is ~0 and step N-1 is the full lr;
+    # after that ReduceLROnPlateau owns the LR exactly as before. 0 (default)
+    # disables warmup entirely — no code touches the LR. The step counter is
+    # persisted in the checkpoint, so warmup does not restart on --resume.
+    warmup_steps: int = 0
     weight_decay: float = 1e-4
     grad_clip_norm: float = 5.0
     lr_factor: float = 0.95
@@ -160,10 +291,20 @@ class TrainingConfig:
     seed: int = 42
     resume_from: Optional[str] = None
     validation_variants: Optional[List[str]] = None
+    per_variant_validation: bool = False  # If True, run validation once per MM-IPC variant and use avg SI-SDRi as the monitored metric
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
     grad_accumulation_steps: int = 1  # Accumulate gradients over N steps (effective batch = batch_size * N)
+    # Determinism policy applied by utils.configure_determinism (survey gaps 6/18).
+    # None (default) = today's behavior EXACTLY: cuDNN deterministic, no benchmark
+    # autotuning, TF32 on — the setting every past run used, so the SPMamba
+    # full-ks8 / scaling runs stay comparable. True = also
+    # torch.use_deterministic_algorithms(warn_only) + CUBLAS_WORKSPACE_CONFIG
+    # (strict, opt-in). False = cudnn.benchmark=True for conv-autotune speed
+    # (non-deterministic, opt-in). Tri-state because none of {None,True,False}
+    # collapses onto another while keeping the default byte-identical to today.
+    deterministic: Optional[bool] = None
 
 
 @dataclass
@@ -171,6 +312,21 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+
+    def validate_data_root(self):
+        """Check that the configured dataset root exists.
+
+        Separate from __post_init__ because it must run *after* CLI/sweep
+        overrides are applied — see the note in __post_init__. Entry points
+        (get_config_from_args, load_config_for_run) call this last.
+        """
+        if self.data.dataset_type == "polsess":
+            data_root = Path(self.data.polsess.data_root)
+            if not data_root.exists():
+                raise FileNotFoundError(
+                    f"Data root does not exist: {data_root}\n"
+                    f"Set via --data-root CLI arg or POLSESS_DATA_ROOT environment variable"
+                )
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -182,14 +338,14 @@ class Config:
         if self.model.model_type == "convtasnet" and self.model.convtasnet is None:
             self.model.convtasnet = ConvTasNetParams()
 
-        # Validate paths (dataset-specific)
-        if self.data.dataset_type == "polsess":
-            data_root = Path(self.data.polsess.data_root)
-            if not data_root.exists():
-                raise FileNotFoundError(
-                    f"Data root does not exist: {data_root}\n"
-                    f"Set via --data-root CLI arg or POLSESS_DATA_ROOT environment variable"
-                )
+        # NB: the data-root existence check deliberately does NOT live here.
+        # __post_init__ runs at construction, i.e. inside load_config_from_dict,
+        # which is *before* apply_cli_overrides gets to see --data-root. Checking
+        # here made --data-root and --resume unusable on any machine whose
+        # default POLSESS_DATA_ROOT is absent: the error fired first and told the
+        # user to pass the very flag that could never be reached. The check now
+        # lives in validate_data_root(), called by the entry points once
+        # overrides have been applied.
 
         # Validate task
         if self.data.task not in ["ES", "EB", "SB"]:
@@ -197,25 +353,35 @@ class Config:
                 f"Invalid task: {self.data.task}. Must be 'ES', 'EB' or 'SB'."
             )
 
-        # Adjust model output sources based on task
-        if self.data.task in ["ES", "EB"]:
-            if self.model.model_type == "convtasnet":
-                self.model.convtasnet.C = 1
-            elif self.model.model_type == "sepformer":
-                self.model.sepformer.C = 1
-            elif self.model.model_type == "dprnn":
-                self.model.dprnn.C = 1
-            elif self.model.model_type == "spmamba":
-                self.model.spmamba.n_srcs = 1
-        elif self.data.task == "SB":
-            if self.model.model_type == "convtasnet":
-                self.model.convtasnet.C = 2
-            elif self.model.model_type == "sepformer":
-                self.model.sepformer.C = 2
-            elif self.model.model_type == "dprnn":
-                self.model.dprnn.C = 2
-            elif self.model.model_type == "spmamba":
-                self.model.spmamba.n_srcs = 2
+        # Adjust model output sources based on task (CLAUDE.md "Common Pitfalls" #3):
+        # ES/EB target a single source, SB targets both — this silently
+        # overrides whatever the YAML/CLI set for the model's output-source
+        # field. "Silently" is the operative word: log a line whenever this
+        # actually changes something, since otherwise a YAML author who set
+        # e.g. sepformer.C=2 under task=ES would never learn it was overridden.
+        target_c = 1 if self.data.task in ("ES", "EB") else 2
+        # model_type -> name of that model's output-source-count field.
+        # Every model calls it "C" except SPMamba, which calls it "n_srcs".
+        C_ATTR_BY_MODEL_TYPE = {
+            "convtasnet": "C",
+            "sepformer": "C",
+            "mossformer2": "C",
+            "tf_mossformer": "C",
+            "dprnn": "C",
+            "spmamba": "n_srcs",
+            "mamba_tasnet": "C",
+            "dpmamba": "C",
+        }
+        attr_name = C_ATTR_BY_MODEL_TYPE.get(self.model.model_type)
+        if attr_name is not None:
+            params_obj = getattr(self.model, self.model.model_type)
+            current_value = getattr(params_obj, attr_name)
+            if current_value != target_c:
+                print(
+                    f"task={self.data.task} forces {self.model.model_type}.{attr_name} "
+                    f"{current_value}->{target_c}"
+                )
+            setattr(params_obj, attr_name, target_c)
 
     def summary(self, runtime_info: dict = None) -> str:
         """Generate comprehensive configuration summary.
@@ -238,6 +404,7 @@ class Config:
 
         lines.extend([
             f"  Task: {self.data.task}",
+            f"  Sample rate: {self.data.sample_rate} Hz",
             f"  Batch size: {self.data.batch_size}",
             f"  Workers: {self.data.num_workers} (prefetch={self.data.prefetch_factor})",
         ])
@@ -277,7 +444,24 @@ class Config:
                 f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
                 f"  Transformer: blocks={p.num_blocks}, layers={p.num_layers}, d_model={p.d_model}",
                 f"  Attention: heads={p.nhead}, d_ffn={p.d_ffn}, dropout={p.dropout}",
+                f"  Positional encoding: {p.use_positional_encoding}",
                 f"  Chunking: chunk={p.chunk_size}, hop={p.hop_size}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "mossformer2":
+            p = self.model.mossformer2
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.kernel_size // 2}",
+                f"  Backbone: MossFormer + gated-FSMN, blocks={p.num_blocks}, attn_dropout={p.attn_dropout}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "tf_mossformer":
+            p = self.model.tf_mossformer
+            lines.extend([
+                f"  STFT: n_fft={p.n_fft}, hop_length={p.hop_length}, window=hann",
+                f"  Backbone: TF-Locoformer blocks={p.num_blocks}, D={p.D}, ffn_hidden={p.ffn_hidden_dim}",
+                f"  Attention: heads={p.n_heads}, windows w_T={p.window_t}/w_F={p.window_f}, "
+                f"gate_kernel={p.gate_kernel_size}, attn_dropout={p.attn_dropout}",
                 f"  Output: C={p.C}",
             ])
         elif mt == "spmamba":
@@ -289,6 +473,23 @@ class Config:
                 f"  Attention: heads={p.attn_n_head}, qk_dim={p.attn_approx_qk_dim}",
                 f"  Output: n_srcs={p.n_srcs}",
             ])
+        elif mt == "mamba_tasnet":
+            p = self.model.mamba_tasnet
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Mamba: bot_dim={p.bot_dim}, n_mamba={p.n_mamba}, expand={p.expand}",
+                f"  SSM: d_state={p.d_state}, d_conv={p.d_conv}, rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
+            ])
+        elif mt == "dpmamba":
+            p = self.model.dpmamba
+            lines.extend([
+                f"  Encoder: N={p.N}, kernel={p.kernel_size}, stride={p.stride}",
+                f"  Dual-path: layers={p.num_layers}, chunk_size={p.chunk_size}",
+                f"  SSM: n_mamba_dp={p.n_mamba_dp}, d_state={p.d_state}, d_conv={p.d_conv}, expand={p.expand}",
+                f"  Norm: rms_norm={p.rms_norm}",
+                f"  Output: C={p.C}",
+            ])
 
         # Training section
         lines.extend([
@@ -296,11 +497,26 @@ class Config:
             "Training:",
             f"  Epochs: {self.training.num_epochs}",
             f"  LR: {self.training.lr:.2e}",
+            f"  Optimizer: {self.training.optimizer}"
+            + (
+                f" (linear warmup over {self.training.warmup_steps} steps)"
+                if self.training.warmup_steps
+                else ""
+            ),
             f"  Weight decay: {self.training.weight_decay:.2e}",
             f"  Grad clip norm: {self.training.grad_clip_norm}",
             f"  LR scheduler: factor={self.training.lr_factor}, patience={self.training.lr_patience}",
             f"  Seed: {self.training.seed}",
-            f"  AMP: {self.training.use_amp}",
+            # Mirrors Trainer._setup_amp dispatch: Mamba + MossFormer2 +
+            # TF-MossFormer train in bf16 (no GradScaler), everything else
+            # fp16 + GradScaler.
+            f"  AMP: {self.training.use_amp}"
+            + (
+                " (bf16, no GradScaler)"
+                if self.training.use_amp
+                and mt in ("spmamba", "mamba_tasnet", "dpmamba", "mossformer2", "tf_mossformer")
+                else " (fp16 + GradScaler)" if self.training.use_amp else ""
+            ),
         ])
 
         if self.training.grad_accumulation_steps > 1:
@@ -321,6 +537,19 @@ class Config:
         if self.training.validation_variants:
             lines.append(f"  Validation variants: {self.training.validation_variants}")
 
+        if self.training.per_variant_validation:
+            lines.append("  Per-variant validation: enabled (monitored metric = avg SI-SDRi)")
+
+        # Only surface determinism when it is non-default, so the default summary
+        # output stays byte-identical to before this flag existed.
+        if self.training.deterministic is not None:
+            mode = (
+                "strict (use_deterministic_algorithms + CUBLAS_WORKSPACE_CONFIG)"
+                if self.training.deterministic
+                else "relaxed (cudnn.benchmark=True)"
+            )
+            lines.append(f"  Determinism: {mode}")
+
         if self.training.use_wandb:
             lines.extend(["", "Logging (W&B):"])
             lines.append(f"  Project: {self.training.wandb_project}")
@@ -333,18 +562,23 @@ class Config:
         return "\n".join(lines)
 
 
-def load_config_from_yaml(yaml_path: str) -> Config:
-    """Load configuration from YAML file."""
-    yaml_path = Path(yaml_path)
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"Config file not found: {yaml_path}")
+def load_config_from_dict(config_dict: dict) -> Config:
+    """Load configuration from a nested dict (same structure as YAML/checkpoint configs)."""
+    data_dict = dict(config_dict.get("data", {}) or {})
+    model_dict = dict(config_dict.get("model", {}) or {})
+    training_dict = dict(config_dict.get("training", {}) or {})
 
-    with open(yaml_path, "r") as f:
-        config_dict = yaml.safe_load(f)
-
-    data_dict = config_dict.get("data", {}) or {}
-    model_dict = config_dict.get("model", {}) or {}
-    training_dict = config_dict.get("training", {}) or {}
+    # Backward compat: drop nested params for models not defined on ModelConfig
+    # so that checkpoints/YAMLs written while such a model existed still load —
+    # otherwise the stray key trips ModelConfig(**model_dict). `resepformer` was
+    # removed 2026-06-17 (commit 0a27a28); `spmamba3` lives only on the
+    # feature/spmamba3-rebuild branch, so `spmamba3: null` lingers in configs
+    # here. The field guard keeps this correct on that branch (where spmamba3 IS
+    # a ModelConfig field, so its saved params must be preserved, not dropped).
+    _model_field_names = {f.name for f in fields(ModelConfig)}
+    for removed_model in ("resepformer", "spmamba3"):
+        if removed_model not in _model_field_names:
+            model_dict.pop(removed_model, None)
 
     # Handle nested dataset-specific params
     polsess_dict = data_dict.pop("polsess", None)
@@ -357,23 +591,55 @@ def load_config_from_yaml(yaml_path: str) -> Config:
     sepformer_dict = model_dict.pop("sepformer", None)
     sepformer_params = SepFormerParams(**sepformer_dict) if sepformer_dict else None
 
+    mossformer2_dict = model_dict.pop("mossformer2", None)
+    mossformer2_params = MossFormer2Params(**mossformer2_dict) if mossformer2_dict else None
+
+    tf_mossformer_dict = model_dict.pop("tf_mossformer", None)
+    tf_mossformer_params = TFMossFormerParams(**tf_mossformer_dict) if tf_mossformer_dict else None
+
     dprnn_dict = model_dict.pop("dprnn", None)
     dprnn_params = DPRNNParams(**dprnn_dict) if dprnn_dict else None
 
     spmamba_dict = model_dict.pop("spmamba", None)
+    if spmamba_dict:
+        # Backward compat: `sample_rate` was removed from SPMambaParams; drop it
+        # silently from legacy YAMLs and pre-2026-04 checkpoint configs.
+        spmamba_dict.pop("sample_rate", None)
     spmamba_params = SPMambaParams(**spmamba_dict) if spmamba_dict else None
+
+    mamba_tasnet_dict = model_dict.pop("mamba_tasnet", None)
+    mamba_tasnet_params = MambaTasNetParams(**mamba_tasnet_dict) if mamba_tasnet_dict else None
+
+    dpmamba_dict = model_dict.pop("dpmamba", None)
+    dpmamba_params = DPMambaParams(**dpmamba_dict) if dpmamba_dict else None
 
     data_config = DataConfig(**data_dict, polsess=polsess_params)
     model_config = ModelConfig(
         **model_dict,
         convtasnet=convtasnet_params,
         sepformer=sepformer_params,
+        mossformer2=mossformer2_params,
+        tf_mossformer=tf_mossformer_params,
         dprnn=dprnn_params,
         spmamba=spmamba_params,
+        mamba_tasnet=mamba_tasnet_params,
+        dpmamba=dpmamba_params,
     )
     training_config = TrainingConfig(**training_dict)
 
     return Config(data=data_config, model=model_config, training=training_config)
+
+
+def load_config_from_yaml(yaml_path: str) -> Config:
+    """Load configuration from YAML file."""
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"Config file not found: {yaml_path}")
+
+    with open(yaml_path, "r") as f:
+        config_dict = yaml.safe_load(f)
+
+    return load_config_from_dict(config_dict)
 
 
 def save_config_to_yaml(config: Config, yaml_path: str):
@@ -392,11 +658,22 @@ def save_config_to_yaml(config: Config, yaml_path: str):
             model_dict["convtasnet"] = value
         elif key == "sepformer" and value is not None:
             model_dict["sepformer"] = value
+        elif key == "mossformer2" and value is not None:
+            model_dict["mossformer2"] = value
+        elif key == "tf_mossformer" and value is not None:
+            model_dict["tf_mossformer"] = value
         elif key == "dprnn" and value is not None:
             model_dict["dprnn"] = value
         elif key == "spmamba" and value is not None:
             model_dict["spmamba"] = value
-        elif key not in ["convtasnet", "sepformer", "dprnn", "spmamba"]:
+        elif key == "mamba_tasnet" and value is not None:
+            model_dict["mamba_tasnet"] = value
+        elif key == "dpmamba" and value is not None:
+            model_dict["dpmamba"] = value
+        elif key not in [
+            "convtasnet", "sepformer", "mossformer2", "tf_mossformer", "dprnn",
+            "spmamba", "mamba_tasnet", "dpmamba",
+        ]:
             model_dict[key] = value
 
     config_dict = {
@@ -483,6 +760,13 @@ def create_config_parser() -> "argparse.ArgumentParser":
         help="Disable W&B logging",
     )
 
+    # Training overrides
+    parser.add_argument(
+        "--no-amp",
+        action="store_true",
+        help="Disable automatic mixed precision (overrides YAML use_amp)",
+    )
+
     # Reproducibility
     parser.add_argument(
         "--seed",
@@ -523,6 +807,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.resume_from = args.resume
     if args.no_wandb:
         config.training.use_wandb = False
+    if args.no_amp:
+        config.training.use_amp = False
     if args.save_all_checkpoints:
         config.training.save_all_checkpoints = True
     if args.seed is not None:
@@ -535,6 +821,7 @@ def get_config_from_args() -> Config:
     """Parse command-line arguments and create configuration.
 
     Main entry point that orchestrates config loading from CLI.
+    Config priority: --config YAML > checkpoint config > defaults.
 
     Note: Most parameters should be set in YAML config files.
     CLI args are for quick switches and overrides only.
@@ -543,6 +830,8 @@ def get_config_from_args() -> Config:
     Returns:
         Validated Config object with CLI overrides applied.
     """
+    import torch as _torch
+
     parser = create_config_parser()
     args = parser.parse_args()
 
@@ -550,14 +839,30 @@ def get_config_from_args() -> Config:
     if args.config:
         print(f"Loading config from: {args.config}")
         config = load_config_from_yaml(args.config)
+    elif args.resume:
+        # No --config but --resume: load config from checkpoint
+        print(f"Loading config from checkpoint: {args.resume}")
+        checkpoint = _torch.load(args.resume, map_location="cpu", weights_only=False)
+        ckpt_config = checkpoint.get("config")
+        if ckpt_config is None:
+            raise ValueError(
+                f"Checkpoint '{args.resume}' does not contain a config. "
+                "Please provide --config explicitly."
+            )
+        config = load_config_from_dict(ckpt_config)
+        config._loaded_from_checkpoint = True
+        del checkpoint  # free memory before training starts
     else:
         config = Config()
 
     # Apply CLI overrides
     config = apply_cli_overrides(config, args)
 
-    # Validate and return
+    # Validate and return. validate_data_root() runs last, so --data-root (and a
+    # --resume checkpoint recorded on another machine) can point the run at a
+    # root that exists here.
     config.__post_init__()
+    config.validate_data_root()
     return config
 
 
@@ -572,9 +877,15 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
     and then apply common sweep overrides found in the sweep config.
 
     Supported sweep override keys: model_B, model_H, weight_decay,
-    grad_clip_norm, batch_size, lr, epochs, num_epochs, device, seed,
-    task, model_type, lr_factor, lr_patience, curriculum_learning,
-    validation_variants, dropout, chunk_size, rnn_type
+    grad_clip_norm, batch_size, sample_rate, lr, epochs, num_epochs, device, seed,
+    task, model_type, optimizer, warmup_steps, lr_factor, lr_patience,
+    curriculum_learning, validation_variants, dropout, chunk_size, rnn_type.
+    Note: dropout and chunk_size are routed to the active model's params
+    (DPRNN, SepFormer, MossFormer2 or TF-MossFormer — where dropout maps to
+    attn_dropout).
+    Any sweep key that isn't consumed by one of the mappings above (e.g. an
+    architecture knob for SPMamba/Mamba-family models, which aren't covered
+    here) is reported via a warning rather than silently dropped.
     """
     if sweep_config is None:
         return get_config_from_args()
@@ -595,13 +906,18 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         "num_epochs":               (config.training, "num_epochs"),
         "seed":                     (config.training, "seed"),
         "use_amp":                  (config.training, "use_amp"),
+        "optimizer":                (config.training, "optimizer"),
+        "warmup_steps":             (config.training, "warmup_steps"),
         "early_stopping_patience":  (config.training, "early_stopping_patience"),
         "save_all_checkpoints":     (config.training, "save_all_checkpoints"),
         "curriculum_learning":      (config.training, "curriculum_learning"),
         "validation_variants":      (config.training, "validation_variants"),
+        "per_variant_validation":   (config.training, "per_variant_validation"),
+        "deterministic":            (config.training, "deterministic"),
         # Data
         "task":                     (config.data, "task"),
         "batch_size":               (config.data, "batch_size"),
+        "sample_rate":              (config.data, "sample_rate"),
         # Model
         "model_type":               (config.model, "model_type"),
     }
@@ -626,6 +942,51 @@ def load_config_for_run(sweep_config: Optional[dict] = None) -> Config:
         if key in sweep_config and config.model.dprnn is not None:
             setattr(config.model.dprnn, key, getattr(sweep_config, key))
 
+    # Special cases: SepFormer architecture overrides (nested)
+    # Note: hop_size is NOT set here even when chunk_size changes — it's an
+    # inert field (SpeechBrain's Dual_Path_Model derives hop = K // 2
+    # internally and never reads hop_size; see SepFormerParams).
+    SEPFORMER_OVERRIDES = ["dropout", "chunk_size"]
+    for key in SEPFORMER_OVERRIDES:
+        if key in sweep_config and config.model.sepformer is not None:
+            setattr(config.model.sepformer, key, getattr(sweep_config, key))
+
+    # Special cases: MossFormer2 architecture overrides (nested)
+    if "dropout" in sweep_config and config.model.mossformer2 is not None:
+        config.model.mossformer2.attn_dropout = sweep_config.dropout
+
+    # Special cases: TF-MossFormer architecture overrides (nested)
+    if "dropout" in sweep_config and config.model.tf_mossformer is not None:
+        config.model.tf_mossformer.attn_dropout = sweep_config.dropout
+
+    # Gap 15: warn on unconsumed sweep keys instead of silently dropping them
+    # (this is how an SPMamba/Mamba-family architecture knob in a sweep YAML
+    # would previously vanish with no error — those models have no override
+    # mapping above). "_"-prefixed keys are treated as W&B-internal bookkeeping
+    # (e.g. "_wandb") and are not flagged.
+    KNOWN_SWEEP_KEYS = (
+        set(OVERRIDE_MAP)
+        | {"config", "epochs", "model_B", "model_H"}
+        | set(DPRNN_OVERRIDES)
+        | set(SEPFORMER_OVERRIDES)
+    )
+    try:
+        sweep_keys = set(sweep_config.keys())
+    except (AttributeError, TypeError):
+        sweep_keys = set()  # sweep_config doesn't support key iteration; nothing to check
+    unconsumed = {k for k in sweep_keys if k not in KNOWN_SWEEP_KEYS and not k.startswith("_")}
+    if unconsumed:
+        warnings.warn(
+            f"load_config_for_run: sweep config key(s) {sorted(unconsumed)} were not "
+            "recognized by any override mapping and were silently ignored. If this is "
+            "an architecture knob (e.g. for SPMamba/Mamba-family models, which have no "
+            "override mapping above), add it to OVERRIDE_MAP or a model-specific "
+            "overrides list in config.py.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # Validate and return
     config.__post_init__()
+    config.validate_data_root()
     return config

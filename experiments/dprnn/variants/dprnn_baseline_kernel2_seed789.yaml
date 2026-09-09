@@ -1,0 +1,77 @@
+# DPRNN baseline, kernel_size=2 — THIRD SEED for the pilot-corpus triplet.
+# Based on: dprnn_baseline_kernel2.yaml (identical except seed + run name).
+# Paper: Luo et al. 2020, "Dual-path RNN" (https://arxiv.org/abs/1910.06379)
+#
+# Why this file exists (see thesis ch5, item N4): Tabele 5.1/5.2 quote k=2 as a
+# 3-seed mean, but one of the three collapsed, so the published 4.57 is
+# "2nd excluded" — the lone non-3-seed cell in an otherwise 3-seed protocol.
+# As-run history (W&B project polsess-separation):
+#   seed 42  -> d9pw9f7x  4.58
+#   seed 123 -> qak7hopb  3.76  COLLAPSED  <- the one this run replaces
+#   seed 456 -> mwxwnyvr  4.56
+# All of (42, 123, 456) are therefore spent; this run uses 789 rather than
+# re-drawing the seed that already collapsed (author ruling 2026-08-09).
+#
+# Ran against the PILOT corpus (PolSESS_C_both), passed explicitly with --data-root
+# rather than inherited from POLSESS_DATA_ROOT (several corpora shared the box).
+#
+# The first epochs were watched closely: k=2 has a history of one collapsed seed.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB  # Speech enhancement task (clean speech)
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: dprnn
+  dprnn:
+    N: 64  # Encoder channels (paper uses 64 for best efficiency)
+    kernel_size: 2
+    stride: 1
+    C: 2  # Output sources (2 for SB task)
+    num_layers: 6  # Number of dual-path blocks (paper uses 6)
+    chunk_size: 250
+    rnn_type: LSTM  # RNN type
+    hidden_size: 128  # Hidden units per direction (output=256 for bidirectional)
+    num_rnn_layers: 1  # RNN depth within each block
+    dropout: 0.0  # Dropout probability
+    bidirectional: true  # Bidirectional inter-chunk RNN
+    norm_type: ln  # Layer normalization
+
+training:
+  seed: 789  # third seed; 42/123/456 all spent (see header)
+  lr: 0.001
+  weight_decay: 0.0  # Paper uses 0
+  grad_clip_norm: 5.0  # Paper uses 5
+  lr_factor: 0.50
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  # Distinct from the original `dprnn-baseline-sb-kernel2`, which all three
+  # prior seeds shared — W&B display names collide across runs.
+  wandb_run_name: dprnn-baseline-sb-kernel2-seed789
+  log_file: null
+  log_level: INFO
+  resume_from: null
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "R"]
+    - epoch: 4
+      variants: ["C", "R", "SR", "S"]
+    - epoch: 8
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

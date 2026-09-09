@@ -1,0 +1,69 @@
+# MossFormer2 (SepFormer-matched ~26.4M) 128k final training — winner of sweep 1bzguteg.
+#
+# Hyperparameters lifted from the top run by val_si_sdri (avg over all 8 MM-IPC variants):
+#   2ne6lqpg / fast-sweep-7 — val_si_sdri = 15.465 @ epoch 8
+#   https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/runs/2ne6lqpg
+#
+# Sweep ranking (val_si_sdri @ epoch 8):
+#   1. 2ne6lqpg  15.47   lr=2.15e-4  dropout=0.070  wd=2.4e-7  grad_clip=3.07   ← this config
+#   2. fybmp3de  15.43   lr=1.71e-4  dropout=0.103  wd=5.0e-7  grad_clip=3.29
+#   3. d7hy1qzf  15.33   lr=2.13e-4  dropout=0.086  wd=4.4e-7  grad_clip=3.46
+#   4. ppekla95  15.29   lr=2.06e-4  dropout=0.078  wd=5.6e-7  grad_clip=3.63
+# Top 4 span 0.18 dB with near-identical configs (lr ~1.7-2.2e-4, clip ~3.1-3.6,
+# wd effectively off, dropout 0.07-0.10) — the optimum is flat in this region.
+#
+# Differences from 128k_matched_sweep_base.yaml:
+#   - lr / attn_dropout / weight_decay / grad_clip_norm pinned to the winner.
+#   - num_epochs 8 → 100 (final training, no Hyperband cap; early stopping governs).
+#   - early_stopping_patience 5 → 10 (per the sweep YAML's final-training protocol).
+#   - val_max_samples 1024 → omitted (full validation set).
+#   - wandb_project polsess-thesis-experiments → polsess-separation-128k.
+#   - wandb_run_name pinned for reproducibility.
+#
+# Cost: ~3.4 h/epoch at 128k → budget ~2 weeks wall-clock if early stopping
+# lands in the 60-80 epoch range (SepFormer 128k profile).
+
+data:
+  dataset_type: polsess
+  batch_size: 2          # Matches scaling runs; ~26M model is memory-bound.
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted → full validation set.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.07030979282783663   # fast-sweep-7 (sweep key `dropout`)
+
+training:
+  # ---- Winner of sweep 1bzguteg (fast-sweep-7) ----
+  lr: 0.00021453268112520653
+  weight_decay: 0.0000002411171709120079
+  grad_clip_norm: 3.069697862323048
+  # ---- Pinned for final training ----
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 100
+  early_stopping_patience: 10
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: mossformer2_matched_128k_final_42
+  log_level: INFO
+
+  # No curriculum: scaling runs already used all variants from epoch 1.
+
+  # Per-variant validation drives the LR scheduler and best-checkpoint logic
+  # via avg SI-SDRi; all 8 variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

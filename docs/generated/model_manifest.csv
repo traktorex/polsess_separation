@@ -1,0 +1,20 @@
+model_type,size_variant,config_path,task,out_sources,param_count,param_millions,documented_millions,status
+convtasnet,es (C=1),experiments/convtasnet/baseline.yaml,ES,1,8643136,8.6431,8.64,ok
+convtasnet,sb (C=2),experiments/convtasnet/sb_task.yaml,SB,2,8708672,8.7087,,ok
+dprnn,default,experiments/dprnn/dprnn_baseline.yaml,SB,2,2609793,2.6098,2.61,ok
+sepformer,default,experiments/sepformer/sepformer_baseline_positionalenc.yaml,SB,2,25679361,25.6794,25.68,ok
+mossformer2,matched,experiments/mossformer2/mossformer2_matched.yaml,SB,2,26409022,26.409,26.41,ok
+mossformer2,full,experiments/mossformer2/mossformer2_full.yaml,SB,2,55735410,55.7354,55.74,ok
+spmamba,reduced,experiments/spmamba/spmamba_sb_reduced.yaml,SB,2,1156368,1.1564,,ok
+spmamba,full,experiments/spmamba/spmamba_sb.yaml,SB,2,6094498,6.0945,,ok
+mamba_tasnet,xs,experiments/mamba_tasnet/mamba_tasnet_xs.yaml,SB,2,2210176,2.2102,,ok
+mamba_tasnet,s,experiments/mamba_tasnet/mamba_tasnet_s.yaml,SB,2,7926528,7.9265,,ok
+mamba_tasnet,m,experiments/mamba_tasnet/mamba_tasnet_m.yaml,SB,2,15647488,15.6475,,ok
+mamba_tasnet,l,experiments/mamba_tasnet/mamba_tasnet_l.yaml,SB,2,58951168,58.9512,,ok
+dpmamba,xs,experiments/dpmamba/dpmamba_xs.yaml,SB,2,2265857,2.2659,,ok
+dpmamba,s,experiments/dpmamba/dpmamba_s.yaml,SB,2,8136193,8.1362,,ok
+dpmamba,m,experiments/dpmamba/dpmamba_m.yaml,SB,2,15869441,15.8694,,ok
+dpmamba,l,experiments/dpmamba/dpmamba_l.yaml,SB,2,59788289,59.7883,,ok
+tf_mossformer,s,experiments/tf_mossformer/s_8k.yaml,SB,2,5917308,5.9173,5.92,ok
+tf_mossformer,m,experiments/tf_mossformer/m_8k.yaml,SB,2,17338020,17.338,17.34,ok
+tf_mossformer,l,experiments/tf_mossformer/l_8k.yaml,SB,2,26003364,26.0034,26.0,ok

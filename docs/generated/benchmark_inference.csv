@@ -1,0 +1,18 @@
+model,size,config,params,duration_s,gmacs,gmacs_per_s_audio,gflops,gflops_per_s_audio,latency_ms_median,latency_ms_iqr,rtf,peak_infer_mem_mb,gmacs_aten_crosscheck,gpu,torch,cuda,ptflops
+ConvTasNet,sb,experiments/convtasnet/sb_task.yaml,8708672,4.0,34.8104,8.7026,69.6207,17.4052,16.83,5.80,0.00421,85.1,34.5780,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPRNN (k=16),default,experiments/dprnn/dprnn_baseline.yaml,2609793,4.0,21.6216,5.4054,43.2432,10.8108,14.23,0.49,0.00356,176.4,1.8063,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPRNN (k=2),k2,experiments/dprnn/variants/dprnn_baseline_kernel2.yaml,2608001,4.0,170.0600,42.5150,340.1200,85.0300,85.40,0.75,0.02135,1133.2,14.1394,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SepFormer,default,experiments/sepformer/sepformer_baseline_positionalenc.yaml,25679361,4.0,238.3977,59.5994,476.7955,119.1989,56.61,0.76,0.01415,381.8,236.6828,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SepFormer-reduced,reduced,experiments/sepformer/5-scaling/64k_reduced.yaml,4863745,4.0,48.9303,12.2326,97.8607,24.4652,19.98,5.13,0.00500,176.5,48.2856,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MossFormer2-matched,matched,experiments/mossformer2/mossformer2_matched.yaml,26409022,4.0,157.5814,39.3953,315.1628,78.7907,60.38,7.19,0.01510,356.9,157.0992,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MossFormer2-full,full,experiments/mossformer2/mossformer2_full.yaml,55735410,4.0,332.5802,83.1450,665.1604,166.2901,125.83,13.84,0.03146,468.9,331.4955,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (reduced),reduced,experiments/spmamba/spmamba_sb_reduced.yaml,1156368,4.0,87.3716,21.8429,174.7431,43.6858,77.45,6.66,0.01936,520.6,67.5023,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+SPMamba (full),full,experiments/spmamba/spmamba_sb.yaml,6094498,4.0,420.9817,105.2454,841.9633,210.4908,212.38,6.82,0.05310,1004.5,362.5884,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MambaTasNet-XS,xs,experiments/mamba_tasnet/mamba_tasnet_xs.yaml,2210176,4.0,10.5589,2.6397,21.1178,5.2794,17.24,8.70,0.00431,65.4,8.0835,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MambaTasNet-S,s,experiments/mamba_tasnet/mamba_tasnet_s.yaml,7926528,4.0,35.1390,8.7847,70.2780,17.5695,14.91,5.62,0.00373,134.5,30.1882,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MambaTasNet-M,m,experiments/mamba_tasnet/mamba_tasnet_m.yaml,15647488,4.0,69.4713,17.3678,138.9425,34.7356,33.59,9.23,0.00840,164.0,59.5410,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+MambaTasNet-L,l,experiments/mamba_tasnet/mamba_tasnet_l.yaml,58951168,4.0,249.5396,62.3849,499.0793,124.7698,69.24,0.25,0.01731,426.6,229.6790,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPMamba-XS,xs,experiments/dpmamba/dpmamba_xs.yaml,2265857,4.0,22.7939,5.6985,45.5877,11.3969,32.59,0.52,0.00815,120.4,17.4734,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPMamba-S,s,experiments/dpmamba/dpmamba_s.yaml,8136193,4.0,76.0290,19.0072,152.0579,38.0145,66.70,0.38,0.01667,246.1,65.3881,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPMamba-M,m,experiments/dpmamba/dpmamba_m.yaml,15869441,4.0,149.0729,37.2682,298.1459,74.5365,131.83,0.73,0.03296,275.6,127.7783,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5
+DPMamba-L,l,experiments/dpmamba/dpmamba_l.yaml,59788289,4.0,535.7785,133.9446,1071.5570,267.8893,288.25,2.63,0.07206,649.8,493.1893,NVIDIA GeForce RTX 4070,2.8.0+cu128,12.8,0.7.5

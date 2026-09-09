@@ -1,0 +1,75 @@
+# MossFormer2 (SepFormer-matched ~26.4M) 128k — MM-IPC diversity ablation: NO-EVENT arm.
+#
+# Identical to 128k_matched_final.yaml (same architecture, hyperparameters, 128k
+# samples, seed 42) EXCEPT training is restricted to the four event-free MM-IPC
+# variants {C, S, R, SR}. This emulates a LibriMix/WHAMR-style regime (clean +
+# ambient scene + reverb, no discrete event sounds), to measure how much PolSESS's
+# event diversity contributes to downstream ASR.
+#
+# MM-IPC training-diversity ablation ladder (each arm clones this base, varying
+# ONLY the training variant set; validation + selection protocol held identical):
+#   full   — all 8 variants   → reuse run 6xuv1tob (128k_matched_final.yaml, curriculum: null)
+#   no-E   — {C, S, R, SR}    → THIS FILE
+#   C-only — {C}              → 128k_matched_Conly_final.yaml
+# Decomposition: C-only -> no-E adds scene+reverb exposure; no-E -> full adds events.
+#
+# Why these four variants keep the full 128k set: _filter_metadata only drops rows
+# when the variant set is purely indoor or purely outdoor; {C,S,R,SR} spans both
+# pools (S outdoor; R,SR indoor; C in both), so no samples are dropped. C is kept
+# because the full arm trained on C too (INDOOR/OUTDOOR carry C since the initial
+# commit) — this stays consistent with the baseline rather than introducing a
+# variant full never saw.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.07030979282783663   # fast-sweep-7 winner (sweep key `dropout`)
+
+training:
+  # ---- Winner of sweep 1bzguteg (fast-sweep-7); identical to 128k_matched_final ----
+  lr: 0.00021453268112520653
+  weight_decay: 0.0000002411171709120079
+  grad_clip_norm: 3.069697862323048
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 100
+  early_stopping_patience: 10
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: mossformer2_matched_128k_noE_42
+
+  log_level: INFO
+
+  # MM-IPC diversity ablation: restrict training to the event-free variants.
+  # A single-entry curriculum is the only path to pin the training variant set
+  # (train.py:51-53 reads variants from curriculum_learning[0]); lr_scheduler:start
+  # makes the LR schedule behave identically to the curriculum:null full arm from
+  # epoch 1 (ReduceLROnPlateau cannot act before the first epoch's validation).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C", "S", "R", "SR"]
+      lr_scheduler: start
+
+  # Identical to the full arm: validate on all 8 variants; best checkpoint on the
+  # all-8 avg SI-SDRi. Keeping selection identical isolates the training variant set
+  # as the single changed variable.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

@@ -1,0 +1,53 @@
+# MossFormer2 (SepFormer-matched ~26.4M) 128k sweep base config — final training HPO.
+# Used as the `config` entry in sweeps/6-final-training/mossformer2_matched_128k_bayes.yaml.
+# Sweep tunes: lr, grad_clip_norm, weight_decay, and dropout (routed to
+# mossformer2.attn_dropout). All other values pinned, including the per-variant
+# validation (all 8 MM-IPC variants) that drives the LR scheduler and the
+# val_si_sdri sweep metric — same protocol as the SepFormer 128k sweep.
+#
+# Cost: ~3.4 h/epoch at 128k (extrapolated from 64k run q3hzv58q at 1.7 h/epoch).
+# Hyperband cap = 8 epochs (~27 h per surviving run, losers stopped at ~14 h).
+
+data:
+  dataset_type: polsess
+  batch_size: 2          # Matches scaling runs; ~26M model is memory-bound.
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  val_max_samples: 1024  # Trimmed val set — keeps 8-variant validation cheap at sweep time.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.1  # Overridden by the sweep (`dropout`). 0.1 = scaling-run value.
+
+training:
+  # ---- Overridden by the sweep ----
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  # ---- Pinned for this sweep ----
+  lr_factor: 0.5
+  lr_patience: 1          # Aggressive: drop LR after one stagnant epoch. Per-variant val stabilises the signal.
+  num_epochs: 8           # Hyperband max_iter = 8.
+  early_stopping_patience: 5
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-thesis-experiments
+  log_level: INFO
+
+  # No curriculum: scaling runs already used all variants from epoch 1.
+
+  # Per-variant validation drives the LR scheduler and best-checkpoint logic
+  # via avg SI-SDRi; all 8 variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

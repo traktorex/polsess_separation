@@ -26,14 +26,18 @@ model:
     norm_type: ln
 
 training:
-  # Core hyperparameters - these will be set from proxy sweep results
-  lr: 0.001          # Placeholder - override via sweep
-  weight_decay: 0.00001  # Placeholder - override via sweep
-  grad_clip_norm: 5.0    # Placeholder - override via sweep
-  
-  # LR scheduler params - these will be swept
-  lr_factor: 0.7     # Placeholder - will be swept
-  lr_patience: 3     # Placeholder - will be swept
+  # Core hyperparameters. This file is the base config of the Experiment B LR-scheduler
+  # grid searches (sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_expB_lr_sweep_*.yaml,
+  # 46 runs), and each sweep pinned lr / weight_decay / grad_clip_norm to its own top
+  # proxy-sweep config, so the values below apply only if the file is run standalone.
+  lr: 0.001
+  weight_decay: 0.00001
+  grad_clip_norm: 5.0
+
+  # LR scheduler parameters — these two were the grid-searched ones
+  # (lr_factor over 0.40/0.55/0.70/0.85, lr_patience over 2/3/4/5).
+  lr_factor: 0.7
+  lr_patience: 3
   
   num_epochs: 80
   use_amp: true

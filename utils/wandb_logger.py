@@ -26,12 +26,21 @@ class WandbLogger:
         logger: Optional[logging.Logger] = None,
         run: Optional[Any] = None,
         upload_checkpoints: bool = True,
+        provenance: Optional[Dict[str, Any]] = None,
+        resume_id: Optional[str] = None,
     ):
         """Initialize W&B logger. If run is provided, uses it instead of creating new one.
-        
+
         Args:
             upload_checkpoints: If False, skip uploading model artifacts to W&B.
                 Set to False during sweeps to avoid storage bloat.
+            provenance: Optional run manifest (see ``collect_run_manifest``);
+                attached to the run config under a ``"provenance"`` key so the
+                git SHA / env / GPU that produced the run are visible in W&B.
+            resume_id: Optional W&B run id to reconnect to (survey gap 14). When
+                set (and no existing ``run`` is passed) the run is created with
+                ``id=<resume_id>, resume="must"`` so a resumed training continues
+                the *same* W&B run instead of orphaning a fresh one.
         """
         self.logger = logger or logging.getLogger("polsess")
         self.enabled = enabled and WANDB_AVAILABLE
@@ -52,6 +61,17 @@ class WandbLogger:
             if run is not None:
                 self.run = run
                 self.logger.info("Using existing W&B run")
+                # Existing-run path (sweeps): attach provenance to the run config
+                # after the fact. allow_val_change since the config already exists.
+                if provenance:
+                    try:
+                        self.run.config.update(
+                            {"provenance": provenance}, allow_val_change=True
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to attach provenance to W&B run config: {e}"
+                        )
             else:
                 config_dict = {}
                 if config:
@@ -64,13 +84,36 @@ class WandbLogger:
                     else:
                         config_dict = config
 
-                self.run = wandb.init(
+                if provenance:
+                    # Nest under its own key so it can't collide with a config field.
+                    config_dict = {**config_dict, "provenance": provenance}
+
+                init_kwargs = dict(
                     project=project,
                     entity=entity,
                     name=run_name,
                     config=config_dict,
-                    resume="allow",
+                    # Console logs: by default the SDK writes one ``output.log``
+                    # per process, so a resumed run *replaces* the earlier
+                    # session's console log in the W&B "Logs" tab. Multipart
+                    # mode writes timestamped parts under ``logs/`` instead, so
+                    # resumed sessions append. With both chunk limits at 0 the
+                    # parts would only upload at run finish, hence the time
+                    # rollover: each part uploads when closed, keeping the tab
+                    # near-live (a tqdm bar spanning a boundary just freezes
+                    # its last line in the earlier part).
+                    settings=wandb.Settings(
+                        console_multipart=True,
+                        console_chunk_max_seconds=600,
+                    ),
                 )
+                if resume_id:
+                    init_kwargs["id"] = resume_id
+                    init_kwargs["resume"] = "must"
+                    self.logger.info(f"Resuming W&B run id={resume_id} (resume='must')")
+                else:
+                    init_kwargs["resume"] = "allow"
+                self.run = wandb.init(**init_kwargs)
 
         except Exception as e:
             self.logger.error(f"Failed to initialize W&B: {e}")

@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 
-from models import get_model
+from models import get_model, MAMBA_MODELS
 
 
 def unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
@@ -19,24 +19,31 @@ def apply_torch_compile(
     model: torch.nn.Module,
     logger: Optional[logging.Logger] = None,
     mode: str = "default",
+    dynamic: Optional[bool] = None,
 ) -> torch.nn.Module:
-    """Apply torch.compile if available (PyTorch 2.0+, Linux only)."""
+    """Apply torch.compile if available (PyTorch 2.0+, Linux only).
+
+    `dynamic` is passed straight to torch.compile: None (default) lets Dynamo
+    auto-detect dynamic shapes; False forces per-shape static specialization
+    (needed by MossFormer2, whose token-shift / group-rearrange cannot be lowered
+    under symbolic shapes — see train.py).
+    """
     if not hasattr(torch, "compile"):
         if logger:
             logger.info("torch.compile not available (PyTorch < 2.0)")
         return model
-    
+
     if sys.platform != "linux":
         if logger:
             logger.info(
                 f"Skipping torch.compile (requires Triton/Linux, detected: {sys.platform})"
             )
         return model
-    
+
     try:
         if logger:
-            logger.info(f"Compiling model with torch.compile (mode={mode})...")
-        compiled_model = torch.compile(model, mode=mode)
+            logger.info(f"Compiling model with torch.compile (mode={mode}, dynamic={dynamic})...")
+        compiled_model = torch.compile(model, mode=mode, dynamic=dynamic)
         if logger:
             logger.info("Model compiled successfully!")
         return compiled_model
@@ -44,6 +51,40 @@ def apply_torch_compile(
         if logger:
             logger.warning(f"torch.compile failed: {e}")
         return model
+
+
+def compile_for_model_type(
+    model: torch.nn.Module,
+    model_type: str,
+    logger: Optional[logging.Logger] = None,
+) -> torch.nn.Module:
+    """Apply torch.compile with per-architecture settings (shared by train.py and
+    train_sweep.py so the dispatch can't drift between them).
+
+      - Mamba: skipped. Dynamo tracing into mamba_ssm.MambaInnerFn breaks the
+        delta/conv1d_out dtype contract on native Linux.
+      - MossFormer2: compiled with dynamic=False. Its vendored rotary block has
+        the seq-len cache disabled (cache_if_possible=False), and its token-shift
+        / group-rearrange cannot be lowered under symbolic shapes — so we force
+        per-shape static specialization. Fixed-length training crops compile once;
+        a new length triggers a one-time static recompile. (If this ever regresses
+        on another torch build, fall back to skipping compile for mossformer2.)
+      - TF-MossFormer: compiled with dynamic=False, same reason — it uses the
+        same rotary-embedding-torch library as MossFormer2, plus a banded
+        attention mask whose shape is a function of the sequence length. Static
+        per-shape specialization compiles each crop length once.
+      - Everything else: torch.compile defaults.
+    """
+    if model_type in MAMBA_MODELS:
+        if logger:
+            logger.info(
+                f"Skipping torch.compile for {model_type} "
+                "(incompatible with mamba_ssm CUDA kernels)."
+            )
+        return model
+    if model_type in ("mossformer2", "tf_mossformer"):
+        return apply_torch_compile(model, logger=logger, dynamic=False)
+    return apply_torch_compile(model, logger=logger)
 
 
 def count_parameters(model: torch.nn.Module, trainable_only: bool = False) -> int:
@@ -66,11 +107,34 @@ def format_parameter_count(num_params: int) -> str:
 def load_checkpoint_file(
     checkpoint_path: str, device: str = "cuda"
 ) -> Dict[str, Any]:
-    """Load checkpoint file from disk."""
+    """Load checkpoint file from disk.
+
+    ``weights_only=False`` is explicit (survey gap 13): our checkpoints carry a
+    pickled config dict (and now a provenance dict), and torch 2.6+ flipped the
+    default to True, which would refuse to unpickle them. This matches config.py.
+    """
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    return torch.load(checkpoint_path, map_location=device)
+    return torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+
+def read_wandb_run_id(checkpoint_path: str) -> Optional[str]:
+    """Peek a checkpoint for its saved W&B run id (survey gap 14).
+
+    Returns the id string written by newer checkpoints, or None for older
+    checkpoints and runs trained with W&B disabled. Loaded on CPU and discarded
+    immediately; only called on ``--resume``, so the extra read is negligible.
+    Never raises — a missing/unreadable checkpoint just yields None (caller falls
+    back to starting a fresh W&B run).
+    """
+    try:
+        ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception:
+        return None
+    run_id = ckpt.get("wandb_run_id") if isinstance(ckpt, dict) else None
+    del ckpt
+    return run_id
 
 
 def load_model_from_checkpoint(
@@ -132,10 +196,37 @@ def load_model_for_inference(
     model_type = config.get("model", {}).get("model_type", "convtasnet")
     model_params = config.get("model", {}).get(model_type, {})
 
+    # Backward compat: SepFormer checkpoints before 2026-03 were trained without
+    # positional encoding (see models/sepformer.py module docstring for details).
+    # Their saved configs lack this key, so default to False to match trained weights.
+    if model_type == "sepformer" and "use_positional_encoding" not in model_params:
+        model_params["use_positional_encoding"] = False
+
+    # Backward compat: `sample_rate` was removed from SPMamba; drop it from
+    # legacy checkpoint configs so SPMamba(**model_params) doesn't TypeError.
+    if model_type == "spmamba":
+        model_params.pop("sample_rate", None)
+
     # Instantiate model and load weights
     model_class = get_model(model_type)
     model = model_class(**model_params)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Backward compat: SpeechBrain renamed SBTransformerBlock's inner attribute
+    # from `transformer` to `mdl` (somewhere between the old training env and now).
+    # Remap checkpoint keys so old checkpoints load into the current model.
+    state_dict = checkpoint["model_state_dict"]
+    if model_type == "sepformer" and any(".transformer." in k for k in state_dict):
+        state_dict = {k.replace(".transformer.", ".mdl."): v for k, v in state_dict.items()}
+
+    # Defensive torch.compile-artifact strip: the save side (train.py) already
+    # unwraps `_orig_mod` before saving, so our own checkpoints never carry the
+    # prefix. This guards externally-produced checkpoints (e.g. saved directly
+    # from a compiled model without unwrapping) so this generic loader doesn't
+    # silently 0-match every key and raise a confusing "missing keys" error.
+    if any(k.startswith("_orig_mod.") for k in state_dict):
+        state_dict = {k[len("_orig_mod."):]: v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 

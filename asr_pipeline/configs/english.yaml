@@ -1,0 +1,69 @@
+# English preset — frcrn_vadstrict.yaml with the transcription stage retargeted
+# to English. Intended for English eval runs, where the input is 2-speaker
+# English rather than the Polish CLARIN universe.
+#
+# Deltas from frcrn_vadstrict.yaml:
+#   transcription.language:         pl -> en
+#   transcription.initial_prompt:   Polish -> English
+#
+# align_model_name is deliberately NOT set (author ruling 2026-06-11): WhisperX
+# picks its per-language default, which for en is the torchaudio
+# WAV2VEC2_ASR_BASE_960H pipeline — same auto mechanism the Polish runs use.
+#
+# hf_token is read from $HF_TOKEN at load (not stored here).
+sample_rate: 16000
+device: cuda
+spill_intermediate: false
+artifact_dir: null
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  num_speakers: 2
+routing:
+  enabled: true
+  min_overlap_dur: 0.0
+  merge_gap: 0.5
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  max_segment_length_s: 8.0
+separation:
+  enabled: true
+  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e31/mossformer2_SB_best_e31.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.5
+  vad_soft_threshold: 0.2
+  vad_attack_frames: 1
+  vad_release_frames: 1
+post_separation_processing:
+  backend: ap_bwe
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
+assembly:
+  enabled: true
+  weak_anchor_warn_below_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: en
+  initial_prompt: A conversation in English.
+  word_timestamps: true
+  # align_model_name omitted -> WhisperX en default (WAV2VEC2_ASR_BASE_960H)
+  transcribe_mixture: true

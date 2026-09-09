@@ -1,0 +1,160 @@
+# B1 16 kHz arm — the DRY-TARGET member of the family (author-picked 2026-08-26).
+#
+# SepFormer trained on WHAMR! at 16 kHz (HF `speechbrain/sepformer-whamr16k`,
+# Apache-2.0). Model card: Test-Set SI-SNRi 13.5 dB, SDRi 13.0 dB. WHAMR! is
+# WSJ0-2mix plus environmental noise plus synthetic reverberation.
+#
+# WHY THIS ARM EXISTS. The other two 16 kHz arms (TIGER/EchoSet,
+# SPMamba/Echo2Mix) are both trained against REVERBERANT targets, so on their
+# own they would confound "16 kHz separator" with "corpus that does not
+# dereverberate". This arm is the control: WHAMR's targets are ANECHOIC, the
+# same convention as PolSESS SB, so a 16 kHz-vs-8 kHz reading is available
+# without the convention mismatch. It is also the only 16 kHz arm whose
+# architecture is one of the thesis's own (SepFormer).
+#
+# TARGET CONVENTION — **CONFIRMED DRY** (verified 2026-08-26, two independent
+# sources, because the HF card itself does not say):
+#   * Asteroid's canonical WHAMR task table maps ALL FOUR tasks — including
+#     `sep_reverb` and `sep_reverb_noisy` — onto targets `s1_anechoic` /
+#     `s2_anechoic`; only the MIXTURE changes between tasks.
+#   * SpeechBrain's own `recipes/WHAMandWHAMR/prepare_data.py` pairs the
+#     reverberant mixture (`mix_both_reverb/`) with anechoic targets
+#     (`s1_anechoic/`, `s2_anechoic/`) for training; reverberant targets appear
+#     only in the separate `dereverberate` evaluation variant on non-train sets.
+# So this model separates AND dereverberates — matching PolSESS SB, and
+# matching this repo's own classification of the 8 kHz WHAMR arms as
+# "dry targets" (FAIR_NOSEP_COMPARISON.md 4.5.38).
+#
+# HOT STREAMS: SpeechBrain separators emit unnormalised (hot) output. The
+# stage's `volume_normalization: sum_equals_mix` below is LOAD-BEARING for this
+# backend — it is inherited from the shipped config unchanged, do not touch it.
+#
+# CACHING: the checkpoint caches under `checkpoints/external/speechbrain/`
+# (repo-relative, so `HF_HUB_OFFLINE=1` eval runs work once cached). As of
+# 2026-08-26 the 16 kHz build is NOT yet cached — do one online warm-up run
+# before any offline batch.
+#
+# Two deliberate deviations from sweep_best_e31_refineplus.yaml (v41_merge),
+# both forced by the model's native rate — everything else is verbatim:
+#   1. separator_sample_rate: 16000. The stage's resample round-trip becomes a
+#      true identity (torchaudio.functional.resample early-returns when
+#      orig_freq == new_freq), so window/seam/VAD geometry is unchanged: every
+#      geometry knob is expressed in seconds against the 16 kHz pipeline rate,
+#      never against the separator rate.
+#   2. post_separation_processing.backend: naive (NOT ap_bwe). AP-BWE is an
+#      8->16 kHz reconstruction whose `extend` unconditionally decimates its
+#      input to 8 kHz and interpolates back before the generator runs
+#      (stages/post_separation_processing.py, _AP_BWE_LR_SR). On a 16 kHz
+#      separator that DESTROYS the genuine 4-8 kHz band and replaces it with
+#      synthesis — it would silently measure "SepFormer-WHAMR16k,
+#      narrowbanded". `naive` is identity + the VAD mask, which is all this
+#      always-on stage owes Stage 4.
+#      This is NOT a confound to be controlled away (author ruling 2026-08-26):
+#      band extension exists to undo an 8 kHz separator's narrowbanding, and a
+#      16 kHz model simply does not need it. Anchor the arm against
+#      `v41_bweoff` (= v41_merge with the same `naive` override, already
+#      decoded on all 141) so the primary contrast is the separator alone;
+#      report `v41_merge` as the secondary, as-deployed number.
+#
+# training_chunk_length_s stays 4.0 — the v41_merge value, held fixed across
+# the whole B1 family so the arms stay comparable.
+#
+# DISCIPLINE: smoke with NOISY input first, then dev; CLARIN test only by
+# explicit author decision afterwards.
+
+# Non-separation blocks mirror sweep_best_e31_refineplus.yaml (v41_merge)
+# verbatim — the per-knob rationale comments live there.
+sample_rate: 16000
+device: cuda
+deterministic: true
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  backend: sortformer
+  sortformer_head_policy: merge
+  model_id: pyannote/speaker-diarization-3.1   # pyannote-path knob; unused under sortformer
+  num_speakers: 2
+  embedding: ecapa2          # pyannote-path knob; no-op under sortformer
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20
+  merge_gap: 0.50
+
+enhancement:
+  enabled: true
+  backend: frcrn_se_16k
+  max_segment_length_s: 8.0
+  observation_mix_ratio: 0.5
+
+separation:
+  enabled: true
+  separator_backend: speechbrain
+  checkpoint_path: speechbrain/sepformer-whamr16k
+  separator_sample_rate: 16000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0
+  seam_mode: snap_to_silence
+  seam_search_radius_s: 0.05
+  snap_silence_max_extend_s: 0.3
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25
+  vad_soft_threshold: 0.10
+  vad_attack_frames: 1
+  vad_release_frames: 1
+
+post_separation_processing:
+  backend: naive           # NOT ap_bwe — see header note 2. 16 kHz native checkpoint.
+  # Kept verbatim from sweep_best_e31_refineplus.yaml although DEAD under
+  # `naive` (_NaiveBackend ignores it; load_signature returns just the backend
+  # name). Deleting it would NOT be a no-op for review: the dataclass default
+  # is the same path without the `.zip` suffix, so an omitted key shows up as a
+  # spurious 5th difference and breaks the "diff this arm against the shipped
+  # config, expect exactly N lines" check the B1 family is verified with.
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
+
+relabel:
+  enabled: true
+  source: global             # solos + separated overlap streams (B+); "solos" = B
+  embedding: ecapa2
+  audio_source: enhanced     # solos from enhanced_full; overlap streams are raw-derived
+  exclude_overlap: true
+  duration_weighted: false
+  solo_clustering_init: rescue
+
+assembly:
+  enabled: true
+  weak_anchor_warn_below_s: 3.0
+  anchor_max_duration_s: 240.0
+  output_mode: full_length
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0
+  edge_fade_ms: 2.0
+  overlap_rms_match_solo: true
+  per_piece_rms_norm: false
+  target_rms: null
+
+transcription:
+  enabled: true
+  backend: whisperx
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  beam_size: 5
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+  condition_on_previous_text: false
+  no_speech_threshold: 0.6
+  compression_ratio_threshold: 2.4
+  patience: 1.0
+  no_repeat_ngram_size: 0
+  retry_collapsed_chunk_size: 8
+  loop_retry: true
+  loop_retry_phrase: true
+  collapse_min_duration_s: 18.0
+  collapse_max_wps: 0.7

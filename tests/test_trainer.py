@@ -4,6 +4,7 @@ These tests are lightweight and avoid any dependency on the full PolSESS
 dataset. They exercise `train_epoch`, `validate` and a 1-epoch `train` run.
 """
 
+import pytest
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -139,12 +140,14 @@ def test_trainer_train_epoch_and_validate(tmp_path):
     trainer.loss_fn = mse_loss_wrapper
 
     # Single epoch train_epoch
-    train_sisdr = trainer.train_epoch()
+    train_sisdr, train_sisdri = trainer.train_epoch()
     assert isinstance(train_sisdr, float)
+    assert isinstance(train_sisdri, float)
 
     # Validation
-    val_sisdr = trainer.validate()
+    val_sisdr, val_sisdri = trainer.validate()
     assert isinstance(val_sisdr, float)
+    assert isinstance(val_sisdri, float)
 
     # Full training run for 1 epoch (should not error)
     trainer.train(num_epochs=1, save_dir=cfg.training.save_dir)
@@ -198,12 +201,14 @@ def test_trainer_sb_task_with_pit_loss(tmp_path):
     trainer.loss_fn = mse_pit_wrapper
 
     # Single epoch training
-    train_sisdr = trainer.train_epoch()
+    train_sisdr, train_sisdri = trainer.train_epoch()
     assert isinstance(train_sisdr, float)
+    assert isinstance(train_sisdri, float)
 
     # Validation
-    val_sisdr = trainer.validate()
+    val_sisdr, val_sisdri = trainer.validate()
     assert isinstance(val_sisdr, float)
+    assert isinstance(val_sisdri, float)
 
 
 def test_loss_wrapper_format_es_task(tmp_path):
@@ -513,3 +518,432 @@ def test_training_summary_epoch_numbers_after_resume(tmp_path, capsys):
     assert "Epoch 6:" in summary_lines[0], f"Expected 'Epoch 6:', got: {summary_lines[0]}"
     assert "Epoch 7:" in summary_lines[1], f"Expected 'Epoch 7:', got: {summary_lines[1]}"
     assert "Epoch 8:" in summary_lines[2], f"Expected 'Epoch 8:', got: {summary_lines[2]}"
+
+
+def test_consecutive_nan_abort(tmp_path, monkeypatch):
+    """train_epoch raises ConsecutiveNaNError after MAX_CONSECUTIVE_NAN_BATCHES
+    NaN losses in a row, and train() converts it to a graceful SystemExit(1)
+    so a sweep agent can move on to the next run."""
+    import pytest
+    import training.trainer as trainer_module
+    from training.trainer import Trainer, ConsecutiveNaNError
+
+    monkeypatch.setattr(trainer_module, "MAX_CONSECUTIVE_NAN_BATCHES", 3)
+
+    cfg = make_config(tmp_path)
+    train_dataset = SyntheticDataset(n_samples=12, time_steps=256)
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(n_samples=4, time_steps=256),
+        batch_size=cfg.data.batch_size,
+        collate_fn=polsess_collate_fn,
+    )
+
+    trainer = Trainer(
+        DummyModel(), train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None,
+    )
+
+    def nan_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean) * float("nan")
+        return loss, float("nan")
+
+    trainer.loss_fn = nan_loss_wrapper
+
+    with pytest.raises(ConsecutiveNaNError):
+        trainer.train_epoch()
+    assert trainer.consecutive_nan_batches == 3
+
+    # train() wraps the abort in SystemExit(1) (sweep-friendly, mirrors OOM path)
+    trainer.consecutive_nan_batches = 0
+    with pytest.raises(SystemExit) as exc_info:
+        trainer.train(num_epochs=1, save_dir=cfg.training.save_dir)
+    assert exc_info.value.code == 1
+
+
+def test_consecutive_nan_counter_resets_on_good_batch(tmp_path, monkeypatch):
+    """A finite-loss batch resets the consecutive NaN counter, so intermittent
+    NaNs below the threshold never abort training."""
+    import training.trainer as trainer_module
+    from training.trainer import Trainer
+
+    monkeypatch.setattr(trainer_module, "MAX_CONSECUTIVE_NAN_BATCHES", 3)
+
+    cfg = make_config(tmp_path)
+    # 12 samples / batch_size 2 = 6 batches
+    train_dataset = SyntheticDataset(n_samples=12, time_steps=256)
+    train_loader = DataLoader(
+        train_dataset, batch_size=cfg.data.batch_size, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(n_samples=4, time_steps=256),
+        batch_size=cfg.data.batch_size,
+        collate_fn=polsess_collate_fn,
+    )
+
+    trainer = Trainer(
+        DummyModel(), train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None,
+    )
+
+    # NaN on batches 0,1 then good on 2, NaN on 3,4, good on 5 — never 3 in a row
+    calls = {"n": 0}
+
+    def alternating_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        is_nan = calls["n"] % 3 != 2
+        calls["n"] += 1
+        if is_nan:
+            return loss * float("nan"), float("nan")
+        return loss, loss.item()
+
+    trainer.loss_fn = alternating_loss_wrapper
+
+    trainer.train_epoch()  # must not raise
+    assert trainer.consecutive_nan_batches == 0
+
+
+# ---------------------------------------------------------------------------
+# Resume / checkpoint-format robustness (Work Package B3)
+# ---------------------------------------------------------------------------
+
+class _FakeScaler:
+    """Stand-in for torch.amp.GradScaler.
+
+    A real GradScaler force-disables itself (empty state_dict, scale 1.0) when
+    CUDA is unavailable, so it can't exercise save/restore on the CPU-only test
+    runner. This fake carries a real, inspectable state_dict instead.
+    """
+
+    def __init__(self, scale=1.0):
+        self._scale = scale
+        self.loaded = None
+
+    def state_dict(self):
+        return {"scale": self._scale}
+
+    def load_state_dict(self, sd):
+        self.loaded = dict(sd)
+        self._scale = sd["scale"]
+
+
+def _make_trainer(tmp_path, task="ES", provenance=None):
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path, task=task)
+    train_loader = DataLoader(
+        SyntheticDataset(4, task=task), batch_size=2, collate_fn=polsess_collate_fn
+    )
+    val_loader = DataLoader(
+        SyntheticDataset(2, task=task), batch_size=2, collate_fn=polsess_collate_fn
+    )
+    model = DummyModel(C=2 if task == "SB" else 1)
+    return Trainer(
+        model, train_loader, val_loader, cfg,
+        device="cpu", logger=None, wandb_logger=None, provenance=provenance,
+    )
+
+
+def test_resume_scheduler_best_ordering_regression(tmp_path):
+    """Gap 7 regression: a legacy checkpoint (no scheduler_state_dict) must seed
+    scheduler.best from the checkpoint's best_val_sisdr, NOT the -inf placeholder.
+
+    Before the fix, load_checkpoint set scheduler.best = self.best_val_sisdr
+    while best_val_sisdr was still -inf, so the first post-resume epoch always
+    looked like an improvement.
+    """
+    src = _make_trainer(tmp_path)
+    legacy_ckpt = {
+        "epoch": 4,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 12.5,
+        "best_val_sisdr": 12.5,
+        # deliberately NO scheduler_state_dict -> legacy branch
+    }
+    path = tmp_path / "legacy.pt"
+    torch.save(legacy_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    assert tgt.scheduler.best == -float("inf")  # baseline before load
+
+    tgt.load_checkpoint(str(path))
+
+    assert tgt.best_val_sisdr == 12.5
+    assert tgt.current_epoch == 5
+    # The regression: scheduler.best must be the real best, not -inf.
+    assert tgt.scheduler.best == 12.5
+
+
+def test_old_format_checkpoint_resume_compat(tmp_path):
+    """A checkpoint written by the OLD code (none of the new keys present) must
+    still load and resume cleanly, with every new key defaulted tolerantly."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 7,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 9.0,
+        # no best_val_sisdr, no scheduler_state_dict, no scaler_state_dict,
+        # no epochs_without_improvement, no provenance, no wandb_run_id
+    }
+    path = tmp_path / "old.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))  # must not raise
+
+    assert tgt.current_epoch == 8
+    assert tgt.best_val_sisdr == 9.0  # falls back to val_sisdr
+    assert tgt.epochs_without_improvement == 0  # tolerant default
+    assert tgt.scheduler.best == 9.0  # legacy branch seeds from best
+
+
+def test_scaler_state_roundtrip(tmp_path):
+    """Gap 8a: GradScaler state is saved and restored across a resume."""
+    src = _make_trainer(tmp_path)
+    src.scaler = _FakeScaler(scale=512.0)
+
+    ckpt = src._serialize_checkpoint_data(epoch=2, val_sisdr=3.0)
+    assert ckpt["scaler_state_dict"] == {"scale": 512.0}
+
+    path = tmp_path / "scaler.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.scaler = _FakeScaler(scale=256.0)  # different starting scale
+    tgt.load_checkpoint(str(path))
+
+    assert tgt.scaler.loaded == {"scale": 512.0}
+    assert tgt.scaler._scale == 512.0
+
+
+def test_scaler_absent_in_old_checkpoint_is_tolerated(tmp_path):
+    """A trainer WITH a scaler resuming an OLD checkpoint (no scaler_state_dict)
+    must not raise — the scaler simply keeps its init scale."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 1,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 1.0,
+    }
+    path = tmp_path / "old_noscaler.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.scaler = _FakeScaler(scale=256.0)
+    tgt.load_checkpoint(str(path))  # must not raise
+
+    assert tgt.scaler.loaded is None  # never touched
+    assert tgt.scaler._scale == 256.0
+
+
+def test_patience_persist_roundtrip(tmp_path):
+    """Gap 8d: epochs_without_improvement survives a save/resume cycle."""
+    src = _make_trainer(tmp_path)
+    src.epochs_without_improvement = 3
+
+    ckpt = src._serialize_checkpoint_data(epoch=5, val_sisdr=1.0)
+    assert ckpt["epochs_without_improvement"] == 3
+
+    path = tmp_path / "patience.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    assert tgt.epochs_without_improvement == 0
+    tgt.load_checkpoint(str(path))
+    assert tgt.epochs_without_improvement == 3
+
+
+def test_provenance_embedded_and_manifest_written(tmp_path):
+    """Gap 5: provenance is embedded in the checkpoint and a human-readable
+    run_manifest.yaml is written next to config.yaml."""
+    import yaml
+    from pathlib import Path
+
+    manifest = {
+        "git_sha": "abc1234",
+        "git_dirty": True,
+        "torch_version": "2.8.0",
+        "gpu_name": None,
+        "seed": 42,
+        "argv": ["train.py", "--config", "x.yaml"],
+    }
+    trainer = _make_trainer(tmp_path, provenance=manifest)
+
+    save_dir = tmp_path / "ckpts"
+    trainer._save_checkpoint(epoch=0, val_sisdr=5.0, save_dir=save_dir)
+
+    ckpt_files = list(save_dir.rglob("*.pt"))
+    assert len(ckpt_files) == 1
+    loaded = torch.load(ckpt_files[0], weights_only=False)
+    assert loaded["provenance"] == manifest
+
+    manifest_files = list(save_dir.rglob("run_manifest.yaml"))
+    assert len(manifest_files) == 1
+    with open(manifest_files[0]) as f:
+        assert yaml.safe_load(f) == manifest
+
+
+def test_no_provenance_writes_no_manifest(tmp_path):
+    """With provenance=None (e.g. an old caller), no manifest file and no
+    provenance key appear — the addition is strictly opt-in."""
+    trainer = _make_trainer(tmp_path, provenance=None)
+
+    save_dir = tmp_path / "ckpts"
+    trainer._save_checkpoint(epoch=0, val_sisdr=5.0, save_dir=save_dir)
+
+    assert list(save_dir.rglob("run_manifest.yaml")) == []
+    ckpt_files = list(save_dir.rglob("*.pt"))
+    loaded = torch.load(ckpt_files[0], weights_only=False)
+    assert "provenance" not in loaded
+
+
+# ---------------------------------------------------------------------------
+# AMP dispatch + the two generic recipe knobs (optimizer, LR warmup)
+# ---------------------------------------------------------------------------
+
+def test_amp_dispatch_by_model_type(tmp_path):
+    """_setup_amp must put TF-MossFormer on bf16 without a GradScaler.
+
+    Same profile as MossFormer2 (chained multiplicative gates + masked softmax
+    overflow fp16). config.py's summary AMP line hardcodes the same tuple and
+    will silently lie if only one of the two is updated —
+    tests/test_config_yaml.py::test_tf_mossformer_summary pins that side.
+    """
+    trainer = _make_trainer(tmp_path)
+    trainer.use_amp = True
+
+    for model_type in ("tf_mossformer", "mossformer2"):
+        trainer.config.model.model_type = model_type
+        trainer._setup_amp(trainer.model, "cuda")
+        assert trainer.scaler is None, f"{model_type} must not use a GradScaler"
+        assert trainer.amp_dtype is torch.bfloat16, f"{model_type} must train in bf16"
+
+    trainer.config.model.model_type = "convtasnet"
+    trainer._setup_amp(trainer.model, "cuda")
+    assert trainer.amp_dtype is torch.float16
+    assert trainer.scaler is not None
+
+
+def test_optimizer_knob_selects_adamw(tmp_path):
+    """training.optimizer='adamw' builds AdamW; the default stays Adam."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.optimizer = "adamw"
+    train_loader = DataLoader(SyntheticDataset(4), batch_size=2, collate_fn=polsess_collate_fn)
+    val_loader = DataLoader(SyntheticDataset(2), batch_size=2, collate_fn=polsess_collate_fn)
+    trainer = Trainer(DummyModel(), train_loader, val_loader, cfg, device="cpu")
+    assert isinstance(trainer.optimizer, torch.optim.AdamW)
+
+    # Default (the attribute is absent from this SimpleNamespace config, exactly
+    # like a pre-2026-09 checkpoint config) -> Adam, unchanged behaviour.
+    assert isinstance(_make_trainer(tmp_path).optimizer, torch.optim.Adam)
+
+
+def test_optimizer_knob_rejects_unknown_name(tmp_path):
+    """An unknown optimizer name fails loudly at Trainer init, not mid-run."""
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path)
+    cfg.training.optimizer = "lion"
+    train_loader = DataLoader(SyntheticDataset(4), batch_size=2, collate_fn=polsess_collate_fn)
+    val_loader = DataLoader(SyntheticDataset(2), batch_size=2, collate_fn=polsess_collate_fn)
+    with pytest.raises(ValueError, match="lion"):
+        Trainer(DummyModel(), train_loader, val_loader, cfg, device="cpu")
+
+
+def _lr(trainer):
+    return trainer.optimizer.param_groups[0]["lr"]
+
+
+def test_warmup_linear_schedule(tmp_path):
+    """LR at step 0, mid-warmup, at warmup_steps, and after it."""
+    trainer = _make_trainer(tmp_path)
+    base = trainer.warmup_target_lr
+    trainer.warmup_steps = 10
+
+    trainer.global_step = 0
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base / 10)  # first step is ~0, never full LR
+
+    trainer.global_step = 4
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base * 0.5)
+
+    trainer.global_step = 9  # last warmup step reaches the configured LR
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base)
+
+    # Past warmup the LR belongs to ReduceLROnPlateau; warmup must never write
+    # to it again (otherwise it would undo every plateau reduction).
+    trainer.global_step = 10
+    trainer.optimizer.param_groups[0]["lr"] = base / 8  # pretend the plateau fired
+    trainer._apply_lr_warmup()
+    assert _lr(trainer) == pytest.approx(base / 8)
+
+
+def test_warmup_disabled_by_default_is_a_no_op(tmp_path):
+    """warmup_steps=0 (the default) must not touch the LR at all."""
+    trainer = _make_trainer(tmp_path)
+    assert trainer.warmup_steps == 0
+
+    trainer.optimizer.param_groups[0]["lr"] = 7e-5
+    for trainer.global_step in (0, 1, 1000):
+        trainer._apply_lr_warmup()
+        assert _lr(trainer) == pytest.approx(7e-5)
+
+    # And a real epoch leaves the LR exactly where the config put it, so the
+    # plateau scheduler sees the same sequence it always did.
+    trainer = _make_trainer(tmp_path)
+    trainer.train_epoch()
+    assert _lr(trainer) == pytest.approx(trainer.config.training.lr)
+    assert trainer.global_step == 2  # 4 samples / batch_size 2
+
+
+def test_warmup_applies_during_train_epoch(tmp_path):
+    """The warmup is wired into the optimizer step, not just callable."""
+    trainer = _make_trainer(tmp_path)
+    trainer.warmup_steps = 4
+    base = trainer.warmup_target_lr
+
+    trainer.train_epoch()  # 2 optimizer steps
+
+    assert trainer.global_step == 2
+    assert _lr(trainer) == pytest.approx(base * 0.5)
+
+
+def test_global_step_persists_across_resume(tmp_path):
+    """Warmup must not restart on --resume: the step counter is checkpointed."""
+    src = _make_trainer(tmp_path)
+    src.global_step = 1234
+
+    ckpt = src._serialize_checkpoint_data(epoch=3, val_sisdr=1.0)
+    assert ckpt["global_step"] == 1234
+    path = tmp_path / "gstep.pt"
+    torch.save(ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))
+    assert tgt.global_step == 1234
+
+
+def test_global_step_absent_in_old_checkpoint_is_tolerated(tmp_path):
+    """Pre-2026-09 checkpoints have no global_step; resuming them defaults to 0."""
+    src = _make_trainer(tmp_path)
+    old_ckpt = {
+        "epoch": 2,
+        "model_state_dict": DummyModel().state_dict(),
+        "optimizer_state_dict": src.optimizer.state_dict(),
+        "val_sisdr": 4.0,
+    }
+    path = tmp_path / "old_nostep.pt"
+    torch.save(old_ckpt, path)
+
+    tgt = _make_trainer(tmp_path)
+    tgt.load_checkpoint(str(path))  # must not raise
+    assert tgt.global_step == 0

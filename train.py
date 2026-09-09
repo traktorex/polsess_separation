@@ -1,26 +1,29 @@
 """Training script for speech separation using various model architectures."""
 
+from utils import warning_filters  # noqa: F401  must precede speechbrain imports (registers filters)
+
+import os
+
 import torch
-from torch.utils.data import DataLoader
+
 from config import get_config_from_args
-from models.factory import create_model_from_config
-from datasets import get_dataset, polsess_collate_fn
-from training.trainer import Trainer
+from training.setup import build_dataloaders, build_trainer
 from utils import (
     set_seed,
     setup_warnings,
     setup_logger,
     setup_device_and_amp,
     WandbLogger,
-    apply_torch_compile,
+    collect_run_manifest,
+    read_wandb_run_id,
 )
-import os
 
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 
 
 def main():
     setup_warnings()
+    torch.set_float32_matmul_precision('high')
     config = get_config_from_args()
     set_seed(config.training.seed)
 
@@ -35,63 +38,21 @@ def main():
     summary_info = {"seed": config.training.seed}
     device = setup_device_and_amp(config, summary_info)
 
-    # Create dataloaders
-    dataset_class = get_dataset(config.data.dataset_type)
-    
-    # Get dataset root
-    if config.data.dataset_type == "polsess":
-        data_root = config.data.polsess.data_root
-    else:
-        raise ValueError(f"Dataset {config.data.dataset_type} not configured for training. Only PolSESS is supported for training")
-    
-    # Determine variants
-    train_variants = None
-    if config.training.curriculum_learning:
-        train_variants = config.training.curriculum_learning[0].get("variants")
-    
-    # Create train dataset
-    train_dataset = dataset_class(
-        data_root,
-        subset="train",
-        task=config.data.task,
-        max_samples=config.data.train_max_samples,
-        allowed_variants=train_variants,
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.data.batch_size,
-        shuffle=True,
-        num_workers=config.data.num_workers,
-        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
-        collate_fn=polsess_collate_fn,
-    )
-    
-    # Create val dataset
-    val_dataset = dataset_class(
-        data_root,
-        subset="val",
-        task=config.data.task,
-        max_samples=config.data.val_max_samples,
-        allowed_variants=config.training.validation_variants,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.data.batch_size,
-        shuffle=False,
-        num_workers=config.data.num_workers,
-        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
-        collate_fn=polsess_collate_fn,
-    )
-    
-    # Update summary info
-    summary_info["train_samples"] = len(train_loader.dataset)
-    summary_info["val_samples"] = len(val_loader.dataset)
+    # Capture run provenance (git SHA, env, GPU, argv) for checkpoints + W&B.
+    manifest = collect_run_manifest(seed=config.training.seed)
 
-    # Create model using factory
-    model = create_model_from_config(config.model, summary_info)
+    # Build dataloaders (also applies the determinism policy).
+    train_loader, val_loader, per_variant_val_loaders = build_dataloaders(
+        config, summary_info, logger=logger
+    )
 
-    # Apply torch.compile (PyTorch 2.0+, Linux only)
-    model = apply_torch_compile(model, logger=logger)
+    # W&B resume: reconnect to the original run if the checkpoint carries its id
+    # (survey gap 14); older checkpoints / wandb-disabled runs → fresh run.
+    resume_wandb_id = (
+        read_wandb_run_id(config.training.resume_from)
+        if config.training.resume_from
+        else None
+    )
 
     # Setup WandB logger
     wandb_logger = WandbLogger(
@@ -101,21 +62,25 @@ def main():
         config=config,
         enabled=config.training.use_wandb,
         logger=logger,
+        provenance=manifest,
+        resume_id=resume_wandb_id,
     )
 
-    # Log configuration
-    logger.info("\n" + config.summary(runtime_info=summary_info))
-
-    # Create trainer
-    trainer = Trainer(
-        model,
+    # Build model + trainer (populates model param count in summary_info).
+    trainer = build_trainer(
+        config,
         train_loader,
         val_loader,
-        config,
-        device=device,
-        logger=logger,
-        wandb_logger=wandb_logger,
+        per_variant_val_loaders,
+        device,
+        logger,
+        wandb_logger,
+        summary_info,
+        provenance=manifest,
     )
+
+    # Log configuration (now that the model param count is known)
+    logger.info("\n" + config.summary(runtime_info=summary_info))
 
     # Resume from checkpoint if specified
     if config.training.resume_from:
@@ -130,7 +95,8 @@ def main():
 
     # Log completion
     logger.info("Training complete!")
-    logger.info(f"Best validation SI-SDR: {trainer.best_val_sisdr:.2f} dB")
+    metric_name = "avg SI-SDRi" if trainer.per_variant_mode else "SI-SDR"
+    logger.info(f"Best validation {metric_name}: {trainer.best_val_sisdr:.2f} dB")
 
     if wandb_logger:
         wandb_logger.finish()

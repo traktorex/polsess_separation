@@ -145,21 +145,59 @@ def test_sepformer_dual_path_processing():
 
 def test_sepformer_parallel_processing():
     """Test SepFormer parallel processing advantage (vs sequential RNN).
-    
+
     Paper states: Transformer-based architecture enables parallel processing
     unlike sequential RNNs, leading to faster inference.
     We validate by ensuring model processes inputs efficiently.
     """
     model = SepFormer(N=256, C=2, num_layers=2, d_model=256, nhead=4)
     model.eval()
-    
+
     # Test batch processing (parallel advantage)
     batch_x = torch.randn(4, 16000)
-    
+
     with torch.no_grad():
         batch_output = model(batch_x)
-    
+
     # Should process batch efficiently
     assert batch_output.shape == (4, 2, 16000)
     assert not torch.isnan(batch_output).any()
+
+
+def test_sepformer_positional_encoding():
+    """Test that positional encoding can be enabled/disabled.
+
+    The original paper uses sinusoidal PE. Our pre-2026-03 checkpoints
+    were trained without it, so both modes must work.
+    """
+    x = torch.randn(1, 8000)
+
+    model_with_pe = SepFormer(N=128, C=2, num_layers=1, d_model=128, nhead=4,
+                              d_ffn=256, use_positional_encoding=True)
+    model_no_pe = SepFormer(N=128, C=2, num_layers=1, d_model=128, nhead=4,
+                            d_ffn=256, use_positional_encoding=False)
+
+    y_with = model_with_pe(x)
+    y_without = model_no_pe(x)
+
+    assert y_with.shape == (1, 2, 8000)
+    assert y_without.shape == (1, 2, 8000)
+
+    # Both modes should produce valid output
+    assert not torch.isnan(y_with).any()
+    assert not torch.isnan(y_without).any()
+
+
+def test_sepformer_default_uses_positional_encoding():
+    """Verify that the default config enables positional encoding (paper behavior)."""
+    model = SepFormer(N=128, C=2, num_layers=1, d_model=128, nhead=4, d_ffn=256)
+    # SBTransformerBlock stores pos_enc when use_positional_encoding=True
+    intra = model.masknet.dual_mdl[0].intra_mdl
+    assert hasattr(intra, "pos_enc"), "Default SepFormer should have positional encoding"
+
+    # Without PE, SBTransformerBlock should not have pos_enc
+    model_no_pe = SepFormer(N=128, C=2, num_layers=1, d_model=128, nhead=4,
+                            d_ffn=256, use_positional_encoding=False)
+    intra_no_pe = model_no_pe.masknet.dual_mdl[0].intra_mdl
+    assert not hasattr(intra_no_pe, "pos_enc"), "PE-disabled SepFormer should not have pos_enc"
 

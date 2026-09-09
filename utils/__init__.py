@@ -1,5 +1,9 @@
 """Utility functions for polsess_separation project."""
 
+# Must stay first: registers warning filters before the submodules below pull in
+# speechbrain, which emits a deprecation warning at import time. See warning_filters.
+from . import warning_filters  # noqa: F401
+
 from .common import (
     set_seed,
     setup_warnings,
@@ -7,7 +11,11 @@ from .common import (
     apply_eps_patch,
     ensure_dir,
     dataclass_to_dict,
+    git_provenance,
+    collect_run_manifest,
+    configure_determinism,
 )
+from .metrics import compute_sisdr_and_sisdri
 from .logger import setup_logger
 from .wandb_logger import WandbLogger
 from .model_utils import (
@@ -15,8 +23,10 @@ from .model_utils import (
     load_checkpoint_file,
     load_model_from_checkpoint,
     load_model_for_inference,
+    read_wandb_run_id,
     count_parameters,
     apply_torch_compile,
+    compile_for_model_type,
 )
 
 __all__ = [
@@ -26,12 +36,18 @@ __all__ = [
     "setup_logger",
     "WandbLogger",
     "apply_eps_patch",
+    "git_provenance",
+    "collect_run_manifest",
+    "configure_determinism",
+    "compute_sisdr_and_sisdri",
     "unwrap_compiled_model",
     "load_checkpoint_file",
     "load_model_from_checkpoint",
     "load_model_for_inference",
+    "read_wandb_run_id",
     "count_parameters",
     "dataclass_to_dict",
     "ensure_dir",
     "apply_torch_compile",
+    "compile_for_model_type",
 ]
