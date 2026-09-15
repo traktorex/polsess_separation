@@ -10,11 +10,13 @@
 # the size that fits the RTX 3080 at this rate.
 # Corpus: PolSESS_C_128_16kHz — the 16 kHz twin of PolSESS_C_final_128_v2 (same
 # six-run recipe, 128,000 train rows, 1,000-item stratified val/, generated
-# 2026-09-07/08). The config default data_root still points at the 8 kHz corpus,
-# so launch with
+# 2026-09-07/08). Launch with
 #   python train.py --config experiments/tf_mossformer/s_128k_16kHz_final.yaml \
 #       --data-root ~/datasets/PolSESS_C_128_16kHz
-# (the loader reads the first mix header and raises on a rate mismatch).
+# unless the config.py default data_root already points there (on the 3080 it
+# does since commit a8f099d, 2026-09-15 — which in turn means the 8 kHz configs
+# on that machine need --data-root or $POLSESS_DATA_ROOT). Either way the loader
+# reads the first mix header and raises on a rate mismatch.
 #
 # Twin of `s_128k_final.yaml` (the 8 kHz S 128k final, W&B run hi5pwhfl): same
 # architecture, same paper recipe, same all-8 no-curriculum final protocol with
