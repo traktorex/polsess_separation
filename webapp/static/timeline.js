@@ -27,6 +27,8 @@ const ZOOM_LEVELS = [1, 2, 4, 8];
 const MAX_CANVAS_PX = 32000;
 /** A manual pan wins for this long before the playhead may scroll again. */
 const PAN_GRACE_MS = 4000;
+/** localStorage key of the waveform-lanes toggle; "hidden" or absent. */
+const WAVES_KEY = "polsess-waves";
 
 export function colorVarFor(index) {
   return SPEAKER_VARS[index % SPEAKER_VARS.length];
@@ -97,7 +99,7 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
     const labelParts = [el("span", { text: label })];
     if (sub) labelParts.push(el("span", { class: "id", text: sub }));
     labelParts.push(dot);
-    return el("div", { class: "lane" }, [
+    return el("div", { class: isWave ? "lane wave" : "lane" }, [
       el("div", { class: "lab" }, labelParts),
       el("div", { class: isWave ? "track wf" : "track" }, kids),
     ]);
@@ -143,17 +145,40 @@ export function createTimeline({ duration, lanes = [], waves = [], overlaps = []
   const inner = el("div", { class: "inner" }, [field, ruler]);
   const port = el("div", { class: "port" }, [inner]);
 
-  // -- zoom control -------------------------------------------------------
+  // -- control row: waveform toggle + zoom --------------------------------
   let zoom = 1;
   const zoomButtons = ZOOM_LEVELS.map((level) =>
     el("button", { type: "button", class: level === zoom ? "active" : "", text: `${level}×` })
   );
-  const zoomCtl = el("div", { class: "zoomctl" }, [
+  const controls = el("div", { class: "tlctl" }, [
     el("span", { class: "muted", text: "zoom" }),
     el("div", { class: "seg", role: "group", "aria-label": "Powiększenie osi czasu" }, zoomButtons),
   ]);
-  node.appendChild(zoomCtl);
+  node.appendChild(controls);
   node.appendChild(port);
+
+  // Hiding the envelope lanes leaves just the diarization: a compact stack for
+  // a projector. The overlay is absolutely positioned over the field, so the
+  // overlap bands and the playhead shrink with it; the gutter, the ruler and
+  // click-to-seek are untouched. Remembered like the theme, per browser.
+  if (canvases.length) {
+    let wavesShown = true;
+    try { wavesShown = localStorage.getItem(WAVES_KEY) !== "hidden"; } catch (err) { /* private mode */ }
+    const waveButton = el("button", { type: "button", class: "wavectl" });
+    const applyWaves = () => {
+      node.classList.toggle("nowaves", !wavesShown);
+      waveButton.textContent = wavesShown ? "ukryj przebiegi" : "pokaż przebiegi";
+    };
+    waveButton.addEventListener("click", () => {
+      wavesShown = !wavesShown;
+      try { localStorage.setItem(WAVES_KEY, wavesShown ? "shown" : "hidden"); } catch (err) { /* private mode */ }
+      applyWaves();
+      // A display:none canvas had no box to paint into; repaint once it has one.
+      scheduleRedraw();
+    });
+    applyWaves();
+    controls.insertBefore(waveButton, controls.firstChild);
+  }
 
   const drawRuler = () => {
     clear(marks);
