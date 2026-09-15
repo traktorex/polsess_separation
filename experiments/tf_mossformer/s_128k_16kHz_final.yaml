@@ -1,0 +1,131 @@
+# TF-MossFormer S (D=96, B=4, H=256, ~5.92M) — 16 kHz PolSESS 128k FINAL training.
+#
+# WHY THIS EXISTS: the project's first native 16 kHz separator. The ASR pipeline
+# runs at 16 kHz and, with every 8 kHz separator, resamples down to 8 kHz before
+# separation and synthesises the 4-8 kHz band back afterwards with AP-BWE
+# (`separation.separator_sample_rate`, `post_separation_processing.backend`). A
+# 16 kHz model removes that round trip. TF-MossFormer is the candidate because a
+# TF model's geometry is set by n_fft/hop in SAMPLES, so the move is a two-line
+# change (the geometry decision was first written down in s_16k.yaml), and S is
+# the size that fits the RTX 3080 at this rate.
+# Corpus: PolSESS_C_128_16kHz — the 16 kHz twin of PolSESS_C_final_128_v2 (same
+# six-run recipe, 128,000 train rows, 1,000-item stratified val/, generated
+# 2026-09-07/08). The config default data_root still points at the 8 kHz corpus,
+# so launch with
+#   python train.py --config experiments/tf_mossformer/s_128k_16kHz_final.yaml \
+#       --data-root ~/datasets/PolSESS_C_128_16kHz
+# (the loader reads the first mix header and raises on a rate mismatch).
+#
+# Twin of `s_128k_final.yaml` (the 8 kHz S 128k final, W&B run hi5pwhfl): same
+# architecture, same paper recipe, same all-8 no-curriculum final protocol with
+# per_variant_validation on all 8 MM-IPC variants — EXCEPT:
+#   - data.sample_rate 8000 -> 16000 (a guard, not a resampler).
+#   - STFT doubled: n_fft 128 -> 256, hop 64 -> 128. This holds the FRAME rate
+#     (16 ms window / 8 ms hop, T = 501 frames for a 4.000 s clip; the temporal
+#     path is unchanged) and doubles the FREQUENCY path from F = 65 to F = 129
+#     bins. Keeping n_fft 128 at 16 kHz would instead double the frame count and
+#     leave an 8 ms window, too short for the frequency module to resolve anything.
+#   - batch 2 -> 1, lr 5e-4 -> 2.5e-4. A 16 kHz step processes 2x the TF bins and
+#     bs 2 does not fit the RTX 3080 (10 GB): measured 2026-09-14, eager AND
+#     compiled bs 2 exceed 8.5 GiB and spill ~3 GB into WDDM shared memory; bs 1
+#     compiled peaks at 4.4 GiB allocated / 4.8 GiB reserved. LR rescaled linearly
+#     with the batch per the 2026-09-07 author ruling (no accumulation, use the
+#     batch that fits), exactly as m_128k_final.yaml. Warmup is a per-step
+#     quantity: 4000 optimizer steps = the first 1/32 of a 128k epoch at bs 1.
+#   - W&B target: its own project, polsess-separation-16kHz-128k. SI-SDR at
+#     16 kHz is a different number on a different signal, so this run must not
+#     sit beside the 8 kHz rows of polsess-separation-128k as if comparable.
+#
+# PATIENCE: lr_patience 1 / early_stopping_patience 8, copied from the 8 kHz S
+# final AS IT RAN (hi5pwhfl). NB the 8 kHz finals' headers (and CLAUDE.md before
+# 2026-09-15) say "paper plateau patience 3": commit c111f8d (2026-09-08) changed
+# lr_patience 3 -> 1 in s_8k.yaml without updating the comment, and every
+# TF-MossFormer run since, except 16k_tf_mossformer_s_42_originalLR, used 1.
+# Keeping 1 keeps this run a true twin; restore 3 for a literal paper recipe.
+#
+# ARCHITECTURE: paper Table 1, S column, verbatim apart from the STFT. Measured
+# 5,917,308 params (5.92M), unchanged by n_fft — no parameter depends on F.
+# window_f = 7 is the paper's value, tuned at F = 65 where 7 bins are ~11 % of the
+# spectrum; at F = 129 the same 7 bins are ~5 %. Kept at 7 (identical model,
+# physically narrower window); 13 would keep the relative span — cheap ablation,
+# open.
+#
+# COST (measured, RTX 3080 10 GB, bf16, compiled, bs 1): epoch 1 of the 2026-09-14
+#   attempt took 6 h 33 min at 5.43 batch/s (128,000 steps; probe 192 ms/step),
+#   plus all-8 validation of the 1,000-item val/ (8,000 forward passes; eager
+#   ~150 ms each = ~20 min, compiled less). If early stopping lands in the 60-80
+#   epoch band (matched-MF2 / SepFormer profile): ~17-23 days on the 3080. Plan on
+#   --resume across interruptions (global_step is persisted, so warmup and the
+#   epoch budget survive; NB --resume ADDS num_epochs — see CLAUDE.md pitfall 5).
+#
+# TORCH: needs torch >= 2.14. On torch 2.11 Inductor fails to compile the fp32
+#   eval-mode graph at this geometry ("CantSplit.__init__() missing 2 required
+#   positional arguments"), which on 2026-09-14 surfaced only at the first
+#   validation and lost epoch 1 (no checkpoint yet). The trainer now pre-flights
+#   the validation forward before epoch 1 so a compile failure shows in seconds.
+#   The one-time "Torchinductor does not support code generation for complex
+#   operators" warning is expected (fp32 stft/istft inside the forward).
+#
+# ASR-PIPELINE HANDOFF: a 16 kHz checkpoint needs BOTH
+#   `separation.separator_sample_rate: 16000` AND
+#   `post_separation_processing.backend: naive` in the pipeline config. AP-BWE
+#   decimates to 8 kHz and interpolates back, which would destroy the real
+#   4-8 kHz band of a full-band separator; default.yaml ships ap_bwe.
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # bs 2 spills past the 3080's 10 GB at 16 kHz (see header); author ruling 2026-09-07: no accumulation, use what fits.
+  num_workers: 2           # IO knob only — nothing scientific depends on it.
+  prefetch_factor: 2
+  task: SB                 # Speaker separation (forces C=2).
+  sample_rate: 16000       # PolSESS_C_128_16kHz is a 16 kHz render; guard, not a resampler.
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set (1,000 items x 8 variants).
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:
+    C: 2                   # Speakers (Config.__post_init__ forces this from task=SB).
+    D: 96                  # Embedding dim (paper Table 1, S).
+    num_blocks: 4          # B — each block is a frequency module + a temporal module.
+    ffn_hidden_dim: 256    # H — Conv-SwiGLU hidden dim.
+    conv_kernel_size: 4    # K — Conv1D/Deconv1D kernel inside Conv-SwiGLU.
+    conv_stride: 1         # S — Conv-SwiGLU stride.
+    n_heads: 4             # h — same head count for the local and the global attention.
+    num_groups: 4          # RMSGroupNorm groups.
+    window_t: 31           # w_T — local attention window on the frame axis (frame rate unchanged).
+    window_f: 7            # w_F — paper value; ~5 % of the spectrum at F = 129 vs ~11 % at F = 65 (see header).
+    n_fft: 256             # DOUBLED for 16 kHz: still a 16 ms window -> F = 129 bins.
+    hop_length: 128        # DOUBLED for 16 kHz: still an 8 ms hop -> T = 501 frames at 4 s.
+    gate_kernel_size: 4    # Conv-Gate Conv1D kernel (Table 1's K, read literally).
+    attn_dropout: 0.0      # Paper / upstream recipe: dropout 0.
+
+training:
+  # ---- Paper recipe (arXiv:2607.21128 §3.1 = TF-Locoformer's upstream WSJ0-2mix config) ----
+  seed: 42
+  optimizer: adamw         # NOT the project default Adam — the paper's optimiser.
+  lr: 0.00025              # Paper: 1e-3 @ batch 4, linearly rescaled to batch 1 (project rule). Peak LR, reached at the end of warmup.
+  warmup_steps: 4000       # Paper: linear warmup over the first 4000 optimizer steps (1/32 of a 128k epoch at bs 1).
+  weight_decay: 0.01       # AdamW decoupled decay (the project's other configs use 0).
+  grad_clip_norm: 5.0
+  lr_factor: 0.5           # Halve on plateau.
+  lr_patience: 1           # As the 8 kHz S final ran — NOT the paper's 3 (see PATIENCE in the header).
+  num_epochs: 150          # Paper cap; early stopping governs.
+  early_stopping_patience: 8   # As the 8 kHz S final ran (see PATIENCE in the header); paper = 10.
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-16kHz-128k   # Own project: 16 kHz SI-SDR is not comparable with the 8 kHz rows.
+  wandb_run_name: tf_mossformer_s_128k_16kHz_final_42
+  log_level: INFO
+
+  # ---- Final-training protocol (all other families' 128k finals) ----
+  # No curriculum: all 8 MM-IPC variants (incl. C) from epoch 1. Without a curriculum
+  # the plateau scheduler is live from epoch 1 (warmup, per step, is independent of it).
+
+  # Per-variant validation drives the LR scheduler, early stopping and the
+  # best-checkpoint logic via avg SI-SDRi over all 8 MM-IPC variants.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

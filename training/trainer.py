@@ -635,6 +635,38 @@ class Trainer:
         avg_sisdri = total_sisdri / total_samples
         return avg_sisdr, avg_sisdri
 
+    def _preflight_validation(self):
+        """Run the validation forward once, on one batch per validation loader,
+        before the first training epoch.
+
+        Validation calls the model in eval mode, under no_grad and in fp32, so
+        under torch.compile it is a *second* graph, compiled at the end of
+        epoch 1 -- and a compile failure there used to surface only after a
+        full training epoch with nothing checkpointed yet (2026-09-15:
+        TF-MossFormer S at 16 kHz lost a 6.5 h epoch to an Inductor bug in
+        torch 2.11). Making the same call up front costs seconds, compiles the
+        eval graph, and fetches the first batch of every validation loader, so
+        a broken corpus path fails here as well. No metrics are computed and
+        nothing is logged to W&B.
+        """
+        loaders = (
+            self.per_variant_val_loaders
+            if self.per_variant_mode
+            else {"val": self.val_loader}
+        )
+        self.model.eval()
+        start = time.time()
+        with torch.no_grad():
+            for loader in loaders.values():
+                batch = next(iter(loader))
+                mix = batch["mix"].to(self.device)
+                # Same call as validate() / validate_per_variant().
+                self.model(mix.unsqueeze(1))
+        self.logger.info(
+            f"Pre-flight validation forward OK on one batch from each of "
+            f"{len(loaders)} validation loader(s) ({time.time() - start:.1f}s)"
+        )
+
     def validate(self) -> tuple:
         """Run validation; return (avg SI-SDR, avg SI-SDRi)."""
         self.model.eval()
@@ -795,6 +827,7 @@ class Trainer:
         # seeds it to 0. All uses below are gated on early_stopping_patience.
 
         try:
+            self._preflight_validation()
             final_epoch = self.current_epoch + num_epochs
             for epoch in range(self.current_epoch, self.current_epoch + num_epochs):
                 self.current_epoch = epoch + 1

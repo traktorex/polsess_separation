@@ -947,3 +947,78 @@ def test_global_step_absent_in_old_checkpoint_is_tolerated(tmp_path):
     tgt = _make_trainer(tmp_path)
     tgt.load_checkpoint(str(path))  # must not raise
     assert tgt.global_step == 0
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight validation (2026-09-15): the eval-mode / no_grad validation forward
+# runs once per validation loader before epoch 1, so a compile failure of the
+# second (eval) torch.compile graph surfaces in seconds, not after a full epoch.
+# ---------------------------------------------------------------------------
+
+
+class _RecordingModel(DummyModel):
+    """DummyModel that records (training flag, grad enabled) for every call."""
+
+    def __init__(self, C=1):
+        super().__init__(C=C)
+        self.calls = []
+
+    def forward(self, x):
+        self.calls.append((self.training, torch.is_grad_enabled()))
+        return super().forward(x)
+
+
+def test_preflight_validation_single_loader(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    model = _RecordingModel()
+    trainer.model = model
+
+    trainer._preflight_validation()
+
+    # Exactly one forward, in eval mode and without grad, like validate().
+    assert model.calls == [(False, False)]
+
+
+def test_preflight_validation_one_batch_per_variant_loader(tmp_path):
+    from training.trainer import Trainer
+
+    cfg = make_config(tmp_path, task="SB")
+    train_loader = DataLoader(
+        SyntheticDataset(4, task="SB"), batch_size=2, collate_fn=polsess_collate_fn
+    )
+    variant_loaders = {
+        v: DataLoader(
+            SyntheticDataset(2, task="SB"), batch_size=2, collate_fn=polsess_collate_fn
+        )
+        for v in ("SER", "SE", "C")
+    }
+    model = _RecordingModel(C=2)
+    trainer = Trainer(
+        model, train_loader, None, cfg,
+        device="cpu", logger=None, wandb_logger=None,
+        per_variant_val_loaders=variant_loaders,
+    )
+
+    trainer._preflight_validation()
+
+    assert model.calls == [(False, False)] * len(variant_loaders)
+
+
+def test_train_runs_preflight_before_first_training_step(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    model = _RecordingModel()
+    trainer.model = model
+    # Re-point the optimizer at the new model so train() has real parameters.
+    trainer.optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    def mse_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        return loss, loss.item()
+
+    trainer.loss_fn = mse_loss_wrapper
+
+    trainer.train(num_epochs=1, save_dir=str(tmp_path / "ckpt"))
+
+    # First call is the pre-flight (eval, no grad); a training-mode call follows.
+    assert model.calls[0] == (False, False)
+    assert (True, True) in model.calls
