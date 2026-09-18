@@ -1,0 +1,98 @@
+# SPMamba — paper-faithful config (JusperLee/SPMamba) at the PolSESS 128k tier.
+#
+# Goal: the PUBLISHED SPMamba, untouched, given our full 128k training data. The
+# cleanest capacity test (does the architecture-as-published still plateau, or was
+# the §5.4 "ceiling at ~1.16M" just the reduced 4/192 config?) and a paper-faithful
+# entry into the 128k separator comparison vs the MF2-matched final (run 6xuv1tob,
+# 17.04 dB val SI-SDRi) and the SepFormer final (8q3yeeoz, 16.0 dB).
+#
+# MODEL + OPTIM + SCHEDULER are copied verbatim from the official repo config
+# configs/spmamba-wsj0.yml (identical to spmamba-wham.yml; they differ only in the
+# data module):
+#   model: 6 layers, lstm_hidden_units 256, attn 4 heads / 512 Q-K, emb_dim 16,
+#          emb_ks 8, emb_hs 1, n_fft 256, stride 64, prelu, eps 1e-5.
+#   optim: Adam, lr 1e-3, weight_decay 0.
+#   sched: ReduceLROnPlateau, factor 0.5, patience 10.
+#   stop:  epochs 500, early-stop patience 20.   (batch 1, 8 kHz, 4 s segments.)
+#
+# !! emb_ks = 8 is the PAPER value. Your own 06_spmamba_investigation.md found
+# emb_ks=4 BEATS 8 on PolSESS by +0.69 dB (SB-full) / +1.50 dB (SB-reduced) — an
+# 8-vs-16 kHz effect. This config deliberately keeps the paper's 8 and so likely
+# leaves ~0.5-1.5 dB on the table vs a PolSESS-tuned emb_ks=4. Swap to 4 if you want
+# best-achievable rather than paper-faithful.
+#
+# Fields the paper is SILENT on (set for our harness — not deviations):
+#   - data = PolSESS / SB / 128k (the run's whole point); batch 1 matches the paper.
+#   - validation on all 8 MM-IPC variants == validating on the full PolSESS val set;
+#     best checkpoint on avg SI-SDRi — same metric as the MF2/SepFormer 128k finals.
+#   - no curriculum (all variants from epoch 1) — the paper has no curriculum either.
+#   - use_amp: bf16 — 06_spmamba_investigation confirmed bf16 is safe and reached a
+#     HIGHER peak than fp32 (6.28 vs 6.02 dB). Set use_amp: false for literal fp32.
+#
+# Where paper-exact is NOT expressible in our trainer (noted, not fixable here):
+#   - grad_clip_norm: the repo yaml specifies no clip, but training/trainer.py ALWAYS
+#     calls clip_grad_norm_ (no disable sentinel). Kept at 5.0 — the value our own
+#     spmamba_sb baseline uses and the TF-GridNet lineage default. Raise toward 1e9
+#     to approximate the paper's no-clip if you want stricter fidelity.
+#   - train loss (paper: PIT neg-SNR) and segment length (paper: 4 s) are framework-
+#     level in our codebase, not config knobs.
+#
+# Cost: epochs=500 is a CAP — early stopping (patience 20) ends it far sooner (the
+# transformer finals stopped at 56-73 epochs). Still budget multiple weeks: full
+# SPMamba is slow per step and 128k is the largest tier. Expect checkpoint-resume if
+# the GPU is reclaimed mid-run.
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # Paper.
+  num_workers: 2           # Throughput only (paper uses 8) — raise if CPU allows.
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set.
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2                # SB task forces source count to 2 in Config.__post_init__.
+    n_fft: 256               # Paper.
+    stride: 64               # Paper.
+    window: "hann"           # Paper.
+    n_layers: 6              # Paper.
+    lstm_hidden_units: 256   # Paper.
+    attn_n_head: 4           # Paper.
+    attn_approx_qk_dim: 512  # Paper.
+    emb_dim: 16              # Paper.
+    emb_ks: 8                # Paper (see header: your own data prefers 4).
+    emb_hs: 1                # Paper.
+    activation: "prelu"      # Paper.
+    eps: 1.0e-5              # Paper.
+
+training:
+  # ---- Optimizer / scheduler: verbatim from spmamba-wsj0.yml ----
+  lr: 0.001                # Paper (Adam; trainer uses torch.optim.Adam).
+  weight_decay: 0.0        # Paper -> pure Adam, no decay.
+  lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
+  lr_patience: 1          # Paper ReduceLROnPlateau patience.
+  grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none (see header).
+  # ---- Training length: paper cap + paper early-stop ----
+  num_epochs: 500          # Paper cap; early stopping ends it far sooner.
+  early_stopping_patience: 10   # Paper.
+  use_amp: true            # bf16 (validated safe/better) — set false for literal fp32.
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: spmamba_paper_128k_final_42
+  log_level: INFO
+  seed: 42
+
+  # No curriculum -> all 8 variants from epoch 1 (the paper has no curriculum).
+
+  # Validate on all 8 MM-IPC variants (= full PolSESS val set); best checkpoint on
+  # avg SI-SDRi — identical metric to the MF2/SepFormer 128k finals.
+  per_variant_validation: true
+  validation_variants: null     # null = all 8 MM-IPC variants.

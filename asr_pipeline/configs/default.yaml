@@ -1,0 +1,127 @@
+# Default pipeline config — POC-equivalent values.
+# Loaded by `asr_pipeline.config.load_pipeline_config_from_yaml()`.
+
+sample_rate: 16000
+device: cuda
+
+# Force deterministic cuDNN algorithms so runs are reproducible. The enhancement
+# stage is otherwise the pipeline's sole source of run-to-run float
+# nondeterminism (which WhisperX can amplify into a flipped token). Set false to
+# restore cuDNN autotuning (slightly faster, non-reproducible).
+deterministic: true
+
+# Disable to keep the run purely in-memory (interactive use).
+spill_intermediate: false
+artifact_dir: null
+
+diarization:
+  enabled: true
+  model_id: pyannote/speaker-diarization-3.1
+  # hf_token is read from the $HF_TOKEN env var by default. Do NOT
+  # hardcode a real token here — it ends up in git history.
+  num_speakers: 2
+
+routing:
+  enabled: true
+  min_overlap_dur: 0.20      # drop overlaps shorter than this
+  merge_gap: 0.50            # merge overlap regions closer than this
+
+enhancement:
+  enabled: true
+  # Interim default per SCOPE §10 q7 (mpsenet removed 2026-06-11; FRCRN is the
+  # evidence leader). Final default ruling deferred pending substantive data.
+  backend: frcrn_se_16k        # frcrn_se_16k | mossformer_gan_se_16k
+  max_segment_length_s: 8.0    # solos longer than this get Hann overlap-add chunked
+  observation_mix_ratio: 0.0   # OA dry-wet mix (Iwamoto/Wang): out=(1-r)*enh+r*observed; 0=pure enhanced
+
+separation:
+  enabled: true
+  separator_backend: repo                 # one of config.SEPARATOR_BACKENDS; loader notes on SeparationConfig
+  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt
+  separator_sample_rate: 8000
+  training_chunk_length_s: 4.0
+  context_window_mode: expand_to_chunk
+  context_pad_seconds: 1.0
+  min_fragment_length_s: 4.0              # floor for total padded-window length
+  seam_mode: snap_to_silence              # zero_crossing | overlap_boundary | snap_to_silence
+  seam_search_radius_s: 0.05              # zero-crossing nudge radius
+  snap_silence_max_extend_s: 0.3          # snap_to_silence: max outward extension
+  overlap_add_threshold_s: 12.0
+  volume_normalization: sum_equals_mix
+  vad_threshold: 0.25                  # upper threshold ("definitely speech")
+  vad_soft_threshold: 0.10             # Schmitt-trigger lower threshold (0 to disable)
+  vad_attack_frames: 1                 # frames of dilation at speech onset (32 ms each)
+  vad_release_frames: 1                # frames of dilation at speech offset
+
+post_separation_processing:
+  # VAD mask application + optional bandwidth extension. Always-on:
+  # Stage 4 depends on the masked `_gated` arrays this stage writes,
+  # so there's no `enabled` knob. Set `backend: naive` to apply only
+  # the mask (no neural BWE).
+  backend: ap_bwe                       # naive | ap_bwe
+  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
+
+assembly:
+  enabled: true
+  weak_anchor_warn_below_s: 3.0
+  anchor_max_duration_s: 240.0            # cap solo audio fed to ECAPA for the anchor
+  output_mode: shortened
+  silence_separator_s: 0.3
+  crossfade_ms: 5.0                       # internal piece-to-piece seam fade
+  edge_fade_ms: 2.0                       # stream's outermost edge fade
+  overlap_rms_match_solo: true            # scale overlap pieces to solo RMS
+  per_piece_rms_norm: false               # aggressive: normalise ALL pieces
+  target_rms: null
+
+transcription:
+  enabled: true
+  # backend selector. See class docstring in stages/transcription.py.
+  #   whisperx = faster-whisper + wav2vec2 forced alignment. Accepts HF
+  #              model ids (auto-converted to CT2 on first use under
+  #              ~/models/ct2-whisper/<safe-name>/). Word timestamps to
+  #              ±50 ms. The shipped/default backend.
+  #   coherex  = Cohere ASR via an isolated-venv subprocess ($COHEREX_VENV_PY).
+  backend: whisperx
+  # OpenAI short name (large-v3 / large-v2 / ...) or any HF Whisper id.
+  model_name: large-v2
+  language: pl
+  initial_prompt: Rozmowa po polsku.
+  word_timestamps: true
+  # Whisper decode knobs (both backends; sweepable). Defaults reproduce
+  # WhisperX's own default_asr_options exactly — current pipeline behaviour.
+  beam_size: 5                            # beam width (>= 1)
+  temperature: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]   # fallback schedule (scalar or list; each in [0,1])
+  condition_on_previous_text: false       # WhisperX default (faster-whisper signature says true)
+  no_speech_threshold: 0.6                # silence prob cutoff
+  compression_ratio_threshold: 2.4        # hallucination/fallback trigger
+  patience: 1.0                           # beam-search patience (> 0)
+  length_penalty: 1.0                     # length penalty alpha; 1.0 = no-op (both backends; > 0)
+  # WhisperX-only knobs (a non-default value with backend=coherex is rejected
+  # loud). Defaults reproduce WhisperX's own defaults exactly → no-op baseline.
+  suppress_numerals: false                # true = spell numbers out as words (whisperx-only)
+  vad_onset: 0.500                        # WhisperX internal-VAD onset prob (whisperx-only; in (0,1))
+  vad_offset: 0.363                       # WhisperX internal-VAD offset prob (whisperx-only; in (0,1))
+  # Anti-hallucination knobs (faster-whisper / whisperx backend only; a
+  # non-default value with backend=coherex is rejected loud). Defaults match
+  # WhisperX's default_asr_options exactly → current behaviour unchanged.
+  no_repeat_ngram_size: 0                 # 0 = disabled; >0 blocks repeating N-grams (int >= 0)
+  repetition_penalty: 1.0                 # 1.0 = none; >1 penalizes repeats (> 0)
+  hallucination_silence_threshold: null   # null = off; secs: skip silent gaps where hallucinations cluster
+  # WhisperX VAD chunk size (secs; whisperx-only). 30 = WhisperX default = current
+  # behaviour. Lower (e.g. 15) splits over-long VAD segments that make Whisper
+  # collapse and drop ~30 s of speech (see db15fc57). int >= 1.
+  chunk_size: 30
+  # Detect-and-retry for collapsed WhisperX windows (whisperx-only). After the
+  # cs30 pass, re-transcribe ONLY the windows that collapsed (long + near-empty)
+  # at a small chunk and splice — fixes db15fc57/fe65d170/72ca135e collapses with
+  # near-zero collateral, unlike lowering chunk_size globally. 0 = disabled;
+  # 8 = on (shipped). int >= 0.
+  retry_collapsed_chunk_size: 8
+  collapse_min_duration_s: 18.0          # only windows this long are collapse-eligible (> 0)
+  collapse_max_wps: 0.7                   # long window below this words/sec = collapsed (> 0; normal Polish ~2-4 w/s)
+  # wav2vec2 forced-alignment model (WhisperX only). Omitted → WhisperX picks
+  # its per-language default; for language: pl that is exactly
+  # jonatasgrosman/wav2vec2-large-xlsr-53-polish (the previously-pinned value).
+  # Set align_model_name explicitly to override.
+  # Rationale for choosing (backend, model_name): see configs/README.md
+  # (5-variant comparison, 2026-05-25 / -26).

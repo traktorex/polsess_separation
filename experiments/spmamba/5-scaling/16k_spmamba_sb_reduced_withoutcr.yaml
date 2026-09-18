@@ -1,0 +1,98 @@
+# SPMamba-reduced BASELINE config, flat/no-curriculum — 16k.
+# Based on: 64k_spmamba_sb_reduced_withoutcr.yaml (body byte-identical except
+# train_max_samples and the W&B target), which in turn derives from the
+# progressive 16k_spmamba_sb_reduced.yaml.
+#
+# Trajectory-filler arm of N2 as respecced under Decision A (see thesis ch5,
+# 2026-08-10) — OPTIONAL. The load-bearing arm is the 64k one; this fills
+# Tabela 5.7's "SPMamba — bazowa" 16k cell so the row reads as a trajectory
+# rather than two endpoints. Dropping it costs only a "–" cell.
+#
+# Supersedes 16k_spmamba_sb_reduced.yaml, whose progressive schedule has no
+# consumer under Decision A.
+#
+# TWO FIELDS DIFFER from the progressive baseline it derives from:
+#   1. curriculum_learning collapses to the single all-variant stage (the old
+#      stage-3 list, promoted to epoch 1);
+#   2. the budget is 80 epochs + early_stopping_patience 15 (author ruling,
+#      2026-08-10), matching the flat TUNED run this row is compared against
+#      (7ifvwekd, 80/15) so the tuned-vs-bazowa pair is budget-matched as well
+#      as schedule-matched. Patience is set explicitly because the dataclass
+#      default is None, i.e. no early stopping at all — without it 80 epochs
+#      would give the baseline a strictly LARGER budget than the tuned run.
+# Optimizer recipe (lr 1e-3, wd 1e-5, clip 2.0, factor 0.5/patience 2), seed 42
+# and the validation set are held identical to the progressive baseline.
+#
+# Consequence to keep in mind: at 80/15 this run is no longer budget-comparable
+# to the 30-epoch progressive l4pln536/87lepmzg, so it does NOT cleanly isolate
+# the schedule effect against them. Its intended comparison is the flat tuned
+# run; the schedule effect itself is carried by the curriculum ablation
+# (Tab 5.8/5.9), which uses its own matched pair.
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+  val_max_samples: null
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64  # Not used, kept for compatibility
+    n_srcs: 2  # Will be set by task in config post_init
+    n_fft: 256  # Paper uses 256
+    stride: 64  # Paper uses 64
+    window: "hann"
+    n_layers: 4  # Reduced from 6 (saves ~33% memory)
+    lstm_hidden_units: 192  # Reduced from 256 (saves ~25% memory)
+    attn_n_head: 2  # Reduced from 4 (saves 50% attention memory)
+    attn_approx_qk_dim: 256  # Reduced from 512 (saves 50% Q/K memory)
+    emb_dim: 16  # Keep same
+    emb_ks: 4
+    emb_hs: 1  # Keep same
+    activation: "prelu"
+    eps: 1.0e-5
+
+training:
+  # Optimizer settings — identical to the progressive baseline
+  lr: 0.001
+  weight_decay: 1.0e-5  # Small value for stability
+  grad_clip_norm: 2.0  # More aggressive clipping
+
+  # Learning rate scheduler (ReduceLROnPlateau from paper)
+  lr_factor: 0.5
+  lr_patience: 2
+
+  # Training configuration
+  num_epochs: 80
+  early_stopping_patience: 15
+  use_amp: true
+
+  # Checkpointing and logging
+  save_dir: "checkpoints"
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  # Distinct from the progressive baseline's `16k_spmamba_baseline`:
+  # W&B display names collide across runs, and these
+  # two runs are precisely the pair a reader must be able to tell apart.
+  wandb_run_name: 16k_spmamba_baseline_withoutcr
+  wandb_entity: null
+  log_file: null
+  log_level: "INFO"
+
+  # Hardware
+  device: "cuda"
+  seed: 42
+  resume_from: null
+
+  # Validation
+  validation_variants: ["SER", "SE"]
+
+  # Flat schedule: the progressive config's final stage, promoted to epoch 1.
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start

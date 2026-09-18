@@ -6,12 +6,6 @@ from pathlib import Path
 
 
 @pytest.fixture
-def temp_data_root(tmp_path):
-    """Create temporary data directory for testing."""
-    return tmp_path / "data"
-
-
-@pytest.fixture
 def device():
     """Return available device (cuda or cpu)."""
     return "cuda" if torch.cuda.is_available() else "cpu"

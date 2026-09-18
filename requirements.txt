@@ -1,10 +1,12 @@
-git+https://github.com/speechbrain/speechbrain.git@develop#egg=speechbrain
-torch>=2.0.0
-torchaudio>=2.0.0
+# Core dependencies of venv/ (training, evaluation, tests, figure scripts, webapp).
+# Exact versions used for the thesis experiments: requirements-freeze.txt.
+speechbrain>=1.0.3
+torch>=2.8.0
+torchaudio>=2.8.0
 pandas>=2.0.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.4
 scipy>=1.10.0
-torchmetrics>=1.0.0
+torchmetrics>=0.11.0
 pyyaml>=6.0
 wandb>=0.16.0
 coloredlogs>=15.0
@@ -12,7 +14,34 @@ tqdm>=4.66.0
 tabulate>=0.9.0
 pytest>=7.4.0
 pytest-cov>=4.1.0
-pytest-ui>=0.3.0
 asteroid>=0.7.0
+einops>=0.6.0              # MossFormer2: tensor rearrange in the vendored blocks
+rotary-embedding-torch>=0.5.0  # MossFormer2: rotary positional embeddings in FLASH attention
+# TF-MossFormer (models/tf_mossformer/) needs no new dependency: it shares
+# rotary-embedding-torch and einops with MossFormer2 and `packaging` (already a
+# transitive dep) with the vendored TF-Locoformer blocks.
+num2words>=0.5.0   # ASR-eval: digit→word normalization for Polish cpWER scoring
+rapidfuzz>=3.0.0   # ASR-eval: fast char edit distance for CER under cpWER assignment
+pyannote.audio>=3.1,<5  # ASR-pipeline: diarization stage; <5 pins the 3.x/4.x output shape the stage duck-types
+onnxruntime>=1.16.0  # fragment-acoustics: DNSMOS sig_bak_ovr ONNX inference (CPU)
+pyloudnorm>=0.2.0    # fragment-acoustics: integrated LUFS in score_fragment_acoustics.py
+soundfile>=0.12.0    # audio I/O across asr_pipeline/, scripts/, webapp/, tests/
+pesq>=0.0.4          # torchmetrics PESQ backend used by evaluate.py (default metrics)
+pystoi>=0.4.0        # torchmetrics STOI backend used by evaluate.py (default metrics)
+matplotlib>=3.7.0    # scripts/thesis_figures/ and sweep analysis plots
+seaborn>=0.13.0      # sweep analysis plots
+huggingface_hub>=0.20.0  # asr_pipeline preflight + vendored model downloads
+fastapi>=0.110.0     # webapp/ showcase backend
+uvicorn>=0.27.0      # webapp/ server (webapp/run.sh)
+python-multipart>=0.0.9  # webapp/ upload forms (FastAPI Form/File); was only a transitive dep before 2026-09
 
-mamba-ssm>=2.0.0; platform_system=="Linux"
+# --- Optional, not installed by default ---------------------------------------
+# Mamba-family models (SPMamba, Mamba-TasNet, DPMamba) need Linux + CUDA and a
+# from-source build (nvcc). Install separately; the model registry skips the
+# Mamba models when this import is missing:
+#   pip install mamba-ssm>=2.3.1
+# ASR pipeline (chapter 6) extras, installed on demand — see CLAUDE.md for the
+# isolated venvs (Sortformer/NeMo, CohereX, Brouhaha) that must NOT share this env:
+#   whisperx meeteval librosa clearvoice ptflops
+# B1 external-separator arm `sr_corrnet` (git dependency, MIT):
+#   pip install "sr-corrnet-ss @ git+https://github.com/dmlguq456/SR_CorrNet_SS" loguru

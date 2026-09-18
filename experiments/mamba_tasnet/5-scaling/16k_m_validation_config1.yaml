@@ -1,0 +1,52 @@
+# MambaTasNet-M HPO Validation — Config 1 (Best)
+# Source: grateful-sweep-14 (jfuop2o9), best_val_sisdr=5.0969921875
+# Sweep: mamba-tasnet-m (6t8qrgut)
+
+data:
+  dataset_type: polsess
+  batch_size: 4
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+  val_max_samples: null
+
+model:
+  model_type: mamba_tasnet
+  mamba_tasnet:
+    N: 256          # Encoder channels (paper M)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    bot_dim: 256    # Bottleneck matches N (paper M)
+    n_mamba: 32     # Paper M: 32 BiMamba blocks (Speech Slytherin Table 1)
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    residual_in_fp32: true
+
+training:
+  lr: 0.0009764447247414138
+  weight_decay: 1.5465412582911728e-07
+  grad_clip_norm: 0.6522079968579483
+  lr_factor: 0.5631598955808096
+  lr_patience: 3
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_test_mambatasnet_m_valconfig1
+  wandb_entity: null
+  log_file: null
+  log_level: INFO
+  resume_from: null
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

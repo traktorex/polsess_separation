@@ -1,0 +1,64 @@
+# MambaTasNet-M — bf16 re-validation of HPO Config 1.
+#
+# Why this file exists: every Mamba run before 2026-04-19 silently trained and
+# validated in fp16, because torch.compile's OptimizedModule wrapper defeated the
+# class-name AMP dispatch (fixed in 2327c89; compile disabled for Mamba in c99b56c).
+# This re-runs the winning M validation config under the corrected bfloat16 path.
+# The config body is deliberately identical to experiments/mamba_tasnet/5-hpo-m-vals/
+# validation_config1.yaml — only the training code changed, not the recipe.
+#
+# Source config: grateful-sweep-14 (jfuop2o9), best_val_sisdr=5.097, sweep mamba-tasnet-m (6t8qrgut).
+# Corpus: PolSESS_C_both (passed at launch with --data-root).
+# As-run: W&B runs rare-morning-252 and warm-silence-254 (both seed 42) on the RTX 4070,
+# 2026-07-19..20, git ba9064a.
+#
+# Reconstructed from the checkpoint's config.yaml on 2026-09-03 (the file was used
+# for training but never committed).
+
+data:
+  dataset_type: polsess
+  batch_size: 4
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: null
+  val_max_samples: null
+
+model:
+  model_type: mamba_tasnet
+  mamba_tasnet:
+    N: 256          # Encoder channels (paper M)
+    kernel_size: 16
+    stride: 8
+    C: 2
+    bot_dim: 256    # Bottleneck matches N (paper M)
+    n_mamba: 32     # Paper M: 32 BiMamba blocks (Speech Slytherin Table 1)
+    d_state: 16
+    d_conv: 4
+    expand: 2
+    residual_in_fp32: true
+
+training:
+  lr: 0.0009764447247414138
+  weight_decay: 1.5465412582911728e-07
+  grad_clip_norm: 0.6522079968579483
+  lr_factor: 0.5631598955808096
+  lr_patience: 3
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation
+  wandb_entity: null
+  log_file: null
+  log_level: INFO
+  resume_from: null
+  early_stopping_patience: 10
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

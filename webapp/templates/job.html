@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zadanie {{ job_id }} — Separacja mowy · PolSESS</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1><a href="/">Separacja mowy · PolSESS</a></h1>
+    <span class="sub mono">zadanie {{ job_id }}</span>
+    <nav>
+      <a href="/">Nowe nagranie</a>
+      <a href="/examples">Przykłady</a>
+      <span id="theme-slot"></span>
+    </nav>
+  </header>
+  <main class="wrap">
+    <div id="app"
+         data-page="job"
+         data-job-id="{{ job_id }}"
+         data-poll-url="{{ poll_url }}"
+         data-log-url="{{ log_url }}"></div>
+    <noscript><p class="lead">Ta strona wymaga JavaScriptu.</p></noscript>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

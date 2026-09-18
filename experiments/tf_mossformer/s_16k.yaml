@@ -1,0 +1,126 @@
+# ############################################################################
+# #                                                                          #
+# #   BLOCKED — DO NOT RUN. THE CORPUS THIS CONFIG NEEDS DOES NOT EXIST.     #
+# #                                                                          #
+# #   There is no 16 kHz PolSESS render on disk. `~/datasets/` holds only    #
+# #   8 kHz corpora (PolSESS_C_both, C_new_64, C_final_128_v2). This file    #
+# #   is the geometry decision written down while it was fresh, not a        #
+# #   runnable experiment. It will fail at dataset construction, loudly and  #
+# #   within seconds: PolSESSDataset reads the first mix file's header and   #
+# #   raises on a mismatch against data.sample_rate. That is the intended    #
+# #   behaviour — do not "fix" it by deleting the sample_rate field.         #
+# #                                                                          #
+# #   To unblock: render PolSESS at 16 kHz into the same folder layout       #
+# #   (train/{clean,event,mix,scene,sp1_reverb,sp2_reverb,ev_reverb} + CSV), #
+# #   point $POLSESS_DATA_ROOT at it, then re-read the OPEN QUESTIONS block  #
+# #   below before launching — two of them change what the run means.        #
+# #                                                                          #
+# ############################################################################
+#
+# TF-MossFormer S (D=96, B=4, H=256, ~5.92M) — 16 kHz PolSESS, 16k-subset.
+#
+# WHY THIS EXISTS: the ASR pipeline runs at 16 kHz and resamples down to the
+# separator's rate and back (`separation.separator_sample_rate`, default 8000). Every
+# separator this thesis trained is an 8 kHz model, so the deployed pipeline throws
+# away the 4-8 kHz band before separation and synthesises it back afterwards with
+# AP-BWE. A native 16 kHz separator removes that round trip. TF-MossFormer is the
+# natural first candidate because a TF model's geometry is set by n_fft/hop in
+# SAMPLES, so moving to 16 kHz is a two-line change rather than a redesign.
+# This is the FIRST config in the repository to carry `data.sample_rate: 16000`.
+#
+# ARCHITECTURE: `s_8k.yaml`'s model block with the STFT doubled — n_fft 128 -> 256,
+# hop 64 -> 128. That holds the FRAME rate (still 16 ms / 8 ms, still T = 501 frames
+# for a 4.000 s clip, so the temporal path is unchanged) and doubles the FREQUENCY
+# path from F = 65 to F = 129 bins. Doubling both is the deliberate choice CLAUDE.md's
+# sample-rate note describes as per-architecture and NOT automatic: keeping n_fft 128
+# at 16 kHz would instead double the frame count to ~1000 and leave an 8 ms window,
+# which is too short for the frequency module to resolve anything useful.
+#
+# RECIPE: unchanged from `s_8k.yaml` — the paper's AdamW / warmup-4000 / plateau-3
+# recipe, batch 4, 150 epochs, early stop 10. Nothing in it is rate-dependent: the
+# clip length in SECONDS is the same, so a step still costs the same 4 clips.
+#
+# PROTOCOL: same 16 000-sample subset, same SB task, same {SER, SE} validation as the
+# 8 kHz rows — but see OPEN QUESTIONS: this run is NOT a like-for-like row next to
+# them, because the corpus itself differs.
+#
+# COST: TBD (WP4), and higher than `s_8k.yaml`. The temporal module is unchanged, but
+# the frequency module's sequence doubles (65 -> 129) and its attention is quadratic
+# in that length, while every module runs over 2x as many frequency bins. Expect
+# roughly 2-2.5x the 8 kHz per-epoch cost; unmeasured.
+#
+# OPEN QUESTIONS for whoever unblocks this (all three are judgement calls, not bugs):
+#   1. COMPARABILITY. `polsess-separation-real16k` is named after the 16 000-sample
+#      subset, not the sample rate. A 16 kHz run logged there sits beside 8 kHz rows
+#      it cannot be compared with — SI-SDR at 16 kHz is a different number on a
+#      different signal. Either give it its own project or make the run name carry
+#      the rate loudly (this file does the latter).
+#   2. window_f = 7. At 8 kHz, 7 bins of 65 covers ~11% of the spectrum; at F = 129
+#      the same 7 bins cover ~5%. The paper only ever tuned w_F at F = 65. Holding it
+#      at 7 keeps the parameter count identical and the local window physically
+#      narrower; setting it to 13 keeps the relative span. Neither is obviously right
+#      — it is a cheap ablation once the corpus exists, and 7 is kept here only
+#      because it is the paper's value.
+#   3. ASR-PIPELINE HANDOFF. A 16 kHz checkpoint needs BOTH
+#      `separation.separator_sample_rate: 16000` AND
+#      `post_separation_processing.backend: naive` in the pipeline config. AP-BWE
+#      decimates its input to 8 kHz and interpolates back, so on a genuine full-band
+#      separator output it destroys the real 4-8 kHz band and replaces it with
+#      synthesis. `asr_pipeline/configs/default.yaml` ships `ap_bwe`, so this must be
+#      overridden explicitly, not assumed.
+
+data:
+  dataset_type: polsess
+  batch_size: 2            # Same memory geometry as s_8k (n_fft doubled, frame counts equal) (author ruling 2026-09-07: no accumulation, use what fits).
+  num_workers: 2           # IO knob only.
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 16000       # BLOCKED: no 16 kHz PolSESS render exists. Guard, not a resampler.
+  train_max_samples: 16000 # 16 000 SAMPLES (the subset size), unrelated to the rate.
+  val_max_samples: null
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:
+    C: 2
+    D: 96                  # Paper Table 1, S — unchanged from s_8k.yaml.
+    num_blocks: 4
+    ffn_hidden_dim: 256
+    conv_kernel_size: 4
+    conv_stride: 1
+    n_heads: 4
+    num_groups: 4
+    window_t: 31           # w_T — unchanged: the frame rate is unchanged.
+    window_f: 7            # w_F — paper value, now covering half the relative span (see Q2).
+    n_fft: 256             # DOUBLED for 16 kHz: still a 16 ms window -> F = 129 bins.
+    hop_length: 128        # DOUBLED for 16 kHz: still an 8 ms hop -> T = 501 frames at 4 s.
+    gate_kernel_size: 4
+    attn_dropout: 0.0
+
+training:
+  # ---- Paper recipe, identical to s_8k.yaml (nothing in it is rate-dependent) ----
+  seed: 42
+  optimizer: adamw
+  lr: 0.0005               # Paper: 1e-3 @ batch 4. Linear LR-vs-batch scaling (the project's standing rule, lr/sample constant): x2/4 at batch 2. Peak LR, reached at the end of warmup.
+  warmup_steps: 4000       # Still exactly one epoch at 16000 samples / batch 4.
+  weight_decay: 0.01
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 150
+  early_stopping_patience: 10
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k   # See OPEN QUESTION 1 before logging here.
+  wandb_run_name: 16k_tf_mossformer_s_16khz_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+  # Single-stage curriculum, identical to the MossFormer2 16k rows (see s_8k.yaml).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

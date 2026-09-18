@@ -1,6 +1,7 @@
 # SPMamba 2-Stage Hyperparameter Optimization
 # Stage 2: Refined search on 8K samples
-# NOTE: Update ranges after Stage 1 completes!
+# Ranges below were narrowed from the Stage 1 results (see the annotated
+# parameter block).
 
 program: train_sweep.py
 method: bayes

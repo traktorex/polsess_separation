@@ -1,0 +1,63 @@
+# SepFormer 128k Bayesian HPO — final-training refinement.
+#
+# Ranges informed by the polsess-thesis-experiments / 0r4w3ep2 (posenc 16k) sweep:
+# - LR > 5e-4 diverged in ~73% of stage-2 runs; stay below.
+# - Best HPO winners had small WD (~1.5e-5), grad_clip 2.7-4.0, dropout 0.07-0.16.
+# - Baseline (lr=1.5e-4, dropout=0, wd=0, grad_clip=5.0) beat HPO configs at 32k/64k.
+# - Range floors are baseline-friendly so Bayes can rediscover it.
+#
+# Hyperband eta=2 keeps top 1/2 at epoch 8 (vs eta=3 which would have killed
+# soft-sweep-6, the eventual #1 in 0r4w3ep2 — rank 6/15 at epoch 8).
+#
+# After the sweep: take top 2 by val_si_sdri, run each as a final (≥80 epochs,
+# patience 12, full val) in polsess-separation-128k.
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: val_si_sdri
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 8
+  max_iter: 20
+  eta: 2
+
+parameters:
+  # ---- Fixed ----
+  config:
+    value: experiments/sepformer/6-final-training/128k_sweep_base.yaml
+
+  seed:
+    value: 42
+
+  # ---- Search space ----
+
+  # 1.5e-4 = baseline; HPO winners ~2-3e-4; >5e-4 historically diverges.
+  lr:
+    distribution: log_uniform_values
+    min: 5.0e-5
+    max: 5.0e-4
+
+  # Baseline (0.0) is best at 64k; HPO winners had ~0.07-0.16.
+  # 0.15 ceiling keeps us within the regime that actually generalised before.
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.15
+
+  # Baseline 5.0; HPO winners 2.7-4.0. Floor 1.0 leaves headroom for stability.
+  grad_clip_norm:
+    distribution: log_uniform_values
+    min: 1.0
+    max: 5.0
+
+  # Baseline 0.0; HPO winners ~1.5e-5. 1e-7 ≈ 0 for training; effective lower bound is "off".
+  weight_decay:
+    distribution: log_uniform_values
+    min: 1.0e-7
+    max: 5.0e-5
+
+project: polsess-thesis-experiments
+name: sepformer-final-128k
