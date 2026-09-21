@@ -4,10 +4,12 @@ import sys
 import torch
 import torch.nn as nn
 import logging
-from typing import Any, Dict, Optional, Tuple
-from pathlib import Path
+from typing import Any, Dict, Optional
 
-from models import get_model, MAMBA_MODELS
+from models import MAMBA_MODELS
+# The inference loaders live in models/ so that they ship with the
+# polsess-models package; re-exported here for the callers inside this repository.
+from models.inference import load_checkpoint_file, load_model_for_inference  # noqa: F401
 
 
 def unwrap_compiled_model(model: torch.nn.Module) -> torch.nn.Module:
@@ -104,21 +106,6 @@ def format_parameter_count(num_params: int) -> str:
         return str(num_params)
 
 
-def load_checkpoint_file(
-    checkpoint_path: str, device: str = "cuda"
-) -> Dict[str, Any]:
-    """Load checkpoint file from disk.
-
-    ``weights_only=False`` is explicit (survey gap 13): our checkpoints carry a
-    pickled config dict (and now a provenance dict), and torch 2.6+ flipped the
-    default to True, which would refuse to unpickle them. This matches config.py.
-    """
-    checkpoint_path = Path(checkpoint_path)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    return torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-
 def read_wandb_run_id(checkpoint_path: str) -> Optional[str]:
     """Peek a checkpoint for its saved W&B run id (survey gap 14).
 
@@ -156,78 +143,3 @@ def load_model_from_checkpoint(
     model_to_load.load_state_dict(checkpoint["model_state_dict"], strict=strict)
 
     return checkpoint
-
-
-def load_model_for_inference(
-    checkpoint_path: str,
-    device: str = "cuda",
-    config_override: Optional[Dict[str, Any]] = None,
-) -> Tuple[nn.Module, Dict[str, Any]]:
-    """Load a trained model from checkpoint, ready for inference.
-
-    Creates the model architecture from the config embedded in the checkpoint,
-    loads trained weights, and sets the model to eval mode. This is the single
-    entry point for all post-training use cases (evaluation, ASR, notebooks).
-
-    Args:
-        checkpoint_path: Path to model checkpoint file.
-        device: Device to load the model on.
-        config_override: Optional config dict to use instead of the one in
-            the checkpoint. Must follow the same structure as checkpoint configs
-            (with 'model.model_type' and 'model.<model_type>' keys).
-
-    Returns:
-        Tuple of (model in eval mode, checkpoint dict with metadata).
-
-    Raises:
-        ValueError: If no config is available (neither in checkpoint nor override).
-    """
-    checkpoint = load_checkpoint_file(checkpoint_path, device)
-
-    # Use override config if provided, otherwise use config from checkpoint
-    config = config_override or checkpoint.get("config")
-    if config is None:
-        raise ValueError(
-            f"Checkpoint '{checkpoint_path}' does not contain a config "
-            "and no config_override was provided."
-        )
-
-    # Extract model type and architecture parameters
-    model_type = config.get("model", {}).get("model_type", "convtasnet")
-    model_params = config.get("model", {}).get(model_type, {})
-
-    # Backward compat: SepFormer checkpoints before 2026-03 were trained without
-    # positional encoding (see models/sepformer.py module docstring for details).
-    # Their saved configs lack this key, so default to False to match trained weights.
-    if model_type == "sepformer" and "use_positional_encoding" not in model_params:
-        model_params["use_positional_encoding"] = False
-
-    # Backward compat: `sample_rate` was removed from SPMamba; drop it from
-    # legacy checkpoint configs so SPMamba(**model_params) doesn't TypeError.
-    if model_type == "spmamba":
-        model_params.pop("sample_rate", None)
-
-    # Instantiate model and load weights
-    model_class = get_model(model_type)
-    model = model_class(**model_params)
-
-    # Backward compat: SpeechBrain renamed SBTransformerBlock's inner attribute
-    # from `transformer` to `mdl` (somewhere between the old training env and now).
-    # Remap checkpoint keys so old checkpoints load into the current model.
-    state_dict = checkpoint["model_state_dict"]
-    if model_type == "sepformer" and any(".transformer." in k for k in state_dict):
-        state_dict = {k.replace(".transformer.", ".mdl."): v for k, v in state_dict.items()}
-
-    # Defensive torch.compile-artifact strip: the save side (train.py) already
-    # unwraps `_orig_mod` before saving, so our own checkpoints never carry the
-    # prefix. This guards externally-produced checkpoints (e.g. saved directly
-    # from a compiled model without unwrapping) so this generic loader doesn't
-    # silently 0-match every key and raise a confusing "missing keys" error.
-    if any(k.startswith("_orig_mod.") for k in state_dict):
-        state_dict = {k[len("_orig_mod."):]: v for k, v in state_dict.items()}
-
-    model.load_state_dict(state_dict)
-    model = model.to(device)
-    model.eval()
-
-    return model, checkpoint

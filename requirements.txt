@@ -16,7 +16,8 @@ pytest>=7.4.0
 pytest-cov>=4.1.0
 asteroid>=0.7.0
 einops>=0.6.0              # MossFormer2: tensor rearrange in the vendored blocks
-rotary-embedding-torch>=0.5.0  # MossFormer2: rotary positional embeddings in FLASH attention
+rotary-embedding-torch>=0.5.3  # MossFormer2: rotary positional embeddings in FLASH attention
+safetensors>=0.4.0         # inference bundles: scripts/export_separator.py, models/inference.py load_separator
 # TF-MossFormer (models/tf_mossformer/) needs no new dependency: it shares
 # rotary-embedding-torch and einops with MossFormer2 and `packaging` (already a
 # transitive dep) with the vendored TF-Locoformer blocks.
