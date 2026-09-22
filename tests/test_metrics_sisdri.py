@@ -8,6 +8,7 @@ reference formulas below are transcribed verbatim from the code that was
 replaced and serve as the golden reference implementation.
 """
 
+import pytest
 import torch
 from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
@@ -16,7 +17,7 @@ from utils.metrics import compute_sisdr_and_sisdri
 
 
 def _metrics():
-    si_sdr_metric = ScaleInvariantSignalDistortionRatio()
+    si_sdr_metric = ScaleInvariantSignalDistortionRatio(zero_mean=True)
     pit_loss = PITLossWrapper(pairwise_neg_sisdr, pit_from="pw_mtx")
     return si_sdr_metric, pit_loss
 
@@ -114,6 +115,35 @@ def test_enh_matches_reference_3d_singleton_channel():
 
     assert abs(got_sisdr - ref_sisdr) < 1e-5
     assert abs(got_sisdri - ref_sisdri) < 1e-5
+
+
+def test_refuses_non_zero_mean_metric():
+    """The PIT loss zero-means its inputs; a mixture baseline that does not
+    would put SI-SDRi ~0.07 dB high on PolSESS (the pre-2026-09-22 state)."""
+    estimates = torch.randn(1, 2, 100)
+    clean = torch.randn(1, 2, 100)
+    mix = torch.randn(1, 100)
+    _, pit_loss = _metrics()
+    with pytest.raises(ValueError, match="zero_mean=True"):
+        compute_sisdr_and_sisdri(
+            estimates, clean, mix, "SB", ScaleInvariantSignalDistortionRatio(), pit_loss=pit_loss
+        )
+
+
+def test_sb_sisdri_ignores_dc_offset_in_mix():
+    """With both terms zero-mean, a DC offset on the mixture cannot move
+    SI-SDRi (the estimate term never saw the mixture)."""
+    torch.manual_seed(3)
+    B, T = 2, 400
+    estimates = torch.randn(B, 2, T)
+    clean = torch.randn(B, 2, T)
+    mix = clean.sum(1)
+    si_sdr_metric, pit_loss = _metrics()
+    _, sisdri, _ = compute_sisdr_and_sisdri(estimates, clean, mix, "SB", si_sdr_metric, pit_loss=pit_loss)
+    _, sisdri_dc, _ = compute_sisdr_and_sisdri(
+        estimates, clean, mix + 0.3, "SB", si_sdr_metric, pit_loss=pit_loss
+    )
+    assert abs(sisdri - sisdri_dc) < 1e-4
 
 
 def test_sb_requires_pit_loss():

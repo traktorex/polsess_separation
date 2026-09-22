@@ -81,7 +81,7 @@ def evaluate_model(
     (no mean-of-batch-means bias, survey gap 3). The returned ``per_sample``
     list carries the individual scores for downstream confidence intervals.
     """
-    si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
+    si_sdr_metric = ScaleInvariantSignalDistortionRatio(zero_mean=True).to(device)
 
     # For SB task, use PIT-based SI-SDR
     pit_sisdr = None

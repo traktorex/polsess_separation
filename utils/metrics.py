@@ -9,7 +9,26 @@ The metric objects are passed in by the caller so this stays framework-light
 and reuses the caller's already-instantiated (and correctly-placed) metrics:
 ``evaluate.py`` and the trainer each keep one ``ScaleInvariantSignalDistortionRatio``
 and, for the SB task, one ``PITLossWrapper(pairwise_neg_sisdr, pit_from="pw_mtx")``.
+
+Convention: SI-SDR as defined by Le Roux et al. (2019), i.e. both signals are
+made zero-mean before the projection. asteroid's ``pairwise_neg_sisdr`` does
+this by default; torchmetrics' ``ScaleInvariantSignalDistortionRatio`` does
+not (``zero_mean=False``). Until 2026-09-22 the SB path subtracted a
+non-zero-mean mixture baseline from a zero-mean estimate SI-SDR, which put
+every reported SI-SDRi about 0.07 dB above the fully zero-mean value on
+PolSESS (consistent across runs, so comparisons were unaffected; the thesis
+tables carry the offset). The helper now refuses a metric constructed with
+``zero_mean=False`` so the two terms cannot drift apart again.
 """
+
+
+def _require_zero_mean(si_sdr_metric):
+    if not getattr(si_sdr_metric, "zero_mean", False):
+        raise ValueError(
+            "si_sdr_metric must be ScaleInvariantSignalDistortionRatio(zero_mean=True): "
+            "the PIT loss zero-means its inputs, so the mixture baseline must too "
+            "(see utils/metrics.py)."
+        )
 
 
 def compute_sisdr_and_sisdri(estimates, clean, mix, task, si_sdr_metric, pit_loss=None):
@@ -37,6 +56,7 @@ def compute_sisdr_and_sisdri(estimates, clean, mix, task, si_sdr_metric, pit_los
 
     Inputs are trimmed to a common time length first (matches evaluate.py).
     """
+    _require_zero_mean(si_sdr_metric)
     min_len = min(estimates.shape[-1], clean.shape[-1])
     estimates = estimates[..., :min_len]
     clean = clean[..., :min_len]

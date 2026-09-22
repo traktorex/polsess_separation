@@ -89,8 +89,9 @@ class Trainer:
         )
 
         # SI-SDR metric is needed by every task: for ES/EB it's the loss; for SB
-        # it's used as the mixture baseline in per-variant SI-SDRi.
-        self.si_sdr_metric = ScaleInvariantSignalDistortionRatio().to(device)
+        # it's used as the mixture baseline in per-variant SI-SDRi. zero_mean=True
+        # matches asteroid's pairwise_neg_sisdr (utils/metrics.py explains).
+        self.si_sdr_metric = ScaleInvariantSignalDistortionRatio(zero_mean=True).to(device)
 
         # Task-specific loss function
         self.task = config.data.task
@@ -741,30 +742,16 @@ class Trainer:
                     # fp32 forward (see validate()): avoids fp16 overflow in eval.
                     estimates = self.model(mix.unsqueeze(1))
 
-                    # Trim everyone to common length (matches evaluate.py).
-                    min_len = min(estimates.shape[-1], clean.shape[-1])
-                    estimates = estimates[..., :min_len]
-                    clean_t = clean[..., :min_len]
-                    mix_trimmed = mix[..., :min_len]
-
-                    if self.task == "SB":
-                        loss = self.pit_loss(estimates, clean_t)
-                        si_sdr = -loss.item()
-                        mix_baseline = 0.0
-                        for spk in range(clean_t.shape[1]):
-                            mix_baseline += self.si_sdr_metric(
-                                mix_trimmed, clean_t[:, spk]
-                            ).item()
-                        mix_baseline /= clean_t.shape[1]
-                        si_sdri = si_sdr - mix_baseline
-                    else:
-                        if clean_t.dim() == 3 and clean_t.shape[1] == 1:
-                            clean_t = clean_t.squeeze(1)
-                        if estimates.dim() == 3 and estimates.shape[1] == 1:
-                            estimates = estimates.squeeze(1)
-                        si_sdr = self.si_sdr_metric(estimates, clean_t).item()
-                        si_sdr_mix = self.si_sdr_metric(mix_trimmed, clean_t).item()
-                        si_sdri = si_sdr - si_sdr_mix
+                    # Same helper as validate() and evaluate.py (trims to the
+                    # common length, PIT for SB, mixture baseline for SI-SDRi).
+                    si_sdr, si_sdri, _ = compute_sisdr_and_sisdri(
+                        estimates,
+                        clean,
+                        mix,
+                        self.task,
+                        self.si_sdr_metric,
+                        pit_loss=self.pit_loss if self.task == "SB" else None,
+                    )
 
                     total_sisdr += si_sdr * batch_size
                     total_sisdri += si_sdri * batch_size
