@@ -307,3 +307,21 @@ class TestBundleRoundTrip:
         with pytest.raises(SystemExit, match="Mamba-family"):
             exporter.export(tmp_path / "x.pt", tmp_path / "bundle", device="cpu")
         assert not (tmp_path / "bundle").exists()
+
+    def test_corrupt_metadata_names_the_file(self, tmp_path):
+        checkpoint_path, _ = self._make_checkpoint(tmp_path)
+        bundle = tmp_path / "bundle"
+        export(checkpoint_path, bundle, device="cpu")
+        (bundle / BUNDLE_META).write_text("{not json")
+        with pytest.raises(ValueError, match=r"separator\.json: not valid JSON"):
+            load_separator(str(bundle), device="cpu")
+
+    def test_truncated_weights_name_the_file(self, tmp_path):
+        """A badly copied bundle: safetensors' own exception type, wrapped."""
+        checkpoint_path, _ = self._make_checkpoint(tmp_path)
+        bundle = tmp_path / "bundle"
+        export(checkpoint_path, bundle, device="cpu")
+        data = (bundle / BUNDLE_WEIGHTS).read_bytes()
+        (bundle / BUNDLE_WEIGHTS).write_bytes(data[: len(data) // 2])
+        with pytest.raises(RuntimeError, match=r"weights\.safetensors: cannot be read.*truncated or corrupt"):
+            load_separator(str(bundle), device="cpu")

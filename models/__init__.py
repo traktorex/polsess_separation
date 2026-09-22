@@ -6,7 +6,7 @@ name ``polsess_models``): see ``models/README.md`` and the root ``pyproject.toml
 
 # Version of the polsess-models distribution (read by pyproject.toml). Bump it
 # when models/ changes in a way a consumer can notice; models/README.md has the rule.
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .conv_tasnet import ConvTasNet
 from .sepformer import SepFormer

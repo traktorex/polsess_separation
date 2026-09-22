@@ -164,8 +164,11 @@ def load_separator(
                 "polsess_separation."
             )
 
-    with open(meta_path, encoding="utf-8") as fh:
-        meta = json.load(fh)
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except ValueError as err:                       # json.JSONDecodeError
+        raise ValueError(f"{meta_path}: not valid JSON ({err}).") from err
     if meta.get("format_version") != BUNDLE_FORMAT_VERSION:
         raise ValueError(
             f"{meta_path}: bundle format {meta.get('format_version')!r}, this "
@@ -185,9 +188,22 @@ def load_separator(
     # have the same likely cause, so each names both versions.
     try:
         model = get_model(meta["model_type"])(**meta["model_params"])
-        model.load_state_dict(load_file(str(weights_path), device="cpu"))
-    except (ValueError, TypeError, RuntimeError) as err:
+    except (ValueError, TypeError) as err:
         raise type(err)(
+            f"{bundle_dir}: {err}. Bundle exported with polsess-models "
+            f"{meta.get('polsess_models_version')}, installed: {__version__}."
+        ) from err
+    try:
+        state_dict = load_file(str(weights_path), device="cpu")
+    except Exception as err:                        # safetensors' own error type
+        raise RuntimeError(
+            f"{weights_path}: cannot be read as a safetensors file ({err}); "
+            "a truncated or corrupt copy?"
+        ) from err
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as err:
+        raise RuntimeError(
             f"{bundle_dir}: {err}. Bundle exported with polsess-models "
             f"{meta.get('polsess_models_version')}, installed: {__version__}."
         ) from err

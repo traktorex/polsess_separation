@@ -16,7 +16,7 @@ There is one copy of the code and no build step for work inside the repository.
 ## Using a separator in another project
 
 ```bash
-pip install "polsess-models @ git+https://github.com/traktorex/polsess_separation@polsess-models-v0.1.0"
+pip install "polsess-models @ git+https://github.com/traktorex/polsess_separation@polsess-models-v0.1.1"
 ```
 
 ```python
