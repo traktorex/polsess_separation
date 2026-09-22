@@ -1,19 +1,24 @@
 # ############################################################################
 # #                                                                          #
-# #   BLOCKED — DO NOT RUN. THE CORPUS THIS CONFIG NEEDS DOES NOT EXIST.     #
+# #   UNBLOCKED 2026-09-22 — CORPUS EXISTS. NOT YET A LAUNCH GO-AHEAD.       #
 # #                                                                          #
-# #   There is no 16 kHz PolSESS render on disk. `~/datasets/` holds only    #
-# #   8 kHz corpora (PolSESS_C_both, C_new_64, C_final_128_v2). This file    #
-# #   is the geometry decision written down while it was fresh, not a        #
-# #   runnable experiment. It will fail at dataset construction, loudly and  #
-# #   within seconds: PolSESSDataset reads the first mix file's header and   #
-# #   raises on a mismatch against data.sample_rate. That is the intended    #
-# #   behaviour — do not "fix" it by deleting the sample_rate field.         #
+# #   `PolSESS_C_128_16kHz` (the 128k 16 kHz render) is on disk at           #
+# #   `~/datasets/PolSESS_C_128_16kHz` on both the 3080 and the 4070. Pass   #
+# #   `--data-root` unless the `config.py` default already points there (on  #
+# #   the 3080 it does; on the 4070 it does not). The copy restored from     #
+# #   the Drive archive has no `val_big/` — zip cannot carry its hardlinks.  #
 # #                                                                          #
-# #   To unblock: render PolSESS at 16 kHz into the same folder layout       #
-# #   (train/{clean,event,mix,scene,sp1_reverb,sp2_reverb,ev_reverb} + CSV), #
-# #   point $POLSESS_DATA_ROOT at it, then re-read the OPEN QUESTIONS block  #
-# #   below before launching — two of them change what the run means.        #
+# #   `data.sample_rate: 16000` below is still a GUARD, not a resampler:     #
+# #   PolSESSDataset reads the first mix file's header and raises on a       #
+# #   mismatch against an 8 kHz corpus. That is intended — do not "fix" it   #
+# #   by deleting the field.                                                 #
+# #                                                                          #
+# #   On the 4070 run this from `venv_t214/` (torch 2.14), not `venv/`       #
+# #   (torch 2.8): TF-MossFormer's eval graph will not compile at 16 kHz     #
+# #   geometry below 2.14.                                                   #
+# #                                                                          #
+# #   Before launching, settle the three OPEN QUESTIONS below — they are     #
+# #   judgement calls that change what the run MEANS, and none is resolved.  #
 # #                                                                          #
 # ############################################################################
 #
@@ -75,7 +80,7 @@ data:
   num_workers: 2           # IO knob only.
   prefetch_factor: 2
   task: SB
-  sample_rate: 16000       # BLOCKED: no 16 kHz PolSESS render exists. Guard, not a resampler.
+  sample_rate: 16000       # Guard, not a resampler — raises if data_root is an 8 kHz corpus.
   train_max_samples: 16000 # 16 000 SAMPLES (the subset size), unrelated to the rate.
   val_max_samples: null
 

@@ -55,6 +55,7 @@ Thumbs.db
 
 /venv_mamba3
 /venv_backup
+/venv_t214
 
 *.csv
 # Blanket rule above targets generated eval/benchmark noise (root-level
