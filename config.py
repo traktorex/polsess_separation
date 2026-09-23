@@ -296,6 +296,7 @@ class TrainingConfig:
     early_stopping_patience: Optional[int] = None  # Stop if no improvement for N epochs
     save_all_checkpoints: bool = False  # If False, overwrite best model; if True, save all improvements
     grad_accumulation_steps: int = 1  # Accumulate gradients over N steps (effective batch = batch_size * N)
+    preflight_validation: bool = True  # Run the validation forward on one batch per val loader before epoch 1 (catches eval-graph compile failures early)
     # Determinism policy applied by utils.configure_determinism (survey gaps 6/18).
     # None (default) = today's behavior EXACTLY: cuDNN deterministic, no benchmark
     # autotuning, TF32 on — the setting every past run used, so the SPMamba
@@ -752,6 +753,11 @@ def create_config_parser() -> "argparse.ArgumentParser":
         action="store_true",
         help="Save all best checkpoints instead of overwriting the best one",
     )
+    parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip the pre-flight validation forward before epoch 1",
+    )
 
     # Logging
     parser.add_argument(
@@ -811,6 +817,8 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.use_amp = False
     if args.save_all_checkpoints:
         config.training.save_all_checkpoints = True
+    if args.no_preflight:
+        config.training.preflight_validation = False
     if args.seed is not None:
         config.training.seed = args.seed
 

@@ -814,7 +814,8 @@ class Trainer:
         # seeds it to 0. All uses below are gated on early_stopping_patience.
 
         try:
-            self._preflight_validation()
+            if self.config.training.preflight_validation:
+                self._preflight_validation()
             final_epoch = self.current_epoch + num_epochs
             for epoch in range(self.current_epoch, self.current_epoch + num_epochs):
                 self.current_epoch = epoch + 1

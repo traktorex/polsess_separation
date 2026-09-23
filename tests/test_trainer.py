@@ -88,6 +88,7 @@ def make_config(tmp_path, task="ES"):
     cfg.training.validation_variants = None
     cfg.training.curriculum_learning = None
     cfg.training.save_all_checkpoints = False
+    cfg.training.preflight_validation = True
     cfg.training.grad_accumulation_steps = 1
 
     cfg.model = SimpleNamespace()
@@ -1022,3 +1023,20 @@ def test_train_runs_preflight_before_first_training_step(tmp_path):
     # First call is the pre-flight (eval, no grad); a training-mode call follows.
     assert model.calls[0] == (False, False)
     assert (True, True) in model.calls
+
+
+def test_train_skips_preflight_when_disabled(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    trainer.config.training.preflight_validation = False
+    calls = []
+    trainer._preflight_validation = lambda: calls.append("preflight")
+
+    def mse_loss_wrapper(estimates, clean):
+        loss = F.mse_loss(estimates, clean)
+        return loss, loss.item()
+
+    trainer.loss_fn = mse_loss_wrapper
+
+    trainer.train(num_epochs=1, save_dir=str(tmp_path / "ckpt"))
+
+    assert calls == []
