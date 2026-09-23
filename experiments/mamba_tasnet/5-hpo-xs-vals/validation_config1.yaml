@@ -1,0 +1,49 @@
+# MambaTasNet-XS HPO Validation — Config 1 (Best)
+# Source: rosy-sweep-7 (71chyt2d), best_val_sisdr=4.126
+# Sweep: mamba-tasnet-xs (gbyurf31)
+
+data:
+  dataset_type: polsess
+  batch_size: 8
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: mamba_tasnet
+  mamba_tasnet:
+    N: 128
+    kernel_size: 16
+    stride: 8
+    C: 2
+    bot_dim: 128
+    n_mamba: 16
+    d_state: 16
+    d_conv: 4
+    expand: 2
+
+training:
+  seed: 42
+  lr: 0.0016817982288650514
+  weight_decay: 8.320231024740259e-07
+  grad_clip_norm: 3.9832214176300873
+  lr_factor: 0.6992033555931144
+  lr_patience: 4
+  num_epochs: 80
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

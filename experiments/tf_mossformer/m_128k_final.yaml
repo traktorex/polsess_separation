@@ -1,0 +1,105 @@
+# TF-MossFormer M (D=128, B=6, H=384, ~17.34M) — 8 kHz PolSESS 128k FINAL training.
+#
+# WHY THIS EXISTS: the 128k-tier entry of TF-MossFormer into the deployed-separator
+# comparison, head-to-head with the MossFormer2-matched 128k final (run 6xuv1tob,
+# 17.04 dB all-8 val SI-SDRi), the MF2 paper-full 128k final and the SepFormer 128k
+# final (8q3yeeoz, 16.0 dB). Corpus: PolSESS_C_final_128_v2 (8 kHz render, 128,000
+# train rows, 1,000-item stratified val/) — point $POLSESS_DATA_ROOT (or --data-root)
+# at the directory containing train/.
+#
+# Identical to `m_8k.yaml` (the 16k scaling row) EXCEPT:
+#   - data: train_max_samples 16000 -> 128000, val_max_samples omitted (full val/).
+#   - protocol: the final-training protocol shared by every other family's 128k
+#     final (mossformer2/6-final-training/*, sepformer/6-final-training/128k_final.yaml,
+#     spmamba/6-final-training/128k_full_final.yaml): NO curriculum (all 8 MM-IPC
+#     variants incl. C from epoch 1) and per_variant_validation on all 8 variants,
+#     best checkpoint / plateau scheduler / early stopping keyed on the all-8 avg
+#     SI-SDRi. The 16k rows train on the 7 non-C variants and validate on {SER, SE}
+#     only because they match the MossFormer2 16k rows; the finals are all-8.
+#   - early_stopping_patience 10 -> 8: the project's LR-schedule rule (thesis/x_notes/
+#     lr_schedule_analysis/FINDINGS.md, 2026-09-08) sets ES = 2*(lr_patience+1) = 8
+#     for the paper's plateau patience 3. The paper's 10 is kept in m_8k.yaml; at
+#     ~18 h/epoch every stagnant epoch here costs most of a day. Restore 10 for a
+#     literal paper recipe.
+#   - W&B target: polsess-separation-128k / tf_mossformer_m_128k_final_42.
+# Everything else (architecture verbatim from paper Table 1 M; AdamW + 4000-step
+# linear warmup + wd 1e-2 + clip 5 + plateau factor 0.5 / patience 3; batch 1 with
+# LR linearly rescaled 1e-3@bs4 -> 2.5e-4@bs1; bf16 AMP) is the paper recipe as
+# argued in s_8k.yaml / m_8k.yaml — the author rulings of 2026-09-07 (no gradient
+# accumulation, linear LR-vs-batch scaling) apply unchanged. Warmup is a per-step
+# quantity: 4000 optimizer steps = the first 1/32 of a 128k epoch at batch 1.
+#
+# ARCHITECTURE: paper Table 1, M column, verbatim. Measured 17,338,020 params (17.34M)
+# against the paper's 16.9M — +2.6%, the paper's own row inconsistency (S: 11.8-13.1
+# D^2 per module, M/L: 9.8-10.0 D^2), not ours. Quote the caveat wherever the size
+# appears (thesis/x_notes/tf_mossformer/tf_mossformer_spec.md §4).
+#
+# COST (extrapolated from WP4, RTX 4070 12 GB, bf16, eager bs 1: 6.1 GiB, 508 ms/step):
+#   128,000 steps/epoch -> ~18 h/epoch train-only, + all-8 validation of the 1,000-item
+#   val/ (8,000 forward passes, minutes). torch.compile gave S nothing at bs 1 (319 ->
+#   341 ms), so do not budget on it. If early stopping lands in the 60-80 epoch band
+#   (matched-MF2 / SepFormer profile) that is ~45-60 DAYS on one 4070 — ~5x the
+#   matched-MF2 128k final (3.4 h/epoch). PLAN.md §3 flagged exactly this ("128k final
+#   may be unaffordable for M/L on the 2-GPU fleet"); the 3080 (10 GB) fits bs 1 too but
+#   is slower. Plan on --resume across GPU reclaims (global_step is persisted, so the
+#   warmup and the epoch budget survive; NB --resume ADDS num_epochs — see CLAUDE.md
+#   pitfall 5). Run only after the S 16k row (16k_tf_mossformer_s_42) has cleared the
+#   M/L decision gate (PLAN.md §WP5).
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # Only bs 1 fits 12 GB for M (bs 2 = 11.9 GiB, spills); author ruling 2026-09-07: no accumulation.
+  num_workers: 2           # IO knob only.
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 8000        # PolSESS_C_final_128_v2 is an 8 kHz render; guard, not a resampler.
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set (1,000 items x 8 variants).
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:
+    C: 2
+    D: 128                 # Embedding dim (paper Table 1, M).
+    num_blocks: 6          # B.
+    ffn_hidden_dim: 384    # H — Conv-SwiGLU hidden dim.
+    conv_kernel_size: 4
+    conv_stride: 1
+    n_heads: 4
+    num_groups: 4
+    window_t: 31           # w_T — local window on the frame axis.
+    window_f: 7            # w_F — local window on the frequency axis.
+    gate_kernel_size: 4
+    n_fft: 128             # 16 ms at 8 kHz -> F = 65 bins.
+    hop_length: 64         # 8 ms at 8 kHz -> T = 501 frames for a 4.000 s clip.
+    attn_dropout: 0.0
+
+training:
+  # ---- Paper recipe (arXiv:2607.21128 §3.1 = TF-Locoformer's upstream WSJ0-2mix config) ----
+  seed: 42
+  optimizer: adamw
+  lr: 0.00025              # Paper: 1e-3 @ batch 4, linearly rescaled to batch 1 (project rule). Peak LR, reached at the end of warmup.
+  warmup_steps: 4000       # Paper: linear warmup over the first 4000 optimizer steps (1/32 of a 128k epoch at bs 1).
+  weight_decay: 0.01
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1           # Paper plateau patience (kept; the other families' finals use 1 on their own recipes).
+  num_epochs: 150          # Paper cap; early stopping governs.
+  early_stopping_patience: 8   # 2*(lr_patience+1) per the LR-schedule rule; paper = 10 (see header).
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: tf_mossformer_m_128k_final_42
+  log_level: INFO
+
+  # ---- Final-training protocol (all other families' 128k finals) ----
+  # No curriculum: all 8 MM-IPC variants (incl. C) from epoch 1. Without a curriculum
+  # the plateau scheduler is live from epoch 1 (warmup, per step, is independent of it).
+
+  # Per-variant validation drives the LR scheduler, early stopping and the
+  # best-checkpoint logic via avg SI-SDRi over all 8 MM-IPC variants.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.
