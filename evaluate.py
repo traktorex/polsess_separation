@@ -23,6 +23,9 @@ from datasets import (
     libri2mix_collate_fn,
 )
 from config import Config, load_config_from_yaml
+# The pre-`data.sample_rate` = 8 kHz rule lives with the other checkpoint shims;
+# evaluate_all.py and the tests read it from this module.
+from models.inference import LEGACY_SAMPLE_RATE, checkpoint_sample_rate  # noqa: F401
 from utils import (
     apply_eps_patch,
     load_model_for_inference,
@@ -32,10 +35,6 @@ from utils import (
 )
 
 logger = logging.getLogger("polsess")
-
-# Sampling rate the checkpoint was trained at, when its embedded config predates
-# the `data.sample_rate` field (every checkpoint before 2026-09-07; all 8 kHz).
-LEGACY_SAMPLE_RATE = 8000
 
 
 def pesq_mode_for(sample_rate: int) -> str:
@@ -50,11 +49,6 @@ def pesq_mode_for(sample_rate: int) -> str:
         return "wb"
     raise ValueError(f"PESQ is defined for 8 kHz and 16 kHz only, got {sample_rate} Hz")
 
-
-def checkpoint_sample_rate(checkpoint: dict) -> int:
-    """Sampling rate a checkpoint was trained at, from its embedded config."""
-    data_cfg = (checkpoint.get("config") or {}).get("data") or {}
-    return int(data_cfg.get("sample_rate", LEGACY_SAMPLE_RATE))
 
 # Long-format per-sample CSV schema (one row per evaluated sample).
 PER_SAMPLE_COLUMNS = ("run", "variant", "sample_idx", "si_sdr", "si_sdri", "pesq", "stoi")

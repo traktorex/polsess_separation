@@ -2,7 +2,6 @@
 
 import sys
 import torch
-import torch.nn as nn
 import logging
 from typing import Any, Dict, Optional
 

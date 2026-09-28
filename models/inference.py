@@ -30,6 +30,10 @@ BUNDLE_FORMAT_VERSION = 1
 # separator.json keys load_separator cannot work without; the rest is provenance.
 BUNDLE_REQUIRED_KEYS = ("model_type", "model_params", "sample_rate", "n_src")
 
+# Sampling rate a checkpoint was trained at when its embedded config predates the
+# `data.sample_rate` field (every checkpoint before 2026-09-07; all 8 kHz).
+LEGACY_SAMPLE_RATE = 8000
+
 
 def load_checkpoint_file(
     checkpoint_path: str, device: str = "cuda"
@@ -46,15 +50,20 @@ def load_checkpoint_file(
     return torch.load(checkpoint_path, map_location=device, weights_only=False)
 
 
+def checkpoint_sample_rate(checkpoint: Dict[str, Any]) -> int:
+    """Sampling rate a checkpoint was trained at, from its embedded config."""
+    data_cfg = (checkpoint.get("config") or {}).get("data") or {}
+    return int(data_cfg.get("sample_rate") or LEGACY_SAMPLE_RATE)
+
+
 def resolve_architecture(config: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     """``(model_type, constructor kwargs)`` from a checkpoint config dict.
 
-    Applies the backward-compat defaults that old checkpoint configs need. The
-    kwargs dict is the one inside ``config`` and is edited in place, as before
-    this function was split out of ``load_model_for_inference``.
+    Applies the backward-compat defaults that old checkpoint configs need to a
+    copy of the kwargs; ``config`` itself is left untouched.
     """
     model_type = config.get("model", {}).get("model_type", "convtasnet")
-    model_params = config.get("model", {}).get(model_type, {})
+    model_params = dict(config.get("model", {}).get(model_type, {}))
 
     # Backward compat: SepFormer checkpoints before 2026-03 were trained without
     # positional encoding (see models/sepformer.py module docstring for details).
@@ -183,16 +192,6 @@ def load_separator(
     # utils/ and need safetensors only when they export or load a bundle.
     from safetensors.torch import load_file
 
-    # An architecture this version does not ship (ValueError), constructor kwargs
-    # it does not know (TypeError) and weights that do not fit (RuntimeError) all
-    # have the same likely cause, so each names both versions.
-    try:
-        model = get_model(meta["model_type"])(**meta["model_params"])
-    except (ValueError, TypeError) as err:
-        raise type(err)(
-            f"{bundle_dir}: {err}. Bundle exported with polsess-models "
-            f"{meta.get('polsess_models_version')}, installed: {__version__}."
-        ) from err
     try:
         state_dict = load_file(str(weights_path), device="cpu")
     except Exception as err:                        # safetensors' own error type
@@ -200,10 +199,15 @@ def load_separator(
             f"{weights_path}: cannot be read as a safetensors file ({err}); "
             "a truncated or corrupt copy?"
         ) from err
+
+    # An architecture this version does not ship (ValueError), constructor kwargs
+    # it does not know (TypeError) and weights that do not fit (RuntimeError) all
+    # have the same likely cause, so the message names both versions.
     try:
+        model = get_model(meta["model_type"])(**meta["model_params"])
         model.load_state_dict(state_dict)
-    except RuntimeError as err:
-        raise RuntimeError(
+    except (ValueError, TypeError, RuntimeError) as err:
+        raise type(err)(
             f"{bundle_dir}: {err}. Bundle exported with polsess-models "
             f"{meta.get('polsess_models_version')}, installed: {__version__}."
         ) from err

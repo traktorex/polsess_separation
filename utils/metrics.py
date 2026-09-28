@@ -13,12 +13,10 @@ and, for the SB task, one ``PITLossWrapper(pairwise_neg_sisdr, pit_from="pw_mtx"
 Convention: SI-SDR as defined by Le Roux et al. (2019), i.e. both signals are
 made zero-mean before the projection. asteroid's ``pairwise_neg_sisdr`` does
 this by default; torchmetrics' ``ScaleInvariantSignalDistortionRatio`` does
-not (``zero_mean=False``). Until 2026-09-22 the SB path subtracted a
-non-zero-mean mixture baseline from a zero-mean estimate SI-SDR, which put
-every reported SI-SDRi about 0.07 dB above the fully zero-mean value on
-PolSESS (consistent across runs, so comparisons were unaffected; the thesis
-tables carry the offset). The helper now refuses a metric constructed with
-``zero_mean=False`` so the two terms cannot drift apart again.
+not (``zero_mean=False``). The helper refuses a metric constructed with
+``zero_mean=False`` so the two terms cannot drift apart: before 2026-09-22 they
+did, and every SI-SDRi in the thesis tables sits about 0.07 dB above the fully
+zero-mean value (a constant offset, comparisons unaffected).
 """
 
 

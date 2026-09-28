@@ -199,6 +199,13 @@ class TestBundleRoundTrip:
         )
         return checkpoint_path, model.eval()
 
+    @pytest.fixture
+    def bundle(self, tmp_path):
+        """An exported bundle of a fresh checkpoint: ``(bundle_dir, meta)``."""
+        checkpoint_path, _ = self._make_checkpoint(tmp_path)
+        bundle_dir = tmp_path / "bundle"
+        return bundle_dir, export(checkpoint_path, bundle_dir, device="cpu")
+
     def test_bundle_reproduces_the_checkpoint(self, tmp_path):
         checkpoint_path, model = self._make_checkpoint(tmp_path, sample_rate=16000)
         bundle = tmp_path / "bundle"
@@ -226,38 +233,30 @@ class TestBundleRoundTrip:
         with pytest.raises(FileNotFoundError, match="Not a separator bundle"):
             load_separator(str(tmp_path), device="cpu")
 
-    def test_unknown_format_version(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        meta = export(checkpoint_path, bundle, device="cpu")
+    def test_unknown_format_version(self, bundle):
+        bundle, meta = bundle
         (bundle / BUNDLE_META).write_text(json.dumps({**meta, "format_version": 99}))
         with pytest.raises(ValueError, match="bundle format 99"):
             load_separator(str(bundle), device="cpu")
 
-    def test_unknown_architecture_names_both_versions(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        meta = export(checkpoint_path, bundle, device="cpu")
+    def test_unknown_architecture_names_both_versions(self, bundle):
+        bundle, meta = bundle
         (bundle / BUNDLE_META).write_text(
             json.dumps({**meta, "model_type": "from_the_future", "polsess_models_version": "9.0.0"})
         )
         with pytest.raises(ValueError, match=r"Unknown model type.*9\.0\.0.*installed"):
             load_separator(str(bundle), device="cpu")
 
-    def test_weights_that_do_not_fit_the_architecture(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        meta = export(checkpoint_path, bundle, device="cpu")
+    def test_weights_that_do_not_fit_the_architecture(self, bundle):
+        bundle, meta = bundle
         (bundle / BUNDLE_META).write_text(
             json.dumps({**meta, "model_params": {**self.PARAMS, "N": 32}})
         )
         with pytest.raises(RuntimeError, match="size mismatch"):
             load_separator(str(bundle), device="cpu")
 
-    def test_kwargs_the_installed_version_does_not_know(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        meta = export(checkpoint_path, bundle, device="cpu")
+    def test_kwargs_the_installed_version_does_not_know(self, bundle):
+        bundle, meta = bundle
         (bundle / BUNDLE_META).write_text(json.dumps({
             **meta, "polsess_models_version": "9.0.0",
             "model_params": {**self.PARAMS, "knob_from_the_future": 1},
@@ -265,10 +264,8 @@ class TestBundleRoundTrip:
         with pytest.raises(TypeError, match=r"knob_from_the_future.*9\.0\.0.*installed"):
             load_separator(str(bundle), device="cpu")
 
-    def test_metadata_without_required_keys(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        meta = export(checkpoint_path, bundle, device="cpu")
+    def test_metadata_without_required_keys(self, bundle):
+        bundle, meta = bundle
         del meta["model_type"]
         (bundle / BUNDLE_META).write_text(json.dumps(meta))
         with pytest.raises(ValueError, match=r"missing required keys \['model_type'\]"):
@@ -308,19 +305,15 @@ class TestBundleRoundTrip:
             exporter.export(tmp_path / "x.pt", tmp_path / "bundle", device="cpu")
         assert not (tmp_path / "bundle").exists()
 
-    def test_corrupt_metadata_names_the_file(self, tmp_path):
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        export(checkpoint_path, bundle, device="cpu")
+    def test_corrupt_metadata_names_the_file(self, bundle):
+        bundle, _ = bundle
         (bundle / BUNDLE_META).write_text("{not json")
         with pytest.raises(ValueError, match=r"separator\.json: not valid JSON"):
             load_separator(str(bundle), device="cpu")
 
-    def test_truncated_weights_name_the_file(self, tmp_path):
+    def test_truncated_weights_name_the_file(self, bundle):
         """A badly copied bundle: safetensors' own exception type, wrapped."""
-        checkpoint_path, _ = self._make_checkpoint(tmp_path)
-        bundle = tmp_path / "bundle"
-        export(checkpoint_path, bundle, device="cpu")
+        bundle, _ = bundle
         data = (bundle / BUNDLE_WEIGHTS).read_bytes()
         (bundle / BUNDLE_WEIGHTS).write_bytes(data[: len(data) // 2])
         with pytest.raises(RuntimeError, match=r"weights\.safetensors: cannot be read.*truncated or corrupt"):

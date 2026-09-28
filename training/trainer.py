@@ -100,8 +100,8 @@ class Trainer:
                 pairwise_neg_sisdr, pit_from="pw_mtx"  # Pairwise matrix mode
             ).to(device)
             self.loss_fn = self._pit_loss_wrapper
-
         else:
+            self.pit_loss = None
             self.loss_fn = self._sisdr_loss_wrapper
 
         self._setup_amp(model, device)
@@ -258,7 +258,7 @@ class Trainer:
             mix,
             self.task,
             self.si_sdr_metric,
-            pit_loss=self.pit_loss if self.task == "SB" else None,
+            pit_loss=self.pit_loss,
         )
         return sisdri
 
@@ -750,7 +750,7 @@ class Trainer:
                         mix,
                         self.task,
                         self.si_sdr_metric,
-                        pit_loss=self.pit_loss if self.task == "SB" else None,
+                        pit_loss=self.pit_loss,
                     )
 
                     total_sisdr += si_sdr * batch_size

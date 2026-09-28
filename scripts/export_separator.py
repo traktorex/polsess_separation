@@ -50,13 +50,11 @@ from models.inference import (  # noqa: E402
     BUNDLE_FORMAT_VERSION,
     BUNDLE_META,
     BUNDLE_WEIGHTS,
+    checkpoint_sample_rate,
     load_model_for_inference,
     load_separator,
     resolve_architecture,
 )
-
-# Pre-`data.sample_rate` checkpoints were all trained on the 8 kHz corpus.
-LEGACY_SAMPLE_RATE = 8000
 
 # Libraries whose version can change what the same weights compute.
 RECORDED_LIBRARIES = ("speechbrain", "rotary-embedding-torch", "einops", "safetensors")
@@ -91,7 +89,7 @@ def export(checkpoint_path: Path, out_dir: Path, device: str) -> dict:
         )
     data_config = config.get("data", {})
     per_variant = config.get("training", {}).get("per_variant_validation", False)
-    sample_rate = data_config.get("sample_rate") or LEGACY_SAMPLE_RATE
+    sample_rate = checkpoint_sample_rate(checkpoint)
 
     probe = probe_input(sample_rate).to(device)
     with torch.no_grad():
