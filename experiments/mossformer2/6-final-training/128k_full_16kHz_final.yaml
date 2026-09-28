@@ -1,0 +1,80 @@
+# MossFormer2 paper-depth (FULL, ~55.7M) — 16 kHz PolSESS 128k FINAL training.   [num_blocks=24]
+#
+# WHY THIS EXISTS: the paper-full MossFormer2 at the native ASR rate, beside the
+# matched 16 kHz final (128k_matched_16kHz_final.yaml) and the TF-MossFormer S 16 kHz
+# final in the same W&B project. Read 128k_matched_16kHz_final.yaml for the 16 kHz
+# rationale (corpus, launch line, geometry choice, ASR handoff); only the deltas
+# are repeated here. Launch with
+#   python train.py --config experiments/mossformer2/6-final-training/128k_full_16kHz_final.yaml \
+#       --data-root ~/datasets/PolSESS_C_128_16kHz
+# (on the 4070 from venv_t214/; the 3080's config.py default already points there).
+#
+# Twin of `128k_full_final.yaml` (the 8 kHz full final: canonical un-swept recipe,
+# lr 1.5e-4 @ bs 1, wd 0, clip 5, lr_patience 1, ES 8, all-8 no-curriculum protocol)
+# EXCEPT:
+#   - data.sample_rate 8000 -> 16000 (a guard, not a resampler).
+#   - encoder kernel_size 16 -> 32 (stride 8 -> 16): holds the frame rate (2 ms
+#     window / 1 ms hop), so sequence length and memory match the 8 kHz run; see the
+#     matched 16 kHz header for why not ClearerVoice's kernel-16 16 kHz geometry.
+#     Params +16,384 over the 8 kHz build — measured 55,751,794 (~55.7M).
+#   - num_workers 1 -> 2 (IO knob only).
+#   - seed 42. NB the 8 kHz full final RAN with seed 123 (checkpoint
+#     mossformer2_full_128k_final_123) although its YAML says 42; 42 here keeps
+#     every 16 kHz final on the same seed.
+#   - W&B target: polsess-separation-16kHz-128k (16 kHz SI-SDR is not comparable
+#     with the 8 kHz rows).
+#
+# RECIPE: canonical un-swept recipe as the 8 kHz full final — NOT the matched sweep
+# winner (that HPO was tuned on depth-11; see 5-scaling/16k_full.yaml).
+#
+# COST: the 8 kHz full final ran bs 1 at roughly 6-7 h/epoch. Probe 2026-09-23
+# (4070, venv_t214, eager bf16, bs 1, 4 s): peak 6.94 GiB vs 6.93 GiB for the 8 kHz
+# build, 528 vs 509 ms/step (+~4 %) — about the same: ~3-4 weeks wall-clock if early
+# stopping lands in the 60-80 epoch band. Plan on --resume across interruptions
+# (NB --resume ADDS num_epochs — see CLAUDE.md pitfall 5).
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # ~55.7M model — one mixture per step (memory), as the 8 kHz twin.
+  num_workers: 2           # IO knob only — 16 kHz clips are 2x the bytes.
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 16000       # PolSESS_C_128_16kHz is a 16 kHz render; guard, not a resampler.
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set (1,000 items x 8 variants).
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim.
+    kernel_size: 32  # DOUBLED for 16 kHz: still a 2 ms window, stride 16 = 1 ms hop (8 kHz twin: 16).
+    C: 2
+    num_blocks: 24   # PAPER-FULL GFSMN depth (matched final used 11).
+    attn_dropout: 0.1   # Upstream default, un-swept (matched sweep tuned 0.07; not transplanted).
+
+training:
+  # ---- Canonical SepFormer-baseline recipe (NOT the matched-128k sweep) ----
+  seed: 42
+  lr: 0.00015              # Canonical LR @ batch_size=1 (same lr/sample as matched's 3e-4 @ bs=2).
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1           # Final-training protocol (all-8 per-variant val is a stable signal).
+  num_epochs: 100          # Cap; early stopping governs.
+  early_stopping_patience: 8
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-16kHz-128k   # Own project: 16 kHz SI-SDR is not comparable with the 8 kHz rows.
+  wandb_run_name: mossformer2_full_128k_16kHz_final_42
+  log_level: INFO
+
+  # No curriculum: all 8 MM-IPC variants (incl. C) from epoch 1.
+
+  # Per-variant validation drives the LR scheduler + best-checkpoint logic via avg SI-SDRi;
+  # all 8 MM-IPC variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.
