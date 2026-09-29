@@ -75,6 +75,11 @@ def main():
     # Log configuration (now that the model param count is known)
     logger.info("\n" + config.summary(runtime_info=summary_info))
 
+    # Fine-tuning sweeps: start every run from the same parent weights (the
+    # base YAML's training.init_from). Sweeps never resume.
+    if config.training.init_from:
+        trainer.init_from_checkpoint(config.training.init_from)
+
     # Run training
     trainer.train(
         num_epochs=config.training.num_epochs,

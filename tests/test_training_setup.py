@@ -26,7 +26,7 @@ class _FakeVariantDataset(Dataset):
     """Dataset stub that ignores paths and just yields tiny random tensors."""
 
     def __init__(self, data_root, subset="train", task="ES", max_samples=None, allowed_variants=None,
-                 sample_rate=None):
+                 sample_rate=None, single_speaker_prob=0.0, partial_overlap_prob=0.0):
         self.subset = subset
         self.task = task
         self.allowed_variants = allowed_variants

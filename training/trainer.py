@@ -1,5 +1,6 @@
 """Trainer class for speech enhancement/separation models."""
 
+import math
 import time
 import torch
 import logging
@@ -8,16 +9,21 @@ from pathlib import Path
 from tqdm import tqdm
 from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
 from typing import Optional, Any
+from torch.utils.data import DataLoader
 from config import Config
 from asteroid.losses import PITLossWrapper, pairwise_neg_sisdr
 from models import MAMBA_MODELS
+from models.inference import normalize_state_dict
 from utils import (
     unwrap_compiled_model,
     dataclass_to_dict,
     ensure_dir,
+    load_checkpoint_file,
     load_model_from_checkpoint,
     compute_sisdr_and_sisdri,
 )
+from utils.metrics import compute_silence_aware_sisdr_and_sisdri
+from utils.losses import silence_aware_pit_sisdr
 
 DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
 
@@ -28,8 +34,18 @@ DEFAULT_SISDR_FALLBACK = -999.0  # Default SI-SDR when not found in checkpoint
 MAX_CONSECUTIVE_NAN_BATCHES = 1000
 
 
+# 1-speaker validation: an item counts as "split" when the output assigned to
+# silence is within this many dB of the output assigned to the speaker, i.e. the
+# speaker leaked audibly into both outputs (val_1spk_split_frac_10db).
+SPLIT_THRESHOLD_DB = -10.0
+
+
 class ConsecutiveNaNError(RuntimeError):
     """Training produced MAX_CONSECUTIVE_NAN_BATCHES NaN/Inf losses in a row."""
+
+
+class ExistingCheckpointError(RuntimeError):
+    """A fresh (non-resumed) run would overwrite checkpoints of an earlier run."""
 
 
 class Trainer:
@@ -46,10 +62,15 @@ class Trainer:
         wandb_logger: Optional[Any] = None,
         per_variant_val_loaders: Optional[dict] = None,
         provenance: Optional[dict] = None,
+        single_speaker_val_loader: Optional[DataLoader] = None,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
+        # Optional 1-speaker validation set (speaker-count augmentation). It is
+        # reported every epoch but never monitored: LR schedule, early stopping
+        # and the best checkpoint follow the 2-speaker validation only.
+        self.single_speaker_val_loader = single_speaker_val_loader
         self.per_variant_val_loaders = per_variant_val_loaders
         self.per_variant_mode = per_variant_val_loaders is not None
         # Run provenance manifest (survey gap 5): embedded in every checkpoint and
@@ -95,11 +116,28 @@ class Trainer:
 
         # Task-specific loss function
         self.task = config.data.task
+        # Silence-aware mode: SB training with speaker-count augmentation, where
+        # a target slot can be all-zero. The plain PIT SI-SDR gives the output
+        # assigned to that slot zero gradient (see utils/losses.py), so the loss
+        # and the train SI-SDRi switch to the silence-aware versions. getattr
+        # keeps SimpleNamespace test configs and pre-2026-09-28 configs working.
+        self.silence_aware = self.task == "SB" and (
+            getattr(config.data, "single_speaker_prob", 0.0) > 0
+            or getattr(config.data, "partial_overlap_prob", 0.0) > 0
+        )
         if self.task == "SB":
             self.pit_loss = PITLossWrapper(
                 pairwise_neg_sisdr, pit_from="pw_mtx"  # Pairwise matrix mode
             ).to(device)
-            self.loss_fn = self._pit_loss_wrapper
+            if self.silence_aware:
+                self.loss_fn = self._silence_aware_loss_wrapper
+                self.logger.info(
+                    "Loss: silence-aware PIT SI-SDR (utils/losses.py) -- "
+                    "speaker-count augmentation is on"
+                )
+            else:
+                self.loss_fn = self._pit_loss_wrapper
+                self.logger.info("Loss: PIT SI-SDR (asteroid pairwise_neg_sisdr)")
         else:
             self.pit_loss = None
             self.loss_fn = self._sisdr_loss_wrapper
@@ -124,6 +162,12 @@ class Trainer:
         # Early-stopping patience counter. Persisted in checkpoints and restored
         # on resume so patience survives a resume (survey gap 8d).
         self.epochs_without_improvement = 0
+        # Set by load_checkpoint: a resumed run may write into its existing
+        # checkpoint directory, a fresh one may not (see _check_no_existing_checkpoints).
+        self.resumed = False
+        # Fine-tuning parent (init_from_checkpoint), recorded in every checkpoint
+        # so its provenance names the run the weights came from. None = scratch.
+        self.init_from_info = None
         self.run_start_timestamp = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
 
         # Curriculum learning setup
@@ -251,7 +295,15 @@ class Trainer:
         the batch SI-SDR the caller reports comes from the loss, which equals
         the helper's SI-SDR in the fp32 validation path (validation runs without
         autocast); under AMP training the two agree to within float noise.
+
+        In silence-aware mode the silence-aware helper is used instead (mixture
+        baseline over active target slots only). On an all-2-speaker batch it
+        returns the same value as the default helper.
         """
+        if self.silence_aware:
+            return compute_silence_aware_sisdr_and_sisdri(
+                estimates, clean, mix, self.si_sdr_metric
+            )["si_sdri"]
         _, sisdri, _ = compute_sisdr_and_sisdri(
             estimates,
             clean,
@@ -273,6 +325,20 @@ class Trainer:
         # Loss is negative SI-SDR averaged over batch
         sisdr = -loss.item()
         return loss, sisdr
+
+    def _silence_aware_loss_wrapper(self, estimates, targets):
+        """Silence-aware PIT-SI-SDR loss for SB with speaker-count augmentation.
+
+        The reported SI-SDR is the mean over ACTIVE target slots (a silent slot
+        has no SI-SDR); on an all-2-speaker batch it equals _pit_loss_wrapper's.
+        """
+        result = silence_aware_pit_sisdr(estimates, targets)
+        if result.loss is None:
+            # No item of the batch has an active speaker (corpus defect, see
+            # utils/losses.py); train_epoch skips the batch.
+            return None, float("nan")
+        sisdr = result.si_sdr[result.active].mean().item()
+        return result.loss, sisdr
 
     def load_checkpoint(self, checkpoint_path: str):
         """Load checkpoint to resume training.
@@ -341,9 +407,47 @@ class Trainer:
         # if warmup is newly enabled on a resume (which would be a fresh recipe).
         self.global_step = checkpoint.get("global_step", 0)
 
+        # Keep the fine-tuning parent across a resume of a fine-tuned run.
+        self.init_from_info = checkpoint.get("init_from")
+        self.resumed = True
+
         self.logger.info(
             f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
             f"resuming at epoch {self.current_epoch}"
+        )
+
+    def init_from_checkpoint(self, checkpoint_path: str):
+        """Initialise the model weights from a checkpoint (fine-tuning start).
+
+        Unlike load_checkpoint (--resume) only the model weights are taken, and
+        strictly: optimizer, scheduler, GradScaler, warmup step counter, epoch,
+        best score and early-stopping patience all stay at their fresh values,
+        and the caller starts a new W&B run. The source path, epoch and score
+        are recorded in every checkpoint of this run (``init_from``).
+        """
+        # CPU load for the same reason as in load_checkpoint; load_state_dict
+        # copies the tensors onto the model's device.
+        checkpoint = load_checkpoint_file(checkpoint_path, "cpu")
+        # normalize_state_dict strips a torch.compile "_orig_mod." prefix (and
+        # renames legacy SepFormer keys); unwrap_compiled_model handles a
+        # compiled model on this side.
+        state_dict = normalize_state_dict(
+            self.config.model.model_type, checkpoint["model_state_dict"]
+        )
+        unwrap_compiled_model(self.model).load_state_dict(state_dict, strict=True)
+
+        source_score = checkpoint.get(
+            "best_val_sisdr", checkpoint.get("val_sisdr", DEFAULT_SISDR_FALLBACK)
+        )
+        self.init_from_info = {
+            "path": str(checkpoint_path),
+            "epoch": checkpoint.get("epoch"),
+            "best_val_sisdr": source_score,
+        }
+        self.logger.info(
+            f"Initialised model weights from {checkpoint_path} "
+            f"(source epoch {checkpoint.get('epoch')}, best val score {source_score:.2f} dB); "
+            "optimizer, scheduler and counters start fresh"
         )
 
     def _get_run_name(self) -> str:
@@ -368,6 +472,33 @@ class Trainer:
         # Default: use timestamp from training start
         return f"run_{self.run_start_timestamp}"
 
+    def _checkpoint_dir(self, save_dir, run_name: str) -> Path:
+        """Checkpoint directory of a run: {save_dir}/{model_type}/{task}/{run_name}/.
+
+        run_name comes from _get_run_name() (W&B run name, else the configured
+        name, else a timestamp). Shared by _create_checkpoint_paths and the
+        overwrite guard so both always look at the same directory.
+        """
+        return Path(save_dir) / self.config.model.model_type / self.config.data.task / run_name
+
+    def _check_no_existing_checkpoints(self, save_dir):
+        """Refuse to start a fresh run in a directory that already holds checkpoints.
+
+        A fresh run with the name of an earlier one would silently overwrite
+        its *_best.pt at the first improvement. Resumed runs (load_checkpoint)
+        are exempt: writing into their own directory is the point.
+        """
+        if self.resumed:
+            return
+        run_dir = self._checkpoint_dir(save_dir, self._get_run_name())
+        existing = sorted(run_dir.glob("*.pt")) if run_dir.is_dir() else []
+        if existing:
+            raise ExistingCheckpointError(
+                f"Checkpoint directory {run_dir} already contains "
+                f"{', '.join(p.name for p in existing)}. A new run would overwrite "
+                "them: choose another wandb_run_name, or continue that run with --resume."
+            )
+
     def _create_checkpoint_paths(self, save_dir: str, run_name: str, epoch: int) -> tuple[Path, Path]:
         """Create checkpoint directory structure and return file paths.
 
@@ -379,13 +510,9 @@ class Trainer:
         Returns:
             Tuple of (checkpoint_path, config_path).
         """
-        base_dir = Path(save_dir)
         model_name = self.config.model.model_type
         task = self.config.data.task
-
-        # Structure: checkpoints/{model_name}/{task}/{run_name}/
-        # run_name already includes timestamp from _get_run_name() 
-        checkpoint_dir = base_dir / model_name / task / run_name
+        checkpoint_dir = self._checkpoint_dir(save_dir, run_name)
         ensure_dir(checkpoint_dir)
 
         # Checkpoint file logic
@@ -437,6 +564,11 @@ class Trainer:
             "global_step": self.global_step,
             "config": config_dict,
         }
+
+        # Fine-tuning parent (init_from_checkpoint): path, epoch and score of
+        # the checkpoint the weights started from. Absent for scratch runs.
+        if self.init_from_info is not None:
+            checkpoint["init_from"] = self.init_from_info
 
         # Save scheduler state if available
         if self.scheduler is not None:
@@ -521,6 +653,7 @@ class Trainer:
             ncols=100,
         )
 
+        self.silent_batches_skipped = 0
         for batch_idx, batch in enumerate(pbar):
             mix = batch["mix"].to(self.device)
             clean = batch["clean"].to(self.device)
@@ -534,6 +667,15 @@ class Trainer:
                 mix_input = mix.unsqueeze(1)
                 estimates = self.model(mix_input)
                 loss, sisdr_value = self.loss_fn(estimates, clean)
+
+            # Silence-aware loss only: a batch whose every item has no active
+            # speaker (near-silent speaker files in the corpus) has nothing to
+            # train on. Skipped like a NaN batch but without counting towards
+            # the NaN abort, and tallied per epoch.
+            if loss is None:
+                self.silent_batches_skipped += 1
+                del estimates, mix_input, mix, clean
+                continue
 
             # Scale loss for gradient accumulation. Divide by the actual number
             # of micro-batches in THIS window, not the nominal accum_steps, so the
@@ -632,6 +774,12 @@ class Trainer:
                 "and skipped — model state is unrecoverable, aborting run"
             )
 
+        if self.silent_batches_skipped:
+            self.logger.info(
+                f"Skipped {self.silent_batches_skipped} training batch(es) with no "
+                "active speaker (near-silent corpus files, see utils/losses.py)"
+            )
+
         avg_sisdr = total_sisdr / total_samples
         avg_sisdri = total_sisdri / total_samples
         return avg_sisdr, avg_sisdri
@@ -650,11 +798,13 @@ class Trainer:
         a broken corpus path fails here as well. No metrics are computed and
         nothing is logged to W&B.
         """
-        loaders = (
+        loaders = dict(
             self.per_variant_val_loaders
             if self.per_variant_mode
             else {"val": self.val_loader}
         )
+        if self.single_speaker_val_loader is not None:
+            loaders["val_1spk"] = self.single_speaker_val_loader
         self.model.eval()
         start = time.time()
         with torch.no_grad():
@@ -694,7 +844,9 @@ class Trainer:
                 # SI-SDR; the fp32 forward avoids it. Training precision is unchanged.
                 mix_input = mix.unsqueeze(1)
                 estimates = self.model(mix_input)
-                _, sisdr_value = self.loss_fn(estimates, clean)
+                loss, sisdr_value = self.loss_fn(estimates, clean)
+                if loss is None:
+                    continue  # silence-aware mode: no active speaker in the batch
                 # Weight by actual batch size for correct averaging
                 batch_size = len(mix)
                 sisdri_value = self._compute_sisdri(mix, clean, estimates)
@@ -768,6 +920,63 @@ class Trainer:
 
         return results
 
+    def validate_single_speaker(self) -> dict:
+        """Validate on the 1-speaker set (speaker-count augmentation).
+
+        Same regime as the other validators (eval mode, no_grad, fp32).
+        Returns a dict with
+          - si_sdr / si_sdri: over the active (speech) slot only;
+          - silent_rel_db: mean 10*log10(E_other / E_best), how far below the
+            speech output the output assigned to silence is (lower is better);
+          - split_frac_10db: fraction of items whose silent output is within
+            10 dB of the speech output, i.e. the speaker was split across both
+            outputs (the number the augmentation is meant to drive down).
+        Items with two active slots, if any, count towards si_sdr / si_sdri
+        but not towards the two silence metrics.
+        """
+        self.model.eval()
+        total_sisdr = 0.0
+        total_sisdri = 0.0
+        total_slots = 0
+        silent_values = []
+
+        with torch.no_grad():
+            for batch in tqdm(
+                self.single_speaker_val_loader,
+                desc="Val [1spk]",
+                unit="batch",
+                leave=False,
+                ncols=100,
+            ):
+                mix = batch["mix"].to(self.device)
+                clean = batch["clean"].to(self.device)
+                estimates = self.model(mix.unsqueeze(1))
+                result = compute_silence_aware_sisdr_and_sisdri(
+                    estimates, clean, mix, self.si_sdr_metric
+                )
+                if result["n_active_slots"] == 0:
+                    continue  # no speech in the batch (corpus defect)
+                # Weight by active slots so the epoch mean is over slots, like
+                # the per-batch mean.
+                total_sisdr += result["si_sdr"] * result["n_active_slots"]
+                total_sisdri += result["si_sdri"] * result["n_active_slots"]
+                total_slots += result["n_active_slots"]
+                silent_values.extend(result["silent_rel_db_values"])
+
+        if silent_values:
+            silent_rel_db = sum(silent_values) / len(silent_values)
+            n_split = sum(v > SPLIT_THRESHOLD_DB for v in silent_values)
+            split_frac = n_split / len(silent_values)
+        else:
+            silent_rel_db = math.nan
+            split_frac = math.nan
+        return {
+            "si_sdr": total_sisdr / total_slots,
+            "si_sdri": total_sisdri / total_slots,
+            "silent_rel_db": silent_rel_db,
+            "split_frac_10db": split_frac,
+        }
+
     def _log_variant_table(self, variant_results: dict, avg_sisdri: float):
         """Pretty-print the per-variant validation table to the logger.
 
@@ -813,6 +1022,10 @@ class Trainer:
         # survives a resume (survey gap 8d) — load_checkpoint restores it, __init__
         # seeds it to 0. All uses below are gated on early_stopping_patience.
 
+        # Before anything else (pre-flight compile, first epoch): a fresh run
+        # must not overwrite another run's checkpoints.
+        self._check_no_existing_checkpoints(save_dir)
+
         try:
             if self.config.training.preflight_validation:
                 self._preflight_validation()
@@ -843,6 +1056,17 @@ class Trainer:
                     variant_results = None
 
                 val_sisdr_history.append(monitor_value)
+
+                # 1-speaker validation: reported only, never monitored.
+                single_speaker_results = None
+                if self.single_speaker_val_loader is not None:
+                    single_speaker_results = self.validate_single_speaker()
+                    r = single_speaker_results
+                    self.logger.info(
+                        f"Val 1-spk - SI-SDR: {r['si_sdr']:.2f} dB, SI-SDRi: {r['si_sdri']:.2f} dB, "
+                        f"silent output {r['silent_rel_db']:.2f} dB rel. speech, "
+                        f"split (> {SPLIT_THRESHOLD_DB:.0f} dB): {100 * r['split_frac_10db']:.1f}%"
+                    )
 
                 # Get current learning rate
                 current_lr = self.optimizer.param_groups[0]["lr"]
@@ -876,6 +1100,9 @@ class Trainer:
                 else:
                     metrics["val_si_sdr"] = val_sisdr
                     metrics["val_si_sdri"] = val_sisdri
+                if single_speaker_results is not None:
+                    for key, value in single_speaker_results.items():
+                        metrics[f"val_1spk_{key}"] = value
 
                 # Add early stopping metric if enabled
                 if early_stopping_patience:

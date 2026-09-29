@@ -82,9 +82,13 @@ def main():
     # Log configuration (now that the model param count is known)
     logger.info("\n" + config.summary(runtime_info=summary_info))
 
-    # Resume from checkpoint if specified
+    # Resume from checkpoint if specified; otherwise optionally start from
+    # another run's weights (fine-tuning: weights only, fresh W&B run, which is
+    # why resume_wandb_id above is read from resume_from alone).
     if config.training.resume_from:
         trainer.load_checkpoint(config.training.resume_from)
+    elif config.training.init_from:
+        trainer.init_from_checkpoint(config.training.init_from)
 
     # Start training
     trainer.train(

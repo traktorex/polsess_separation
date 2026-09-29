@@ -266,6 +266,31 @@ training:
         assert config.model.convtasnet.N == 256        # default
         assert config.training.lr == 0.001  # default
 
+    def test_init_from_cli_sets_field_and_requires_config(self, tmp_path):
+        yaml_path = tmp_path / "c.yaml"
+        yaml_path.write_text("data:\n  task: SB\n")
+
+        with patch('sys.argv', ['train.py', '--config', str(yaml_path), '--init-from', 'parent.pt']):
+            config = get_config_from_args()
+        assert config.training.init_from == 'parent.pt'
+        assert config.training.resume_from is None
+
+        # Without --config the checkpoint's config would be used: refused.
+        with patch('sys.argv', ['train.py', '--init-from', 'parent.pt']):
+            with pytest.raises(SystemExit):
+                get_config_from_args()
+
+    def test_resume_clears_init_from_of_yaml(self, tmp_path):
+        """Resuming a fine-tune whose YAML names init_from must not trip the
+        init_from/resume_from exclusivity check."""
+        yaml_path = tmp_path / "c.yaml"
+        yaml_path.write_text("data:\n  task: SB\ntraining:\n  init_from: parent.pt\n")
+
+        with patch('sys.argv', ['train.py', '--config', str(yaml_path), '--resume', 'run.pt']):
+            config = get_config_from_args()
+        assert config.training.resume_from == 'run.pt'
+        assert config.training.init_from is None
+
 
 class TestConfigValidation:
     """Test configuration validation."""

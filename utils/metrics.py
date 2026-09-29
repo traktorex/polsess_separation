@@ -84,3 +84,76 @@ def compute_sisdr_and_sisdri(estimates, clean, mix, task, si_sdr_metric, pit_los
     si_sdr_mix = si_sdr_metric(mix, clean).item()
     si_sdri = si_sdr - si_sdr_mix
     return si_sdr, si_sdri, estimates
+
+
+def compute_silence_aware_sisdr_and_sisdri(estimates, clean, mix, si_sdr_metric):
+    """SB metrics for batches that may contain 1-speaker items (all-zero slot).
+
+    Counterpart of ``compute_sisdr_and_sisdri(task="SB")`` for training with
+    speaker-count augmentation. The permutation comes from
+    ``utils.losses.silence_aware_pit_sisdr``, so the metric and the loss always
+    agree on which output is the speech and which is the "silent" one. On a
+    batch where every item has two speakers the returned SI-SDR / SI-SDRi equal
+    those of ``compute_sisdr_and_sisdri`` (up to float summation order).
+
+    Args:
+        estimates: model output, [B, 2, T].
+        clean: targets, [B, 2, T]; a removed speaker is an all-zero slot.
+        mix: input mixture, [B, T].
+        si_sdr_metric: ``ScaleInvariantSignalDistortionRatio(zero_mean=True)``.
+
+    Returns:
+        dict with
+          - si_sdr (float): mean SI-SDR over ACTIVE target slots (dB). A silent
+            slot has no defined SI-SDR and is left out.
+          - si_sdri (float): si_sdr minus the mixture baseline, the mean of
+            SI-SDR(mix, clean_slot) over the same active slots.
+          - n_active_slots (int): number of slots the two means are over, for
+            weighting across batches.
+          - silent_rel_db (float or None): mean over 1-speaker items of
+            10*log10(E_other / E_best), the zero-mean energy of the output
+            assigned to silence relative to the one assigned to the speaker;
+            None when the batch has no 1-speaker item.
+          - silent_rel_db_values (list[float]): the per-item values behind it.
+          - reordered: estimates aligned to ``clean`` (see the loss module).
+    """
+    # Local import: utils.losses pulls in asteroid, which the enhancement-only
+    # callers of this module do not need.
+    from .losses import silence_aware_pit_sisdr
+
+    _require_zero_mean(si_sdr_metric)
+    min_len = min(estimates.shape[-1], clean.shape[-1])
+    estimates = estimates[..., :min_len]
+    clean = clean[..., :min_len]
+    mix = mix[..., :min_len]
+
+    result = silence_aware_pit_sisdr(estimates, clean)
+    active = result.active
+    n_active_slots = int(active.sum())
+    if n_active_slots == 0:
+        # Every item is a corpus defect with no speech (see utils/losses.py).
+        return {"si_sdr": None, "si_sdri": None, "n_active_slots": 0,
+                "silent_rel_db": None, "silent_rel_db_values": [],
+                "reordered": result.reordered}
+
+    si_sdr = result.si_sdr[active].mean().item()
+
+    # Mixture baseline per active slot, one item at a time so a silent slot
+    # never enters the torchmetrics batch mean.
+    baseline_sum = 0.0
+    for b, j in active.nonzero().tolist():
+        baseline_sum += si_sdr_metric(mix[b : b + 1], clean[b : b + 1, j]).item()
+    mix_baseline = baseline_sum / n_active_slots
+
+    one_speaker = active.sum(dim=1) == 1
+    silent_values = result.silent_rel_db[one_speaker].tolist()
+    silent_rel_db = sum(silent_values) / len(silent_values) if silent_values else None
+
+    return {
+        "si_sdr": si_sdr,
+        "si_sdri": si_sdr - mix_baseline,
+        "n_active_slots": n_active_slots,
+        "silent_rel_db": silent_rel_db,
+        "silent_rel_db_values": silent_values,
+        "reordered": result.reordered,
+    }

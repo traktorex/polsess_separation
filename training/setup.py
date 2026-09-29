@@ -81,6 +81,11 @@ def build_dataloaders(config, summary_info, logger=None):
         max_samples=config.data.train_max_samples,
         allowed_variants=train_variants,
         sample_rate=config.data.sample_rate,
+        # Speaker-count augmentation is a TRAIN-only transform; the regular val
+        # loaders stay 2-speaker so val SI-SDR remains comparable with every
+        # earlier run. getattr: stub configs in tests may omit the fields.
+        single_speaker_prob=getattr(config.data, "single_speaker_prob", 0.0),
+        partial_overlap_prob=getattr(config.data, "partial_overlap_prob", 0.0),
     )
 
     # persistent_workers is intentionally left at its default (False). Curriculum
@@ -154,6 +159,43 @@ def build_dataloaders(config, summary_info, logger=None):
     return train_loader, val_loader, per_variant_val_loaders
 
 
+def build_single_speaker_val_loader(config):
+    """Build a 1-speaker validation loader, or None when augmentation is off.
+
+    Every item of the ``val`` split is reduced to one speaker
+    (``single_speaker_prob=1.0``); which speaker is dropped is fixed per item
+    (``PolSESSDataset._speaker_count_rng``). MM-IPC variants follow the normal
+    deterministic per-item choice, so the set spans all background variants.
+    It monitors whether the model leaves the empty slot silent instead of
+    splitting the lone speaker across both outputs. Only built when the run
+    trains with speaker-count augmentation, so other runs are unchanged.
+    """
+    single_prob = getattr(config.data, "single_speaker_prob", 0.0)
+    partial_prob = getattr(config.data, "partial_overlap_prob", 0.0)
+    if single_prob == 0.0 and partial_prob == 0.0:
+        return None
+
+    dataset_class = get_dataset(config.data.dataset_type)
+    dataset = dataset_class(
+        _resolve_data_root(config),
+        subset="val",
+        task=config.data.task,
+        max_samples=config.data.val_max_samples,
+        allowed_variants=config.training.validation_variants,
+        sample_rate=config.data.sample_rate,
+        single_speaker_prob=1.0,
+        partial_overlap_prob=0.0,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=config.data.batch_size,
+        shuffle=False,
+        num_workers=config.data.num_workers,
+        prefetch_factor=config.data.prefetch_factor if config.data.num_workers > 0 else None,
+        collate_fn=polsess_collate_fn,
+    )
+
+
 def build_trainer(
     config,
     train_loader,
@@ -178,6 +220,10 @@ def build_trainer(
     # settings — see compile_for_model_type for the Mamba/MossFormer2 rationale.
     model = compile_for_model_type(model, config.model.model_type, logger=logger)
 
+    single_speaker_val_loader = build_single_speaker_val_loader(config)
+    if single_speaker_val_loader is not None:
+        summary_info["single_speaker_val_samples"] = len(single_speaker_val_loader.dataset)
+
     return Trainer(
         model,
         train_loader,
@@ -187,5 +233,6 @@ def build_trainer(
         logger=logger,
         wandb_logger=wandb_logger,
         per_variant_val_loaders=per_variant_val_loaders,
+        single_speaker_val_loader=single_speaker_val_loader,
         provenance=provenance,
     )

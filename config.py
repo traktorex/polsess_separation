@@ -215,6 +215,18 @@ class DataConfig:
     train_max_samples: Optional[int] = None
     val_max_samples: Optional[int] = None
     polsess: Optional[PolSESSParams] = None
+    # Speaker-count augmentation for SB training (train split only; 0.0 = off,
+    # the setting of every run before 2026-09-28). Each training item is, with
+    # probability single_speaker_prob, reduced to ONE speaker (the other
+    # speaker's dry + reverb layers are cancelled from the mix, its target is
+    # all-zero), and with probability partial_overlap_prob one speaker is
+    # active only over a leading or trailing part of the clip (onset/offset).
+    # Motivation: continuous speech separation (CSS) windows contain 1 speaker
+    # and speaker turns, which an all-2-speaker corpus never shows. Needs the
+    # silence-aware PIT loss (utils/losses.py), which the Trainer switches on
+    # whenever either probability is > 0.
+    single_speaker_prob: float = 0.0
+    partial_overlap_prob: float = 0.0
 
     def __post_init__(self):
         """Initialize dataset-specific params if not provided."""
@@ -290,6 +302,11 @@ class TrainingConfig:
     device: str = "cuda"
     seed: int = 42
     resume_from: Optional[str] = None
+    # Fine-tuning start point: load ONLY the model weights of this checkpoint
+    # (strict), with a fresh optimizer, scheduler, warmup, epoch counter and
+    # W&B run. Unlike resume_from it never touches the source run. Mutually
+    # exclusive with resume_from.
+    init_from: Optional[str] = None
     validation_variants: Optional[List[str]] = None
     per_variant_validation: bool = False  # If True, run validation once per MM-IPC variant and use avg SI-SDRi as the monitored metric
     curriculum_learning: Optional[List[Dict[str, Any]]] = None
@@ -347,6 +364,22 @@ class Config:
         # user to pass the very flag that could never be reached. The check now
         # lives in validate_data_root(), called by the entry points once
         # overrides have been applied.
+
+        # Speaker-count augmentation only makes sense for SB (two output slots).
+        p_single = self.data.single_speaker_prob
+        p_partial = self.data.partial_overlap_prob
+        if not (0.0 <= p_single and 0.0 <= p_partial and p_single + p_partial <= 1.0):
+            raise ValueError(
+                f"single_speaker_prob={p_single} and partial_overlap_prob={p_partial} "
+                "must be >= 0 and sum to <= 1."
+            )
+        if (p_single > 0 or p_partial > 0) and self.data.task != "SB":
+            raise ValueError(
+                "single_speaker_prob / partial_overlap_prob require task='SB' "
+                f"(got task={self.data.task!r})."
+            )
+        if self.training.init_from and self.training.resume_from:
+            raise ValueError("init_from and resume_from are mutually exclusive.")
 
         # Validate task
         if self.data.task not in ["ES", "EB", "SB"]:
@@ -749,6 +782,13 @@ def create_config_parser() -> "argparse.ArgumentParser":
         help="Resume training from checkpoint",
     )
     parser.add_argument(
+        "--init-from",
+        type=str,
+        default=None,
+        help="Fine-tune: initialise model weights (only) from this checkpoint; "
+        "fresh optimizer, scheduler, epochs and W&B run. Requires --config.",
+    )
+    parser.add_argument(
         "--save-all-checkpoints",
         action="store_true",
         help="Save all best checkpoints instead of overwriting the best one",
@@ -811,6 +851,13 @@ def apply_cli_overrides(config: Config, args: "argparse.Namespace") -> Config:
         config.training.save_dir = args.save_dir
     if args.resume:
         config.training.resume_from = args.resume
+        # A resumed fine-tune carries init_from in its config (YAML or the
+        # checkpoint's own); the weights now come from the resumed checkpoint,
+        # which records its parent itself, so drop it rather than trip the
+        # init_from/resume_from exclusivity check.
+        config.training.init_from = None
+    if args.init_from:
+        config.training.init_from = args.init_from
     if args.no_wandb:
         config.training.use_wandb = False
     if args.no_amp:
@@ -842,6 +889,13 @@ def get_config_from_args() -> Config:
 
     parser = create_config_parser()
     args = parser.parse_args()
+    # --init-from takes only weights from the checkpoint, never its config (the
+    # fine-tuning recipe differs from the parent's by design), so the recipe
+    # must come from a YAML.
+    if args.init_from and not args.config:
+        parser.error("--init-from requires --config (the checkpoint's config is not used)")
+    if args.init_from and args.resume:
+        parser.error("--init-from and --resume are mutually exclusive")
 
     # Load from YAML if provided, otherwise use defaults
     if args.config:

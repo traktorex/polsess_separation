@@ -1,0 +1,126 @@
+# TF-MossFormer S — 16 kHz, FINE-TUNE of the 128k 16 kHz final with
+# speaker-count augmentation (1-speaker items + speaker onsets/offsets).
+#
+# WHY THIS EXISTS: groundwork for Continuous Speech Separation (CSS). A probe of
+# the parent checkpoint (scripts/single_speaker_probe.py, 400 test items,
+# 2026-09-28) showed that on a LONE speaker the model splits the voice across
+# both outputs in ~1 in 4 clips (other output within 10 dB of the best one:
+# 23 % dry / 28 % reverberant / 27 % with full background). Summing the two
+# outputs restores the speaker (34.5 dB SI-SDR on the split dry clips), so
+# nothing is lost, it is mis-routed, and it is mostly temporal switching. The
+# model never saw fewer than two fully overlapped speakers; CSS windows are
+# mostly one speaker plus speaker turns.
+#
+# Launch (3080: config.py default data_root already points at the 16 kHz corpus):
+#   python train.py --config experiments/tf_mossformer/s_128k_16kHz_spkcount_ft.yaml
+# elsewhere add --data-root ~/datasets/PolSESS_C_128_16kHz.
+#
+# PARENT (never modified): init_from loads ONLY the weights of
+#   checkpoints/tf_mossformer/SB/tf_mossformer_s_128k_16kHz_final_42/ (epoch 25,
+#   val avg SI-SDRi 17.11 dB, sha256 394c3db8...). Optimizer, scheduler, warmup,
+#   epoch counter, early stopping and the W&B run all start fresh. The parent
+#   directory is chmod a-w, and the Trainer refuses to start a non-resumed run
+#   whose checkpoint directory already holds a *.pt. This run writes to
+#   checkpoints/tf_mossformer/SB/tf_mossformer_s_128k_16kHz_spkcount_ft_42/.
+#   To continue THIS run after an interruption use --resume on its own
+#   checkpoint (init_from is then ignored in favour of the resumed state — do not
+#   pass both; Config rejects init_from + resume_from together).
+#
+# WHAT CHANGES vs s_128k_16kHz_final.yaml (architecture and STFT identical):
+#   - data.single_speaker_prob 0.2: one speaker's dry+reverb layers are cancelled
+#     from the mix (same exact subtraction as MM-IPC), its target is all-zero.
+#   - data.partial_overlap_prob 0.2: one speaker is active only over a leading or
+#     trailing 25-75 % of the clip (50 ms raised-cosine fade); target gated the
+#     same way. Approximation: its reverb tail is gated with it.
+#     -> 60 % of items stay ordinary two-speaker mixes, all 8 MM-IPC variants.
+#   - Loss: with either probability > 0 the Trainer switches to the
+#     silence-aware PIT loss (utils/losses.py): 2-speaker items get exactly the
+#     old PIT SI-SDR; on 1-speaker items the matched output gets -SI-SDR and the
+#     other output 10*log10(E_other/E_best + 1e-3) (Wisdom et al. 2020 soft
+#     threshold, saturating at -30 dB). The old loss gives that output zero
+#     gradient (verified), so without this change the augmentation could not
+#     teach silence.
+#   - Corpus defect: 101 of the 128,000 train rows have a speaker file below
+#     -60 dBFS RMS (89 rows BOTH speakers, 12 files exact digital zero; 26 rows
+#     in the first 32k). The silence-aware loss treats such slots as silent and
+#     skips items with no speaker left; the epoch log reports the skip count.
+#     (Run 4isjbjdx crashed on row 4447 before this was handled.)
+#   - Model selection is UNCHANGED: 2-speaker avg SI-SDRi over the 8 variants on
+#     the 1,000-item val/ drives the LR scheduler, early stopping and the best
+#     checkpoint, so the result stays comparable with the parent (17.11 dB).
+#     The 1-speaker val (same val/ items, one speaker cancelled) is logged only:
+#     val_1spk_split_frac_10db is the headline (parent ~0.23-0.28 on test).
+#   - train_max_samples 32000 (first 32k rows, interleaved indoor/outdoor, all
+#     seen by the parent): ~1.6 h per epoch + ~25 min validation on the 3080, so
+#     one epoch is a quick, cheap read on whether the split rate moves.
+#   - lr 5e-5 peak (1/5 of the parent's 2.5e-4 peak) with a fresh 1000-step
+#     AdamW warmup: fine-tuning a converged model with fresh optimizer moments.
+#     A full-LR restart would likely cost 2-speaker quality.
+#   - Patience: lr_patience 1 / early_stopping_patience 4 = 2*(lr_patience+1),
+#     the rule from thesis/x_notes/lr_schedule_analysis/FINDINGS.md.
+#   - num_epochs 10: budget cap (~20 h); early stopping governs.
+#
+# SUCCESS CRITERIA (judge with scripts/single_speaker_probe.py on the new best
+# checkpoint, same 400 test rows as the parent probe):
+#   split_frac_10db down from 0.23-0.28 to a few %, while the 2-speaker val avg
+#   SI-SDRi stays within ~0.3 dB of 17.11.
+#
+# SAME PROJECT as the parent (polsess-separation-16kHz-128k): same corpus, same
+# rate, same validation, so the 2-speaker numbers are directly comparable.
+#
+# TORCH: >= 2.14 (see s_128k_16kHz_final.yaml — the eval graph at 16 kHz geometry
+# does not compile on 2.11). On the 4070 run it from venv_t214/.
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # As the parent: bs 2 spills past the 3080's 10 GB at 16 kHz.
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 16000
+  train_max_samples: 32000 # Fine-tune subset (see header).
+  single_speaker_prob: 0.2
+  partial_overlap_prob: 0.2
+  # val_max_samples omitted -> full validation set (1,000 items x 8 variants + 1,000 1-speaker items).
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:           # Must match the parent exactly (init_from loads strictly).
+    C: 2
+    D: 96
+    num_blocks: 4
+    ffn_hidden_dim: 256
+    conv_kernel_size: 4
+    conv_stride: 1
+    n_heads: 4
+    num_groups: 4
+    window_t: 31
+    window_f: 7
+    n_fft: 256
+    hop_length: 128
+    gate_kernel_size: 4
+    attn_dropout: 0.0
+
+training:
+  seed: 42
+  init_from: checkpoints/tf_mossformer/SB/tf_mossformer_s_128k_16kHz_final_42/tf_mossformer_SB_best.pt
+  optimizer: adamw
+  lr: 0.00005              # Fine-tune peak LR (see header).
+  warmup_steps: 1000       # Fresh AdamW moments; ramp in over ~1/32 of an epoch.
+  weight_decay: 0.01
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 10
+  early_stopping_patience: 4
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-16kHz-128k
+  wandb_run_name: tf_mossformer_s_128k_16kHz_spkcount_ft_42   # NEW name -> new checkpoint directory.
+  log_level: INFO
+
+  per_variant_validation: true
+  validation_variants: null

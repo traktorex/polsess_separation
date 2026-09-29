@@ -1,5 +1,7 @@
 """PolSESS Dataset for Speech Enhancement/Separation with MM-IPC augmentation."""
 
+import math
+
 import pandas as pd
 import soundfile as sf
 import torch
@@ -25,10 +27,25 @@ class PolSESSDataset(Dataset):
             files as stored — so this is purely a guard: the first mix file's
             header is compared against it at construction and a mismatch raises,
             because a model trained on the wrong rate fails silently otherwise.
+        single_speaker_prob: SB only. Per-item probability of reducing the
+            mixture to ONE speaker: the other speaker is cancelled from the mix
+            and its target slot is all-zero (see the speaker-count rules in the
+            algebra comment above ``_apply_mmipc``). 0.0 = off.
+        partial_overlap_prob: SB only. Per-item probability that one speaker is
+            active over only a leading or trailing part of the clip (a speaker
+            offset or onset). 0.0 = off. With both probabilities 0.0 the dataset
+            draws no extra random numbers, so existing runs reproduce exactly.
     """
 
     INDOOR_VARIANTS = ["SER", "SR", "ER", "R", "C"]
     OUTDOOR_VARIANTS = ["SE", "S", "E", "C"]
+
+    # Partial-overlap augmentation: the gated speaker is active over a uniform
+    # fraction of the clip in [MIN, MAX], with a raised-cosine fade of
+    # PARTIAL_FADE_SECONDS at its single interior boundary (no click).
+    PARTIAL_ACTIVE_MIN = 0.25
+    PARTIAL_ACTIVE_MAX = 0.75
+    PARTIAL_FADE_SECONDS = 0.05
 
     def __init__(
         self,
@@ -38,12 +55,28 @@ class PolSESSDataset(Dataset):
         allowed_variants=None,
         max_samples=None,
         sample_rate: Optional[int] = None,
+        single_speaker_prob: float = 0.0,
+        partial_overlap_prob: float = 0.0,
     ):
         self.data_root = Path(data_root)
         self.subset = subset
         self.task = task
         self.max_samples = max_samples
         self.sample_rate = sample_rate
+
+        if not (0.0 <= single_speaker_prob and 0.0 <= partial_overlap_prob
+                and single_speaker_prob + partial_overlap_prob <= 1.0):
+            raise ValueError(
+                f"single_speaker_prob={single_speaker_prob} and partial_overlap_prob="
+                f"{partial_overlap_prob} must be >= 0 and sum to <= 1."
+            )
+        if (single_speaker_prob > 0 or partial_overlap_prob > 0) and task != "SB":
+            raise ValueError(
+                "single_speaker_prob / partial_overlap_prob require task='SB' "
+                f"(got task={task!r})."
+            )
+        self.single_speaker_prob = single_speaker_prob
+        self.partial_overlap_prob = partial_overlap_prob
         self._allowed_variants = None  # Private attribute
 
         # Automatically derive CSV filename from data_root
@@ -126,6 +159,15 @@ class PolSESSDataset(Dataset):
         audio = self._lazy_load(paths, variant, has_reverb)
         mix = self._apply_mmipc(audio, has_reverb)
         clean = self._compute_clean(audio)
+
+        # Speaker-count augmentation (SB only), applied on top of the MM-IPC
+        # variant, which is chosen independently above.
+        rng = self._speaker_count_rng(idx)
+        mode, k = self._choose_speaker_count_mode(rng)
+        if mode != "both":
+            mix, clean = self._apply_speaker_count(
+                mix, clean, audio, paths, variant, has_reverb, mode, k, rng
+            )
 
         return {"mix": mix, "clean": clean, "background_complexity": variant}
 
@@ -278,6 +320,24 @@ class PolSESSDataset(Dataset):
     # Not a double subtraction: for ES indoor non-C variants, speaker 2 is removed
     # via BOTH sp2_dry (task rule) and sp2_reverb (task rule) — correct additive
     # algebra, because reverberated speaker 2 = sp2_dry + sp2_reverb.
+    #
+    #   Speaker-count augmentation (SB only; _apply_speaker_count), applied AFTER
+    #   the variant removal above. Speaker k's contribution still present in
+    #   the variant mix is
+    #     contrib_k = spk_dry + spk_reverb   indoor, variant != C
+    #               = spk_dry                indoor C (its reverb is already
+    #                                        removed) and every outdoor variant
+    #   Modes (one uniform draw per item; k in {1, 2} drawn 50/50):
+    #     both    -> unchanged (the only mode when both probabilities are 0)
+    #     single  -> mix -= contrib_k;            target[k] = 0 (exact zeros)
+    #     partial -> mix -= (1 - g) * contrib_k;  target[k] = g * spk_dry
+    #   where g(t) in [0, 1] is 1 over a leading (offset) or trailing (onset)
+    #   segment of 25-75 % of the clip, 0 elsewhere, with a 50 ms raised-cosine
+    #   fade at the one interior boundary (_partial_envelope). "single" is exact
+    #   layer algebra like the variants. "partial" has one approximation: the
+    #   reverb tail is gated by the same envelope as the dry signal, whereas a
+    #   real talker who stops leaves a decaying tail behind.
+    #   The other speaker's slot is always the untouched spk_dry.
     def _apply_mmipc(self, audio, has_reverb):
         """Apply MM-IPC by removing components from mix.
 
@@ -303,6 +363,98 @@ class PolSESSDataset(Dataset):
             mix = mix - audio["ev_reverb"]
 
         return mix
+
+    def _speaker_count_rng(self, idx):
+        """Return the RNG that drives speaker-count augmentation for item ``idx``.
+
+        Training uses the ``random`` module (seeded per DataLoader worker by
+        ``seed_worker`` in training/setup.py, like ``_choose_variant``). val/test
+        get a per-item ``random.Random`` so the decision is fixed across epochs
+        and runs. The seed is the string ``"spkcount-{idx}"`` rather than
+        ``idx`` itself: ``_choose_variant`` already seeds ``random.Random(idx)``,
+        and reusing that stream would correlate the speaker-count decision with
+        the variant choice. (String seeds hash via SHA-512, so they are stable
+        across processes regardless of PYTHONHASHSEED.)
+        """
+        if self.subset in ("val", "test"):
+            return random.Random(f"spkcount-{idx}")
+        return random
+
+    def _choose_speaker_count_mode(self, rng):
+        """Draw the speaker-count mode and the affected speaker for one item.
+
+        Returns ``(mode, k)`` with mode in {"both", "single", "partial"} and
+        k in {1, 2} the speaker that is dropped / gated (None for "both").
+        With both probabilities at 0 no random number is consumed, so the
+        training RNG stream is identical to runs before this augmentation.
+        """
+        if self.single_speaker_prob == 0.0 and self.partial_overlap_prob == 0.0:
+            return "both", None
+
+        u = rng.random()
+        if u < self.single_speaker_prob:
+            mode = "single"
+        elif u < self.single_speaker_prob + self.partial_overlap_prob:
+            mode = "partial"
+        else:
+            return "both", None
+        k = rng.choice((1, 2))
+        return mode, k
+
+    def _partial_envelope(self, num_samples, sample_rate, rng):
+        """Build the gain envelope g(t) in [0, 1] for a partially active speaker.
+
+        The speaker is active over ``L`` samples, ``L`` uniform in
+        [0.25, 0.75] * num_samples, either at the start of the clip (offset:
+        the speaker stops early) or at the end (onset: the speaker starts late),
+        50/50. The last ``fade`` samples of the active segment ramp down with a
+        raised-cosine (half Hann) window, so g > 0 on exactly L samples and
+        there is no click at the boundary.
+        """
+        active = rng.randint(
+            math.ceil(self.PARTIAL_ACTIVE_MIN * num_samples),
+            math.floor(self.PARTIAL_ACTIVE_MAX * num_samples),
+        )
+        fade = min(round(self.PARTIAL_FADE_SECONDS * sample_rate), active)
+
+        # Half Hann ramp 1 -> 0 over `fade` samples, sampled at bin centres so
+        # every value lies strictly inside (0, 1).
+        n = torch.arange(fade, dtype=torch.float32)
+        fade_out = 0.5 * (1.0 + torch.cos(math.pi * (n + 0.5) / fade))
+
+        envelope = torch.zeros(num_samples, dtype=torch.float32)
+        envelope[: active - fade] = 1.0
+        envelope[active - fade : active] = fade_out
+
+        is_onset = rng.random() < 0.5
+        if is_onset:
+            envelope = envelope.flip(0)
+        return envelope
+
+    def _apply_speaker_count(self, mix, clean, audio, paths, variant, has_reverb, mode, k, rng):
+        """Drop (``single``) or gate (``partial``) speaker ``k`` in mix and target.
+
+        See the speaker-count rules in the algebra comment above
+        ``_apply_mmipc``. Speaker k's reverb tail is loaded here only when it is
+        still in the mix (indoor, variant != C), keeping the loading lazy.
+        """
+        dry = audio[f"speaker{k}"]
+        contribution = dry
+        if has_reverb and variant != "C":
+            reverb, _ = torchaudio.load(paths[f"sp{k}_reverb"])
+            contribution = dry + self._ensure_1d(reverb)
+
+        if mode == "single":
+            mix = mix - contribution
+            clean[k - 1] = torch.zeros_like(dry)
+        elif mode == "partial":
+            sample_rate = self.sample_rate or sf.info(str(paths["mix"])).samplerate
+            g = self._partial_envelope(mix.shape[-1], sample_rate, rng).to(mix.dtype)
+            mix = mix - (1.0 - g) * contribution
+            clean[k - 1] = g * dry
+        else:
+            raise ValueError(f"Invalid speaker-count mode: {mode}")
+        return mix, clean
 
     def _compute_clean(self, audio):
         """Compute clean target based on task."""
