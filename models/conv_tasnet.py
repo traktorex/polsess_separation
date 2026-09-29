@@ -31,6 +31,14 @@ class ConvTasNet(nn.Module):
         kernel_size: int = 16,
         stride: int = 8,
     ):
+        assert stride == kernel_size // 2, (
+            f"stride={stride} must equal kernel_size // 2 ({kernel_size // 2}). "
+            "SpeechBrain's Encoder (speechbrain.lobes.models.dual_path.Encoder) "
+            "hardcodes stride=kernel_size//2 internally and ignores any stride "
+            "argument, while this stride is passed to the Decoder only — a "
+            "mismatch here silently desyncs encoder/decoder frame rates. Change "
+            "kernel_size instead if a different stride is desired."
+        )
         super().__init__()
 
         # Encoder: [B, 1, T] -> [B, N, L]

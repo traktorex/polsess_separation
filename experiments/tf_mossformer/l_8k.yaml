@@ -1,0 +1,85 @@
+# TF-MossFormer L (D=128, B=9, H=384, ~26.00M) — 8 kHz PolSESS, 16k-subset scaling row.
+#
+# WHY THIS EXISTS: the paper's largest configuration, and the one size where
+# TF-MossFormer is directly parameter-matched to this thesis's two ~26M models
+# (SepFormer 25.68M, MossFormer2-matched 26.41M). If the architecture claim holds,
+# THIS is the row that shows it: same budget, same corpus, same 16k subset, same
+# validation protocol — only the block differs. Run S first; M and L are gated on
+# S's result and on WP4's measured epoch time (thesis/x_notes/tf_mossformer/PLAN.md).
+#
+# Identical to `m_8k.yaml` EXCEPT num_blocks (6 -> 9) and the W&B run name; identical
+# to `s_8k.yaml` except the three capacity knobs. See `s_8k.yaml`'s header for the
+# full rationale: architecture provenance, the paper-recipe-vs-project-recipe
+# argument, and the protocol match against the MossFormer2 16k row with its one
+# curriculum match.
+#
+# ARCHITECTURE: paper Table 1, L column, verbatim — L is M with 50% more blocks,
+# nothing else changes. Measured 26,003,364 params (26.00M) against the paper's
+# 25.4M, +2.4%, the same residual M carries and for the same reason (the paper's own
+# S-vs-M/L inconsistency; see `s_8k.yaml` and thesis/x_notes/tf_mossformer/
+# tf_mossformer_spec.md §4). Quote it as 26.00M measured, 25.4M as published.
+#
+# COST (measured 2026-09-07, RTX 4070 12 GB, bf16, eager): bs 1 = 9.2 GiB peak, 680 ms/step
+#   (tight on 12 GB; bs 2 impossible). Author ruling 2026-09-07: no gradient accumulation —
+#   batch 1 (16000 optimizer steps per 16k epoch). LR batch-rescaled linearly to 0.00025 (author rule 2026-09-07). Train-only
+#   estimate at 16k: ~181 min/epoch eager + validation; compile should cut that. Paper
+#   accounting: 425.0 G-MACs/s of audio (our counter: 437.1).
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # Paper's batch is 4; only bs 1 fits 12 GB (see COST) (author ruling 2026-09-07: no accumulation, use what fits).
+  num_workers: 2           # IO knob only.
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 8000        # PolSESS_C_new_64 is an 8 kHz render; guard, not a resampler.
+  train_max_samples: 16000
+  val_max_samples: null
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:
+    C: 2
+    D: 128                 # Embedding dim (paper Table 1, L — same as M).
+    num_blocks: 9          # B — the only knob that separates L from M.
+    ffn_hidden_dim: 384    # H — Conv-SwiGLU hidden dim.
+    conv_kernel_size: 4
+    conv_stride: 1
+    n_heads: 4
+    num_groups: 4
+    window_t: 31           # w_T — local window on the frame axis.
+    window_f: 7            # w_F — local window on the frequency axis.
+    gate_kernel_size: 4
+    n_fft: 128             # 16 ms at 8 kHz -> F = 65 bins.
+    hop_length: 64         # 8 ms at 8 kHz -> T = 501 frames for a 4.000 s clip.
+    attn_dropout: 0.0
+
+training:
+  # ---- Paper recipe (arXiv:2607.21128 §3.1 = TF-Locoformer's upstream WSJ0-2mix config) ----
+  seed: 42
+  optimizer: adamw
+  lr: 0.00025               # Paper: 1e-3 @ batch 4. Linear LR-vs-batch scaling (the project's standing rule, lr/sample constant): x1/4 at batch 1. Peak LR, reached at the end of warmup.
+  warmup_steps: 4000       # Linear warmup to `lr` = exactly one epoch at 16000/4 steps.
+  weight_decay: 0.01
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 150
+  early_stopping_patience: 10
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_tf_mossformer_l_42
+  log_level: INFO
+
+  # ---- Protocol, matched to the MossFormer2 16k row ----
+  validation_variants: ["SER", "SE"]
+  # per_variant_validation left at its default (false), as in the MossFormer2 16k rows.
+
+  # Single-stage curriculum, identical to the MossFormer2 16k rows (see s_8k.yaml).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

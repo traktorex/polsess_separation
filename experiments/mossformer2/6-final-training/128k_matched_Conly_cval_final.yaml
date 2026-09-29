@@ -1,0 +1,81 @@
+# MossFormer2 (SepFormer-matched ~26.4M) 128k — MM-IPC diversity ablation: C-ONLY arm,
+# RETRAIN with C-keyed validation (supersedes-for-selection the first C-only run ixiz56ot).
+#
+# Why the retrain (2026-07-29): the first C-only run keyed ReduceLROnPlateau AND early
+# stopping on the all-8-variant avg SI-SDRi — a metric a clean-only model structurally
+# cannot improve (7 of 8 validation variants are conditions it never trains on). Its LR
+# was cut 64x by epoch 12 and the run early-stopped at epoch 18 while train SI-SDR (20.8)
+# and the C-variant val (19.8) were both still rising. This arm re-runs the identical
+# recipe with validation restricted to {C}: the schedule and stopping now track a metric
+# the model CAN move, so the arm gets a training budget governed the same way as the
+# other arms (by its own convergence), removing the realised-budget confound.
+#
+# Selection: best checkpoint on C-val SI-SDRi. The diversity-table number (all-8 avg
+# SI-SDRi, comparable to full 17.044 / no-E 15.755) must be computed POST HOC on the
+# selected checkpoint(s) — this run does not log all-8 val. save_all_checkpoints: true
+# retains every C-val improvement so the post-hoc all-8 scoring can also report
+# "best all-8 among C-selected checkpoints" if the two disagree.
+#
+# MM-IPC training-diversity ablation ladder (training variant set is the only intended
+# variable; this arm additionally changes the validation/selection variant set — see above):
+#   full   — all 8 variants   → run 6xuv1tob (128k_matched_final.yaml, curriculum: null)
+#   no-E   — {C, S, R, SR}    → 128k_matched_noE_final.yaml (run jb84bq0k)
+#   C-only — {C}, all-8-keyed → 128k_matched_Conly_final.yaml (run ixiz56ot, ep18 early stop)
+#   C-only — {C}, C-keyed     → THIS FILE
+#
+# C is in both INDOOR and OUTDOOR variant lists, so {C} renders every training
+# sample (reverb and non-reverb alike) and the full 128k set is retained.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.07030979282783663   # fast-sweep-7 winner (sweep key `dropout`)
+
+training:
+  # ---- Winner of sweep 1bzguteg (fast-sweep-7); identical to 128k_matched_final ----
+  lr: 0.00021453268112520653
+  weight_decay: 0.0000002411171709120079
+  grad_clip_norm: 3.069697862323048
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 100
+  early_stopping_patience: 10
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: true   # retain every C-val improvement for post-hoc all-8 scoring
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: mossformer2_matched_128k_Conly_cval_42
+
+  log_level: INFO
+
+  # MM-IPC diversity ablation: restrict training to the clean variant only.
+  # A single-entry curriculum is the only path to pin the training variant set
+  # (train.py:51-53 reads variants from curriculum_learning[0]); lr_scheduler:start
+  # makes the LR schedule behave identically to the curriculum:null full arm from
+  # epoch 1 (ReduceLROnPlateau cannot act before the first epoch's validation).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C"]
+      lr_scheduler: start
+
+  # THE one intended change vs 128k_matched_Conly_final.yaml: validate on {C} only.
+  # monitor_value = avg SI-SDRi over the listed variants (trainer.py:757-763), so the
+  # LR schedule, early stopping and checkpoint selection all track C-domain progress.
+  per_variant_validation: true
+  validation_variants: ["C"]

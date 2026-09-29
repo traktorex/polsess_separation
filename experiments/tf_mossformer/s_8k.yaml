@@ -1,0 +1,127 @@
+# TF-MossFormer S (D=96, B=4, H=256, ~5.92M) — 8 kHz PolSESS, 16k-subset scaling row.
+#
+# WHY THIS EXISTS: TF-MossFormer (Zhao et al. 2026, arXiv:2607.21128) is a
+# time-frequency separator that adds convolution-gated LOCAL+GLOBAL attention to the
+# TF-Locoformer block; on WSJ0-2mix it reports 22.6 dB SI-SDRi at 6.0M — more than
+# MossFormer2-L at a fifth of the parameters. Every other TF-domain model in this
+# repository is SPMamba, and SPMamba was the family that stalled. This config is the
+# first read on whether a TF model with a competitive block does better on PolSESS,
+# at the ONE scale where every architecture in the thesis already has a comparable
+# point: the 16 000-sample subset of PolSESS_C_new_64. No code was ever released for
+# the paper, so `models/tf_mossformer/` is a re-implementation from the paper on the
+# vendored TF-Locoformer skeleton — see thesis/x_notes/tf_mossformer/ for the
+# figure reading, the parameter reconciliation and the licence trail.
+#
+# ARCHITECTURE: the paper's Table 1, S column, verbatim. D=96 embedding, B=4 blocks
+# (each block = frequency module then temporal module), Conv-SwiGLU hidden 256,
+# 4 heads, RMSGroupNorm with 4 groups, Conv1D/Deconv1D kernel 4 stride 1, local
+# windows w_T=31 frames / w_F=7 bins, Conv-Gate kernel 4. STFT n_fft=128 / hop=64
+# (16 ms / 8 ms at 8 kHz) — the paper's geometry, which is also PolSESS's rate, so
+# it transfers unchanged: F=65 bins, T=501 frames for a 4.000 s clip.
+# Measured 5,917,308 params (5.92M) against the paper's 6.0M table entry / 5.9M
+# abstract. The 1-2% gap is the paper's own inconsistency, not ours: its S row
+# implies 11.8-13.1 D^2 of added machinery per module where its M/L rows imply
+# 9.8-10.0 D^2, and it prints two different S counts. We build the literal figure
+# ("reading A"), which is the only reading that also matches the paper's own
+# parameter-matched control TF-Locoformer(S*, D=112) to 0.1%.
+#
+# RECIPE: the PAPER's recipe, not the project's canonical transformer recipe. The
+# paper's §3.1 is item-for-item TF-Locoformer's upstream ESPnet WSJ0-2mix config, so
+# it is fully recoverable: AdamW, weight decay 1e-2, LR linearly warmed to 1e-3 over
+# the first 4000 steps, then halved when validation fails to improve for 3 epochs,
+# gradient L2 clip 5.0, batch 4, up to 150 epochs, early stop after 10 stagnant
+# epochs, dropout 0. These are the fields that DIFFER from the MossFormer2 16k row
+# (which uses lr 3e-4, wd 0, plateau patience 1, batch 2, Adam, no warmup) — the
+# deviation is deliberate: transplanting this repo's SepFormer-derived recipe onto an
+# architecture whose published numbers come from a different optimiser would confound
+# "is the architecture better" with "is our recipe worse for it". `optimizer: adamw`
+# and `warmup_steps` are the two generic trainer knobs added for exactly this.
+#   Recipe caveat: the paper's batch 4 was measured on WSJ0-2mix 4 s crops at 8 kHz.
+#   PolSESS clips are a fixed 4.000 s at 8 kHz too, so batch 4 here means the same
+#   number of samples per step as the paper's — the recipe transfers without
+#   rescaling. 16000 train samples / batch 4 = 4000 steps per epoch, i.e. the LR
+#   warmup occupies exactly the first epoch.
+#
+# PROTOCOL: matched to the MossFormer2 16k scaling row (experiments/mossformer2/
+# mossformer2_matched.yaml and 5-scaling/16k_full.yaml) so the comparison is
+# like-for-like: same corpus (PolSESS_C_new_64 via $POLSESS_DATA_ROOT), same
+# train_max_samples 16000, same SB task, same validation on {SER, SE} with
+# per_variant_validation off, same W&B project polsess-separation-real16k, seed 42.
+#   Training exposure is matched too: the same single-stage curriculum block as the
+#   MossFormer2 16k rows (7 non-C variants from epoch 1, `lr_scheduler: start`). The
+#   paper's "no curriculum" is a WSJ0-2mix statement (that corpus has no MM-IPC
+#   variants at all), so honouring it here would only change what the model sees
+#   relative to MossFormer2 — the comparison the author asked for. Orchestrator ruling
+#   2026-09-07. Warmup (per optimizer step) is independent of the curriculum's
+#   plateau-scheduler gate, which becomes live at epoch 1 exactly as in those rows.
+#
+# COST (measured 2026-09-07, RTX 4070 12 GB, bf16, 4 s @ 8 kHz, eager, train step only):
+#   bs 1: 2.9 GiB peak, 319 ms/step;  bs 2: 5.7 GiB, 361 ms/step;  bs 4: 11.4 GiB — does
+#   NOT fit a 12 GB card (spills to shared memory, 39 s/step; compiled bs 4 spills too).
+#   Author ruling 2026-09-07: no gradient accumulation — run the batch that fits, i.e.
+#   batch 2 (8000 optimizer steps per 16k epoch, so the paper's 4000-step warmup spans
+#   half an epoch). LR batch-rescaled linearly to 0.0005 (author rule 2026-09-07, lr/sample constant). torch.compile
+#   (dynamic=False, applied automatically on Linux) cuts bs-2 memory to 4.4 GiB and the
+#   step to ~207 ms, i.e. ~28 min per 16k epoch train-only.
+#   Paper accounting: 99.5 G-MACs/s of audio for S (our counter: 100.3), vs
+#   MossFormer2-matched's ~39.
+
+data:
+  dataset_type: polsess
+  batch_size: 2            # Paper's batch is 4; bs 4 does not fit 12 GB (see COST) (author ruling 2026-09-07: no accumulation, use what fits).
+  num_workers: 2           # IO knob only — nothing scientific depends on it.
+  prefetch_factor: 2
+  task: SB                 # Speaker separation (forces C=2).
+  sample_rate: 8000        # PolSESS_C_new_64 is an 8 kHz render; guard, not a resampler.
+  train_max_samples: 16000 # The scaling-curve 16k point every other architecture has.
+  val_max_samples: null
+
+model:
+  model_type: tf_mossformer
+  tf_mossformer:
+    C: 2                   # Speakers (Config.__post_init__ forces this from task=SB).
+    D: 96                  # Embedding dim (paper Table 1, S).
+    num_blocks: 4          # B — each block is a frequency module + a temporal module.
+    ffn_hidden_dim: 256    # H — Conv-SwiGLU hidden dim.
+    conv_kernel_size: 4    # K — Conv1D/Deconv1D kernel inside Conv-SwiGLU.
+    conv_stride: 1         # S — Conv-SwiGLU stride.
+    n_heads: 4             # h — same head count for the local and the global attention.
+    num_groups: 4          # RMSGroupNorm groups.
+    window_t: 31           # w_T — local attention window on the frame axis.
+    window_f: 7            # w_F — local attention window on the frequency axis.
+    gate_kernel_size: 4    # Conv-Gate Conv1D kernel (Table 1's K, read literally).
+    n_fft: 128             # 16 ms at 8 kHz -> F = 65 bins.
+    hop_length: 64         # 8 ms at 8 kHz -> T = 501 frames for a 4.000 s clip.
+    attn_dropout: 0.0      # Paper / upstream recipe: dropout 0.
+
+training:
+  # ---- Paper recipe (arXiv:2607.21128 §3.1 = TF-Locoformer's upstream WSJ0-2mix config) ----
+  seed: 42
+  optimizer: adamw         # NOT the project default Adam — the paper's optimiser.
+  lr: 0.0005               # Paper: 1e-3 @ batch 4. Linear LR-vs-batch scaling (the project's standing rule, lr/sample constant): x2/4 at batch 2. Peak LR, reached at the end of warmup.
+  warmup_steps: 4000       # Linear warmup to `lr`; then ReduceLROnPlateau takes over.
+  weight_decay: 0.01       # AdamW decoupled decay (the project's other configs use 0).
+  grad_clip_norm: 5.0
+  lr_factor: 0.5           # Halve on plateau.
+  lr_patience: 1           # ...after 3 stagnant validation epochs (project default is 1).
+  num_epochs: 150          # Cap; early stopping governs.
+  early_stopping_patience: 10
+  use_amp: true            # bf16 without GradScaler (trainer dispatches on model_type).
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_tf_mossformer_s_42
+  log_level: INFO
+
+  # ---- Protocol, matched to the MossFormer2 16k row ----
+  validation_variants: ["SER", "SE"]
+  # per_variant_validation left at its default (false), as in the MossFormer2 16k rows.
+
+  # Single-stage curriculum, identical to the MossFormer2 16k rows: 7 non-C variants,
+  # plateau scheduler gated on from epoch 1 (see PROTOCOL in the header).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

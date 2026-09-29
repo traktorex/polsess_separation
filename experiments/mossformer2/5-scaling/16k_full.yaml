@@ -1,0 +1,81 @@
+# MossFormer2 paper-depth (FULL, ~55.7M) scaling run — 16k.   [num_blocks=24]
+#
+# WHY THIS EXISTS: every MossFormer2 result in the thesis — the scaling curve AND the
+# deployed 128k separator — used the SepFormer-MATCHED depth (num_blocks=11, ~26.4M).
+# The paper's full depth (num_blocks=24, ~55.7M) was never trained at scale, so
+# "MossFormer2-matched plateaus above 32k" cannot distinguish a capacity ceiling from a
+# depth-11 ceiling. This curve (16k/32k/64k -> deferred 128k) trains the paper-full model
+# at matching scales to de-confound it — the same move as the full-SPMamba curve
+# (experiments/spmamba/5-scaling/*_full.yaml).
+#
+# ARCHITECTURE: identical to mossformer2_matched.yaml EXCEPT num_blocks 11 -> 24. N=512,
+# kernel_size=16, C=2 unchanged -> GFSMN depth is the ONLY capacity variable.
+#
+# RECIPE: the project's canonical transformer recipe — wd 0, grad_clip 5.0,
+# ReduceLROnPlateau(0.5, patience 1), lr 1.5e-4. That lr is the batch_size=1 reference: the
+# canonical LR is 1.5e-4 per bs=1, and the matched SCALING curve doubled it to 3e-4 for its
+# bs=2 (linear LR-vs-batch scaling). Full runs at bs=1 (memory, ~55.7M), so it keeps the
+# un-doubled 1.5e-4 -> lr-PER-SAMPLE matches the matched curve exactly (1.5e-4/1 = 3e-4/2).
+# That equality is what keeps the capacity comparison fair across the batch-size change.
+# Deliberately NOT the matched 128k SWEEP winner (lr 2.15e-4 / attn_dropout 0.07 /
+# grad_clip 3.07): that HPO was tuned on depth-11, a different-capacity model, so
+# transplanting it onto depth-24 would re-confound capacity with optimizer tuning (the
+# full-SPMamba "don't reuse the reduced arch's hyperparameters" rule). attn_dropout stays at
+# the upstream default 0.1 (the value the matched SCALING runs used, un-swept). No full-depth
+# sweep — ~2x the per-epoch cost, and the matched sweep optimum was flat (top-4 within 0.18 dB).
+#
+# PROTOCOL: final-training protocol on ALL FOUR points — all-8-variant validation (best
+# checkpoint on avg SI-SDRi), no curriculum, early-stop 10. So the full curve is one
+# coherent all-8 curve, directly comparable to the matched / SepFormer / SPMamba 128k
+# finals (matched MF2 17.04 dB, SepFormer 16.0 dB all-8 SI-SDRi). It is NOT a tight overlay
+# on the matched 16k/32k/64k points (those logged best_val over {SER,SE}); for a per-point
+# full-vs-matched read, re-score the saved matched checkpoints on all-8 (cheap, no retrain).
+#
+# COST: full is ~2x the matched per-epoch (batch 1 vs 2, ~2.1x params) — an estimate, checked
+# against epoch 1 at launch. 16k is the cheapest point and was run first; at batch 1 peak VRAM
+# was the binding constraint on a 10 GB card. As-run checkpoint: 16k_mossformer2_full_42_fy0hz7on.
+
+data:
+  dataset_type: polsess
+  batch_size: 1            # ~55.7M model — one mixture per step (memory).
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 16000
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim.
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8).
+    C: 2
+    num_blocks: 24   # PAPER-FULL GFSMN depth (matched curve used 11).
+    attn_dropout: 0.1   # Upstream default, un-swept (matched sweep tuned 0.07; not transplanted).
+
+training:
+  # ---- Canonical SepFormer-baseline recipe (NOT the matched-128k sweep; see header) ----
+  seed: 42
+  lr: 0.00015              # Canonical LR @ batch_size=1; matched used 3e-4 @ bs=2 (same lr/sample).
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1           # Final-training protocol (all-8 per-variant val is a stable signal).
+  num_epochs: 100          # Cap; early stopping governs.
+  early_stopping_patience: 8
+  use_amp: true            # fp16 + GradScaler is bypassed for mossformer2 -> bf16 (trainer dispatch).
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-real16k
+  wandb_run_name: 16k_mossformer2_full_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule (mirrors the SepFormer baseline)
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

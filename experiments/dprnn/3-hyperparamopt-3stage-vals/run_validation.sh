@@ -13,7 +13,7 @@ for config_num in 1 2 3 4 5; do
     echo ""
     echo "📊 Running Config $config_num..."
     
-    config_file="experiments/dprnn/validation_config${config_num}.yaml"
+    config_file="experiments/dprnn/3-hyperparamopt-3stage-vals/validation_config${config_num}.yaml"
     
     for seed in "${SEEDS[@]}"; do
         echo "   Seed: $seed"

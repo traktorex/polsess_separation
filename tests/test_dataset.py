@@ -1,5 +1,6 @@
 """Tests for PolSESSDataset."""
 
+import os
 import pytest
 from pathlib import Path
 from datasets import PolSESSDataset
@@ -18,16 +19,20 @@ def test_dataset_all_variants():
     assert sorted(all_variants) == sorted(expected)
 
 
+_POLSESS_ROOT = os.getenv(
+    "POLSESS_DATA_ROOT",
+    str(Path.home() / "datasets/PolSESS_C_both/PolSESS_C_both"),
+)
+
+
 @pytest.mark.skipif(
-    not Path("F:\\PolSMSE\\EksperymentyMOWA\\BAZY\\MOWA\\PolSESS_C_in\\PolSESS_C_in").exists(),
-    reason="PolSESS data not available"
+    not Path(_POLSESS_ROOT).exists(),
+    reason="PolSESS data not available (set POLSESS_DATA_ROOT env var)",
 )
 def test_dataset_loading_with_data():
     """Test dataset can load samples (requires actual data)."""
-    data_root = "F:\\PolSMSE\\EksperymentyMOWA\\BAZY\\MOWA\\PolSESS_C_in\\PolSESS_C_in"
-
     dataset = PolSESSDataset(
-        data_root=data_root,
+        data_root=_POLSESS_ROOT,
         subset="train",
         task="ES",
     )
@@ -35,8 +40,9 @@ def test_dataset_loading_with_data():
     assert len(dataset) > 0, "Dataset should have samples"
 
 
-def test_dataset_max_samples_limit(tmp_path):
-    """Test max_samples parameter limits dataset size."""
-    # This test would require mock data or actual data
-    # Skipping if data not available
-    pytest.skip("Requires actual dataset for testing")
+# test_dataset_max_samples_limit was a permanent `pytest.skip("Requires actual
+# dataset for testing")` stub (E4 item 10) — deleted rather than implemented:
+# max_samples limiting is already fully exercised with mocked pandas data in
+# tests/test_dataset_variants.py::TestMaxSamples
+# (test_max_samples_limits_dataset_size / test_max_samples_none_uses_all_samples),
+# so implementing it here would only duplicate that coverage.

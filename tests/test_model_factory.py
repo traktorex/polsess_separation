@@ -4,6 +4,7 @@ import pytest
 import torch
 from config import Config, ModelConfig
 from models.factory import create_model_from_config
+from models.mamba import MAMBA_AVAILABLE
 
 
 class TestModelFactory:
@@ -49,7 +50,9 @@ class TestModelFactory:
     def test_create_all_model_types(self):
         """Test all supported models can be created."""
         # Note: sepformer not included as it's not in default Config
-        model_types = ["convtasnet", "dprnn", "spmamba"]
+        model_types = ["convtasnet", "dprnn"]
+        if MAMBA_AVAILABLE:  # registered only when mamba-ssm imports
+            model_types.append("spmamba")
         
         for model_type in model_types:
             config = Config()

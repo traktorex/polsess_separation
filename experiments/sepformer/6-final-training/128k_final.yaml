@@ -1,0 +1,74 @@
+# SepFormer 128k final training — winner of sweep ns442yen.
+#
+# Hyperparameters lifted from the top run by val_si_sdri:
+#   nandfv77 / dry-sweep-6 — val_si_sdri = 14.812 @ epoch 20
+#   https://wandb.ai/s17060-polsko-japo-ska-akademia-technik-komputerowych/polsess-thesis-experiments/runs/nandfv77
+#
+# Sweep ranking (val_si_sdri @ epoch 20):
+#   1. nandfv77  14.812   lr=1.54e-4  dropout=0.045  wd=1.08e-7  grad_clip=1.95   ← this config
+#   2. qywjcdjf  14.714   lr=1.32e-4  dropout=0.082  wd=1.54e-7  grad_clip=2.01
+#   3. wxpjs5h4  14.714   lr=1.61e-4  dropout=0.062  wd=1.59e-7  grad_clip=2.36
+#   4. 3jc809nb  14.675   lr=1.73e-4  dropout=0.061  wd=1.83e-7  grad_clip=2.17
+#
+# Differences from 128k_sweep_base.yaml:
+#   - lr / dropout / weight_decay / grad_clip_norm pinned to the winner.
+#   - num_epochs 20 → 100 (final training, no Hyperband cap).
+#   - lr_patience 1 → 2 (less aggressive; full-val signal is already stable).
+#   - early_stopping_patience 5 → 12 (per the sweep README protocol).
+#   - val_max_samples 1024 → null (full validation set).
+#   - wandb_project polsess-thesis-experiments → polsess-separation-128k.
+#   - wandb_run_name pinned for reproducibility.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted → full validation set.
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 256
+    kernel_size: 16
+    stride: 8
+    C: 2
+    causal: false
+    num_blocks: 2
+    num_layers: 8
+    d_model: 256
+    nhead: 8
+    d_ffn: 1024
+    dropout: 0.04545510303007914     # nandfv77
+    chunk_size: 250
+    hop_size: 125
+    use_positional_encoding: true
+
+training:
+  # ---- Winner of sweep ns442yen (nandfv77) ----
+  lr: 0.00015369224364395538
+  weight_decay: 0.0000001079224025843591
+  grad_clip_norm: 1.9523514166817184
+  # ---- Pinned for final training ----
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 150
+  early_stopping_patience: 10
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: sepformer_128k_final_42
+  log_level: INFO
+
+  # No curriculum: Group A at 64k showed full-set-from-epoch-1 is already best.
+
+  # Per-variant validation drives the LR scheduler and best-checkpoint logic
+  # via avg SI-SDRi; all 8 variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

@@ -1,0 +1,60 @@
+# MambaTasNet-S HPO — Single-Stage, Full 16K Dataset
+# Baseline: 4.33 dB with curriculum learning.
+# Key targets: weight_decay and grad_clip to control overfitting.
+# MambaTasNet-S is ~7.9M params, expect longer runs than XS.
+
+program: train_sweep.py
+method: bayes
+metric:
+  name: best_val_sisdr
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 15
+  s: 2
+
+parameters:
+  # Fixed
+  config:
+    value: experiments/mamba_tasnet/5-hpo/mamba_tasnet_s_16k.yaml
+
+  num_epochs:
+    value: 60
+
+  seed:
+    values: [42]
+
+  early_stopping_patience:
+    value: 10
+
+  # ========================================
+  # Search space (same as XS sweep)
+  # ========================================
+
+  lr:
+    distribution: log_uniform_values
+    min: 5e-5
+    max: 1e-2
+
+  weight_decay:
+    distribution: log_uniform_values
+    min: 5e-7
+    max: 1e-3
+
+  grad_clip_norm:
+    distribution: uniform
+    min: 0.5
+    max: 5.0
+
+  lr_factor:
+    distribution: uniform
+    min: 0.3
+    max: 0.9
+
+  lr_patience:
+    values: [1, 2, 3, 4]
+
+
+project: polsess-thesis-experiments
+name: mamba-tasnet-s-hpo-16k

@@ -1,6 +1,6 @@
 # MM-IPC Test Coverage Documentation
 
-This document describes the comprehensive test coverage for the PolSESS dataset's MM-IPC (Multi-Modal Indoor/outdoor and Physical Complexity) variant system implemented in `tests/test_mmipc.py`.
+This document describes the comprehensive test coverage for the PolSESS dataset's MM-IPC (Mix Modification by Inverted Phase Cancellation) variant system implemented in `tests/test_mmipc.py`.
 
 ## Overview
 
@@ -12,9 +12,9 @@ The tests verify that the `_lazy_load()`, `_apply_mmipc()`, and `_compute_clean(
 ## Variant Semantics
 
 Variant letters indicate which components to **KEEP** in the mix:
-- **S**: Keep Scene (remove scene from mix)
-- **E**: Keep Event (remove event from mix)
-- **R**: Keep Reverb (remove reverb from mix)
+- **S**: Keep Scene — the scene layer is subtracted only when "S" is absent
+- **E**: Keep Event — the event layer (+ its reverb) is subtracted only when "E" is absent
+- **R**: Keep Reverb — speaker reverb is subtracted only for the "C" variant
 - **C**: Clean (remove all: scene, event, reverb)
 
 ## Verified Logic for `_lazy_load()`
@@ -79,15 +79,15 @@ Tests verify correct target computation:
 
 ### Test Classes
 
-1. **TestLazyLoadFieldsES**: 10 tests covering all ES task variants
-2. **TestLazyLoadFieldsEB**: 10 tests covering all EB task variants
-3. **TestLazyLoadFieldsSB**: 10 tests covering all SB task variants
+1. **TestLazyLoadFieldsES**: 9 tests covering all ES task variants
+2. **TestLazyLoadFieldsEB**: 9 tests covering all EB task variants
+3. **TestLazyLoadFieldsSB**: 9 tests covering all SB task variants
 4. **TestApplyMMIPC**: 4 tests verifying component subtraction arithmetic
 5. **TestComputeClean**: 3 tests verifying target computation for each task
 6. **TestVariantSelection**: 3 tests verifying reverb filtering logic
-7. **TestEndToEnd**: 27 parameterized tests covering all task×variant combinations
+7. **TestEndToEnd**: 24 parameterized tests covering all task×variant combinations
 
-**Total: 67 test cases covering 61 unique scenarios**
+**Total: 61 test cases**
 
 ### Mock Data
 
@@ -124,7 +124,7 @@ pytest tests/test_mmipc.py --cov=datasets.polsess_dataset --cov-report=html
 
 ✅ **All 3 tasks** (ES, EB, SB) tested with all compatible variants
 ✅ **All 9 variants** tested (5 indoor + 4 outdoor)
-✅ **Field loading logic** verified for all 27 task×variant combinations
+✅ **Field loading logic** verified for all 24 task×variant combinations
 ✅ **Component subtraction** verified with arithmetic checks
 ✅ **Target computation** verified for all task types
 ✅ **Variant selection and filtering** verified
