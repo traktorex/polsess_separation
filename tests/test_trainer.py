@@ -1040,3 +1040,51 @@ def test_train_skips_preflight_when_disabled(tmp_path):
     trainer.train(num_epochs=1, save_dir=str(tmp_path / "ckpt"))
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Pre-validation _last.pt (2026-09-30): validation hung twice in a wedged CUDA
+# context on the 3080/WSL2, losing a whole training epoch each time. The full
+# training state is now saved after the training pass, before validation.
+# ---------------------------------------------------------------------------
+
+
+class _ValidationHang(Exception):
+    pass
+
+
+def test_last_checkpoint_survives_a_validation_failure(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    trainer.global_step = 0
+
+    def hang(*args, **kwargs):
+        raise _ValidationHang  # stands in for the process dying mid-validation
+
+    trainer.validate = hang
+    trainer.config.training.preflight_validation = False
+    with pytest.raises(_ValidationHang):
+        trainer.train(num_epochs=1, save_dir=str(tmp_path / "ckpt"))
+
+    [last] = list((tmp_path / "ckpt").rglob("*_last.pt"))
+    assert list((tmp_path / "ckpt").rglob("*_best.pt")) == []
+    ckpt = torch.load(last, map_location="cpu", weights_only=False)
+    assert ckpt["validated"] is False
+    assert ckpt["val_sisdr"] is None
+    assert ckpt["epoch"] == 0
+    assert ckpt["global_step"] == trainer.global_step > 0
+    assert not list((tmp_path / "ckpt").rglob("*.pt.tmp"))
+
+    resumed = _make_trainer(tmp_path)
+    resumed.load_checkpoint(str(last))
+    assert resumed.current_epoch == 1  # next train() call runs epoch 2
+    assert resumed.global_step == trainer.global_step
+    assert resumed.best_val_sisdr == trainer.best_val_sisdr
+
+
+def test_best_checkpoint_is_marked_validated(tmp_path):
+    trainer = _make_trainer(tmp_path)
+    trainer.train(num_epochs=1, save_dir=str(tmp_path / "ckpt"))
+    [best] = list((tmp_path / "ckpt").rglob("*_best.pt"))
+    [last] = list((tmp_path / "ckpt").rglob("*_last.pt"))
+    assert torch.load(best, map_location="cpu", weights_only=False)["validated"] is True
+    assert torch.load(last, map_location="cpu", weights_only=False)["validated"] is False

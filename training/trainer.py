@@ -1,6 +1,7 @@
 """Trainer class for speech enhancement/separation models."""
 
 import math
+import os
 import time
 import torch
 import logging
@@ -415,6 +416,12 @@ class Trainer:
             f"Loaded checkpoint from epoch {checkpoint['epoch']} (best SI-SDR: {self.best_val_sisdr:.2f} dB), "
             f"resuming at epoch {self.current_epoch}"
         )
+        if checkpoint.get("validated") is False:
+            self.logger.warning(
+                f"{checkpoint_path} is a pre-validation checkpoint: epoch "
+                f"{self.current_epoch} was trained but never validated, and training "
+                f"continues with epoch {self.current_epoch + 1}"
+            )
 
     def init_from_checkpoint(self, checkpoint_path: str):
         """Initialise the model weights from a checkpoint (fine-tuning start).
@@ -528,12 +535,13 @@ class Trainer:
 
         return checkpoint_path, config_path
 
-    def _serialize_checkpoint_data(self, epoch: int, val_sisdr: float) -> dict:
+    def _serialize_checkpoint_data(self, epoch: int, val_sisdr: Optional[float]) -> dict:
         """Prepare checkpoint data for saving.
 
         Args:
             epoch: Current training epoch.
-            val_sisdr: Validation SI-SDR score.
+            val_sisdr: Validation SI-SDR score, or None for the pre-validation
+                ``_last.pt`` checkpoint (the epoch has not been validated yet).
 
         Returns:
             Dictionary containing all checkpoint data.
@@ -557,7 +565,11 @@ class Trainer:
             # max() keeps the invariant local: the train loop saves only on
             # improvement (best == val_sisdr there), but a direct _save_checkpoint
             # call must still record this checkpoint's own score as the best.
-            "best_val_sisdr": max(self.best_val_sisdr, val_sisdr),
+            "best_val_sisdr": (
+                self.best_val_sisdr if val_sisdr is None else max(self.best_val_sisdr, val_sisdr)
+            ),
+            # False only in the pre-validation _last.pt (see _save_last_checkpoint).
+            "validated": val_sisdr is not None,
             "epochs_without_improvement": self.epochs_without_improvement,
             # Optimizer-step counter, so a --resume partway through an LR warmup
             # continues it instead of restarting from ~0 (no-op when warmup is off).
@@ -597,6 +609,36 @@ class Trainer:
         if wl and getattr(wl, "enabled", False) and getattr(wl, "run", None) is not None:
             return getattr(wl.run, "id", None)
         return None
+
+    def _save_last_checkpoint(self, epoch: int, save_dir: str):
+        """Save the full training state right after the training pass, BEFORE validation.
+
+        Written to ``{model}_{task}_last.pt`` (overwritten every epoch) and
+        resumable with --resume like the best checkpoint. Exists because on the
+        RTX 3080 under WSL2 validation has hung twice in a CUDA synchronize with
+        the GPU idle (2026-09-29/30, 128k speaker-count fine-tune); the wedged
+        CUDA context cannot be recovered or read from, so everything since the
+        last best checkpoint -- a whole 7 h training epoch -- was lost. With this
+        file a hang costs only the validation pass.
+
+        The epoch it holds is NOT validated: resuming from it continues with the
+        next epoch's training, so that one epoch never gets a validation row or
+        a chance to become the best checkpoint. best_val_sisdr and the patience
+        counter are those from before the epoch.
+        """
+        checkpoint_dir = self._checkpoint_dir(save_dir, self._get_run_name())
+        ensure_dir(checkpoint_dir)
+        model_name = self.config.model.model_type
+        task = self.config.data.task
+        last_path = checkpoint_dir / f"{model_name}_{task}_last.pt"
+
+        checkpoint_data = self._serialize_checkpoint_data(epoch, val_sisdr=None)
+        # Write to a temporary file and rename, so a crash mid-write never
+        # leaves a truncated _last.pt in place of the previous good one.
+        tmp_path = last_path.with_suffix(".pt.tmp")
+        torch.save(checkpoint_data, tmp_path)
+        os.replace(tmp_path, last_path)
+        self.logger.info(f"Saved pre-validation checkpoint (epoch {epoch + 1}) to: {last_path}")
 
     def _save_checkpoint(self, epoch: int, val_sisdr: float, save_dir: str):
         """Save model checkpoint with best validation SI-SDR."""
@@ -1040,6 +1082,7 @@ class Trainer:
                 train_sisdr, train_sisdri = self.train_epoch()
                 self.logger.info(f"Train - SI-SDR:  {train_sisdr:.2f} dB")
                 self.logger.info(f"Train - SI-SDRi: {train_sisdri:.2f} dB")
+                self._save_last_checkpoint(epoch, save_dir)
 
                 if self.per_variant_mode:
                     variant_results = self.validate_per_variant()
