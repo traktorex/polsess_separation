@@ -23,6 +23,8 @@ Builds, into ``thesis/my-writing/figures/prezentacja/``:
                                              insertion bars (ch. 6 fn. 5)
   prez_08a_modele_dane.png        slide 8 – Tab. 6.5 subset: separators by training corpus
   prez_08b_pasmo.png              slide 8 – Tab. 6.7: 8 kHz MossFormer2 vs 16 kHz TIGER
+  prez_08b_pasmo_tfmf.png         post-thesis variant of 08b + 16 kHz TF-MossFormer-S (2026-09-23;
+                                             not from the hand-in text: CLARIN test, arm v41_tfmf_s16k)
 
 Numbers are copied from the hand-in text of chapter 6. Audio and JSON come from the frozen
 v41_merge / v41_merge_nosep arms of the CLARIN_fragments eval tree and from PolSESS_C_final_128_v2/test.
@@ -1060,6 +1062,21 @@ def fig_08b() -> None:
                xlim=(20, 26), xlabel="cpWER", figsize=(10, 3.2))
 
 
+def fig_08b_tfmf() -> None:
+    """Post-thesis (2026-09-23) variant of slide 8's band figure with the 16 kHz TF-MossFormer-S
+    (sweep arm v41_tfmf_s16k, CLARIN test cpWER 21.3) as the third row."""
+    rows = [
+        ("MF2-matched", "PolSESS_128k", "8 kHz", 24.0, "0–4 kHz + BWE"),
+        ("TIGER", "EchoSet", "16 kHz", 22.8, "0–8 kHz"),
+        ("TF-MossFormer-S", "PolSESS_128k_16kHz", "16 kHz", 21.3, "0–8 kHz"),
+    ]
+    table_barh("prez_08b_pasmo_tfmf.png", ["model separacji", "korpus treningowy", "próbkowanie"],
+               [(r[0], r[1], r[2]) for r in rows], [r[3] for r in rows],
+               [BAND[r[4]] for r in rows],
+               [Patch(facecolor=c, label=k) for k, c in BAND.items()],
+               xlim=(20, 26), xlabel="cpWER", figsize=(10, 4.0))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frag", default="ccfbb9db__seg00")
@@ -1083,6 +1100,7 @@ def main() -> None:
     fig_07_all()
     fig_08a()
     fig_08b()
+    fig_08b_tfmf()
     for p in sorted(OUT_DIR.glob("prez_*.png")):
         print("wrote", p.relative_to(REPO))
 

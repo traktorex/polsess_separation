@@ -5,7 +5,7 @@ Thesis-defense showcase UI over `asr_pipeline/`. Stacks on top of the repository
 ```bash
 ./webapp/run.sh                                  # real server, port ${WEBAPP_PORT:-8871}, HF_HUB_OFFLINE=1; preflight at startup
 venv/bin/python -m webapp.dev_server --port 8899 # GPU-free dev harness (FakeRunner replays a timed run; --fail-stage for error UI)
-venv/bin/python -m webapp.examples_build         # regenerate examples_manifest.json (gitignored) from the frozen v41_merge eval tree
+venv/bin/python -m webapp.examples_build         # regenerate examples_manifest.json (gitignored) from the shipped arm's eval tree (v41_tfmf_s16k since 2026-09-23)
 pytest tests/test_webapp_backend.py              # backend suite (no GPU, no asr_pipeline import)
 ```
 

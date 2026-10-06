@@ -9,7 +9,7 @@ change it deliberately and update both sides together (design accepted 2026-07-2
 |---|---|
 | `GET /` | Home: upload (drag-and-drop + file picker) form, short recent-jobs list, link to examples |
 | `GET /j/{job_id}` | Job page — progress morphing into results; client polls the JSON API ~1 Hz |
-| `GET /examples` | Pre-processed gallery (frozen v41_merge results + GT + scores; "uruchom ponownie" button per example) |
+| `GET /examples` | Pre-processed gallery (frozen shipped-arm results — v41_tfmf_s16k since 2026-09-23, v41_merge before — + GT + scores; "uruchom ponownie" button per example) |
 
 ## JSON API
 
@@ -29,7 +29,7 @@ Response `200 {"job_id": str}`. Errors: `400` (no/invalid file, ffmpeg failure �
   "queue_position": int,            // 0 = running/next; only meaningful while queued
   "submitted_at": str,              // ISO 8601
   "audio_duration_s": float|null,   // probed at upload
-  "stages": [                       // exactly the enabled stages, pipeline order (8 for v41_merge)
+  "stages": [                       // exactly the enabled stages, pipeline order (8 for the shipped config)
     { "stage": str,                 // "diarization" | ... | "transcription"
       "state": "pending"|"running"|"done",
       "load_s": float|null, "run_s": float|null,          // from stage_end
@@ -99,7 +99,7 @@ Implemented additions accepted into the contract:
 `[{"id": str, "title": str, "duration_s": float, "split": "dev"|"test",
    "cpwer": float|null, "cpcer": float|null, "n_overlap_regions": int,
    "gt_available": bool, "job_like": { …same shape as JobState.result… }}]`
-Backed by a manifest built once from the frozen eval tree (`~/datasets/eval/clarin_fragments/<frag>/sweep/v41_merge/`);
+Backed by a manifest built once from the frozen eval tree (`~/datasets/eval/clarin_fragments/<frag>/sweep/<shipped arm>/`, `webapp/examples_build.py:DEFAULT_ARM`);
 GT transcripts and scores appear ONLY here.
 
 ## Server internals (binding decisions)

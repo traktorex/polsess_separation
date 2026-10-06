@@ -1,4 +1,32 @@
-# SHIPPED BEST config — "v41_merge" (2026-07-04, V5_INSTRUMENT_PREREG.md
+# SHIPPED BEST config — "v41_tfmf_s16k" since 2026-09-23: the v41_merge
+# instrument below with the separator swapped for TF-MossFormer S trained on
+# the 16 kHz PolSESS render (tf_mossformer_s_128k_16kHz_final_42_e23, 5.9M
+# params; val SI-SDR 17.09 dB is a 16 kHz number, NOT comparable with e46's
+# 8 kHz 17.04). Adopted by the author 2026-09-23, reversing the 2026-07-30
+# "separator swaps are measurement, e46 stays deployed" ruling. Sweep arm:
+# scripts/sweep_pipeline.py `v41_tfmf_s16k`; record: thesis-log/08 §4.
+# Test (118 frags / 107 recs, recording-clustered, Holm): 21.3 cpWER / 14.4
+# cpCER vs e46 v41_merge 24.0/16.5 (+2.7/+2.1*), vs v41_bweoff 24.3/17.0
+# (+3.0/+2.6*, every stratum), vs TIGER 22.8/15.4 (+1.4/+1.0*). Dev (20 recs):
+# 14.9/8.8 vs 18.6/11.6. Caveats: (1) rate, architecture and corpus render
+# move together vs e46 — this does NOT show that 16 kHz is the cause;
+# (2) tail: 14 test recordings regress vs v41_bweoff, two large (84b8fe75
+# 20->29 cpCER, where TIGER scores 14; 7cebfd19 10->19).
+#
+# The swap is THREE knobs, not one — the other two are mandatory and nothing
+# checks them (the repo separator backend has no sample-rate guard):
+#   1. separation.separator_sample_rate: 16000. At 8000 the stage would feed
+#      8 kHz audio to a 16 kHz model without an error. Every geometry knob is
+#      in seconds against the 16 kHz pipeline rate, so the resample
+#      round-trip becomes an identity and window/seam/VAD geometry is unchanged.
+#   2. post_separation_processing.backend: naive (NOT ap_bwe). AP-BWE
+#      decimates its input to 8 kHz before re-synthesising the 4-8 kHz band,
+#      so on a 16 kHz separator it would destroy the genuine band. `naive` =
+#      identity + the VAD mask.
+# `configs/default.yaml` and the config.py dataclass deliberately stay on
+# e46: they are the base every sweep arm is built on.
+#
+# Former shipped config — "v41_merge" (2026-07-04, V5_INSTRUMENT_PREREG.md
 # §PHASE-2 VERDICT). Lineage: dr_refineplus (B+, 2026-06-19) -> + OA 0.5 +
 # rescue + loop retries (v2/v3 campaigns) -> + Sortformer-EEND diarizer with
 # the surplus-head fold (V5 instrument adoption).
@@ -74,8 +102,10 @@ enhancement:
 
 separation:
   enabled: true
-  checkpoint_path: checkpoints/mossformer2/SB/mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt
-  separator_sample_rate: 8000
+  # TF-MossFormer S, 16 kHz PolSESS_C_128_16kHz, best epoch 23 (header).
+  # Was e46: mossformer2_matched_128k_final_42_e46/mossformer2_SB_best_e46.pt @ 8000.
+  checkpoint_path: checkpoints/tf_mossformer/SB/tf_mossformer_s_128k_16kHz_final_42_e23/tf_mossformer_SB_best_e23.pt
+  separator_sample_rate: 16000     # MANDATORY with a 16 kHz separator — header note 1
   training_chunk_length_s: 4.0
   context_window_mode: expand_to_chunk
   context_pad_seconds: 1.0
@@ -91,8 +121,7 @@ separation:
   vad_release_frames: 1
 
 post_separation_processing:
-  backend: ap_bwe
-  # checkpoint_path: taken from $AP_BWE_CHECKPOINT (see asr_pipeline/config.py)
+  backend: naive           # NOT ap_bwe with a 16 kHz separator — header note 2 (e46 era: ap_bwe)
 
 # 2nd-pass identity re-clustering (B+). Runs after post_separation_processing,
 # before assembly; re-IDs solos + assigns overlap streams via global ECAPA2

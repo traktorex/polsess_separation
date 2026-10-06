@@ -11,12 +11,23 @@ What lives here:
 - `english.yaml` — English preset (per-language WhisperX alignment).
 - `p4_fixed_pad.yaml` — knob-smoke variant: `context_window_mode: fixed_pad`.
 - `p5_full_length.yaml` — knob-smoke variant: `output_mode: full_length`.
-- `sweep_best_e31.yaml`, `sweep_best_e31_refineplus.yaml` — dev-era finalist
-  snapshots (see "Which 'best' is authoritative?" below).
+- `sweep_best_e31_refineplus.yaml` — **the shipped config** (loaded by the
+  webapp). Despite the historical name it is the sweep arm `v41_tfmf_s16k`
+  since 2026-09-23: the v41_merge instrument with the TF-MossFormer S 16 kHz
+  separator (+ `separator_sample_rate: 16000`, `post_separation_processing:
+  naive`); v41_merge with e46 before that. Its header carries the numbers.
+- `sweep_best_e31.yaml` — dev-era finalist snapshot (see "Which 'best' is
+  authoritative?" below).
 - `v41_mf2full.yaml` — the shipped-best "v41_merge" recipe as a standalone YAML.
 - `b1_*.yaml` — external-separator arms (see the provenance note below).
 
 ## Which "best" is authoritative? (read before trusting any `sweep_best_*`)
+
+*Post-thesis update (2026-09-23): the shipped config is the separator swap
+`v41_tfmf_s16k` (test 21.3 cpWER / 14.4 cpCER vs v41_merge 24.0 / 16.5), and
+`sweep_best_e31_refineplus.yaml` now holds it. The section below is the
+thesis-era account and still describes the campaign that produced the
+instrument. `default.yaml` stays on e46 on purpose: every sweep arm is built on it.*
 
 The held-out **TEST finalist is the sweep arm `dr_oa050`** — the `dr_refineplus`
 recipe (e31 Observation-Adding + ECAPA2 diarization + 2nd-pass B+ relabel) with
@@ -29,8 +40,9 @@ so `dr_oa050` is kept as a *justified default*, not a proven-optimal knob settin
 The `sweep_best_e31*.yaml` files are **dev-selected snapshots**, kept for provenance:
 
 - `sweep_best_e31.yaml` — dev OA-0.3 + ECAPA2-diar winner (2026-06-15).
-- `sweep_best_e31_refineplus.yaml` — the above + 2nd-pass B+ relabel ("dr_refineplus",
-  2026-06-19); `dr_oa050` is this recipe with OA 0.3 → 0.5.
+- `sweep_best_e31_refineplus.yaml` — *originally* the above + 2nd-pass B+ relabel
+  ("dr_refineplus", 2026-06-19; `dr_oa050` is this recipe with OA 0.3 → 0.5);
+  later overwritten in place with v41_merge (2026-07-04) and then v41_tfmf_s16k.
 
 The `b1_*.yaml` external-separator configs follow the same pattern: each is the
 standalone form of a B1 arm that `scripts/sweep_pipeline.py` normally runs as

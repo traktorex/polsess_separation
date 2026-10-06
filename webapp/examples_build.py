@@ -3,7 +3,7 @@
 Offline CLI, run once (and re-run whenever the frozen arm changes)::
 
     venv/bin/python -m webapp.examples_build
-    venv/bin/python -m webapp.examples_build --arm v41_merge --limit 12
+    venv/bin/python -m webapp.examples_build --arm v41_tfmf_s16k --limit 12
     venv/bin/python -m webapp.examples_build --ids 005cba37__seg00 065a9896__seg00
 
 It scans ``<root>/<fragment>/sweep/<arm>/`` and writes one light row per
@@ -45,15 +45,16 @@ from typing import Dict, List, Optional, Tuple
 import soundfile as sf
 
 DEFAULT_ROOT = Path("~/datasets/eval/clarin_fragments").expanduser()
-DEFAULT_ARM = "v41_merge"
+DEFAULT_ARM = "v41_tfmf_s16k"   # shipped since 2026-09-23 (was v41_merge)
 DEFAULT_OUT = Path(__file__).resolve().parent / "examples_manifest.json"
 
-# Frozen per-fragment scores from the definitive campaign's rescore pass: the
-# dev sheet (23 fragments) and the V5 test sheet (118). Rows are per (fragment,
-# config); only the shipped arm's rows are read.
+# Frozen per-fragment scores for the shipped arm: the dev sheet (23 fragments)
+# and the test sheet (118) from the 2026-09-23 TF-MossFormer 16 kHz rescore.
+# Rows are per (fragment, config); only the shipped arm's rows are read. The
+# v41_merge-era sheets are `_rescore_perfrag_v41_dev.csv` / `_v5_test.csv`.
 DEFAULT_SCORES_CSVS = [
-    DEFAULT_ROOT / "_rescore_perfrag_v41_dev.csv",
-    DEFAULT_ROOT / "_rescore_perfrag_v5_test.csv",
+    DEFAULT_ROOT / "_rescore_perfrag_tfmf16k_dev.csv",
+    DEFAULT_ROOT / "_rescore_perfrag_tfmf16k_test.csv",
 ]
 
 # The metric set every example row carries (API.md v1.2 draft). All values are

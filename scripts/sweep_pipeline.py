@@ -1967,6 +1967,27 @@ CONFIGS: dict[str, dict] = {
                          "relabel.solo_clustering_init": "rescue",
                          "transcription.loop_retry": True,
                          "transcription.loop_retry_phrase": True},
+    # First in-house 16 kHz separator (2026-09-23): TF-MossFormer S trained on
+    # PolSESS_C_128_16kHz (seed 42, best epoch 23; val SI-SDR 17.09 dB is a
+    # 16 kHz number, NOT comparable with e46's 8 kHz 17.04). The v41_merge
+    # instrument with the v41_b1_tiger 16 kHz pattern: separator_sample_rate
+    # 16000 (the repo backend does not check it) + `naive` post-processing
+    # (AP-BWE would narrowband the genuine 4-8 kHz band). Unlike TIGER, dry
+    # PolSESS SB targets — same convention as e46. Anchors: v41_bweoff
+    # (primary, matched post-processing), v41_merge (as-deployed).
+    "v41_tfmf_s16k": {"enhancement.observation_mix_ratio": 0.50,
+                      "diarization.backend": "sortformer",
+                      "diarization.sortformer_head_policy": "merge",
+                      "relabel.enabled": True, "relabel.source": "global",
+                      "relabel.embedding": "ecapa2", "relabel.audio_source": "enhanced",
+                      "relabel.solo_clustering_init": "rescue",
+                      "transcription.loop_retry": True,
+                      "transcription.loop_retry_phrase": True,
+                      "separation.checkpoint_path":
+                          "checkpoints/tf_mossformer/SB/tf_mossformer_s_128k_16kHz_final_42_e23/"
+                          "tf_mossformer_SB_best_e23.pt",
+                      "separation.separator_sample_rate": 16000,
+                      "post_separation_processing.backend": "naive"},
 }
 
 # Named groups for --groups selection. "baseline" is always included.
@@ -2249,6 +2270,9 @@ GROUPS: dict[str, list[str]] = {
     # base (thesis-log/sweep_plan/V5_INSTRUMENT_PREREG.md §"Phase 1"). Needs
     # $SORTFORMER_VENV_PY; rescore with --anchor v3_phraseloop (report vs v4_eend).
     "v2p1": ["v2p1_eend", "v2p1_merge", "v2p1_merge_th040"],
+    # In-house 16 kHz separator swap; rescore with --anchor v41_bweoff (primary)
+    # and --anchor v41_merge (as-deployed).
+    "swap16k": ["v41_tfmf_s16k"],
 }
 
 
