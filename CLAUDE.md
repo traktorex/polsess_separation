@@ -18,7 +18,7 @@ Reply in English unless the user specifies otherwise.
 The amount of thinking should be proportional to the complexity of the task you're given.
 Avoid unnecessary verbosity by using CoT to structure your response.
 
-Important: when launching subagents, use only Opus agents (unless the user specifies differently). You may decide to use Sonnet subagents for the easiest work. Never launch Fable subagents — with one standing exception (approved 2026-07-25): agents whose job is synthesis/adjudication or premium prose editing (`review-synthesizer`, `code-review-synthesizer`, `redaktor`) pin `model: fable` in their frontmatter, because deciding between conflicting reviewers merits the strongest reasoning. Do not extend the exception to other agents without asking.
+Subagent models and the host rules are in `~/.claude/CLAUDE.md`. This repository's standing exception to "never Fable subagents" (approved 2026-07-25): `review-synthesizer`, `code-review-synthesizer` and `redaktor` pin `model: fable` in their frontmatter, because adjudicating between conflicting reviewers and premium prose editing merit the strongest reasoning. Do not extend it to other agents without asking.
 
 ## Thesis Code Principles
 
