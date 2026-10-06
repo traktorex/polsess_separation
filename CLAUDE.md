@@ -20,6 +20,8 @@ Avoid unnecessary verbosity by using CoT to structure your response.
 
 Subagent models and the host rules are in `~/.claude/CLAUDE.md`. This repository's standing exception to "never Fable subagents" (approved 2026-07-25): `review-synthesizer`, `code-review-synthesizer` and `redaktor` pin `model: fable` in their frontmatter, because adjudicating between conflicting reviewers and premium prose editing merit the strongest reasoning. Do not extend it to other agents without asking.
 
+Review gates (author, 2026-10-07): `asr_pipeline/` here is the frozen instrument behind the thesis numbers and takes bugfixes only; development happens in `~/DGSS-ASR`. Such a bugfix gets `/code-review` before its commit and no `/simplify`. `/deep-review` runs only when asked.
+
 ## Thesis Code Principles
 
 This code will be reviewed by academic supervisors. Prioritize: clarity over cleverness, simplicity over abstraction, reproducibility. Prefer explicit implementations that match cited papers. Don't over-engineer — no deep inheritance, no speculative features. Experiment logging is handled outside this repo.
