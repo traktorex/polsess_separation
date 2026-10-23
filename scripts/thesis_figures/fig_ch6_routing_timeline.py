@@ -10,7 +10,7 @@ pokazać wszystkie mechanizmy decyzyjne etapu `routing` + rozszerzania okna:
      = "expand_to_chunk", training_chunk_length_s = 4,0)
 
 Geometria okien liczona jest tą samą arytmetyką co w kodzie produkcyjnym
-(`asr_pipeline/stages/separation.py::_boundary_aware_pad`), łącznie z
+(`asr_pipeline/stages/separation.py::_boundary_aware_pad`, tag `pre-asr-removal-2026-10-23`), łącznie z
 asymetrycznym rozdziałem kontekstu przy brzegu nagrania — dzięki temu rysunek
 nie może się rozjechać z implementacją.
 
@@ -54,7 +54,7 @@ Y_LIM = (1.20, 7.30)
 GAP = 0.10  # przerwa (~3 px @300 dpi) między sąsiednimi segmentami paska
 
 
-# --- logika routingu (lustro asr_pipeline/stages/routing.py) --------------
+# --- logika routingu (lustro asr_pipeline/stages/routing.py, tag pre-asr-removal-2026-10-23) ---
 def overlaps(a, b):
     out = []
     for s1, e1 in a:

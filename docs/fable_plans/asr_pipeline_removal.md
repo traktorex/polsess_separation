@@ -58,7 +58,7 @@ so each removed directory gets an `rm -rf` after the `git rm`.
 Checked and **staying**: `models/`, `utils/`, `training/`, `datasets/`,
 `config.py`, `train*.py`, `evaluate*.py`, `scripts/{audit_mmipc,
 audit_split_leakage,benchmark_*,model_manifest,export_separator,
-build_prezentacja}.py`, `scripts/lr_branching/`, the ch2/ch4/ch5 figure
+build_prezentacja}.py`, the ch2/ch4/ch5 figure
 scripts, `pyproject.toml` (packages only `models/`, so `polsess-models` and
 DGSS-ASR's pin are untouched), `requirements-freeze.txt` (historical exact
 freeze; keep as is, it is a record).

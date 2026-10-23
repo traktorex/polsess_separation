@@ -102,4 +102,4 @@ compiling in the background.
 
 A six-row table old vs new samples/s, the parity numbers, the pytest verdict, and
 anything that deviated from this document. Adoption as the default venv (alias,
-`webapp/run.sh`) is the author's call, not the session's.
+`webapp/run.sh`, which moved to DGSS-ASR on 2026-10-23) is the author's call, not the session's.

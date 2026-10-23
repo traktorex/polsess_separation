@@ -1,6 +1,7 @@
 # Sweep run ledger — column dictionary (`sweeps/all_runs.csv`)
 
-Style model: `docs/SWEEP_RESULTS_SCHEMA.md` — the equivalent doc for the
+Style model: `docs/SWEEP_RESULTS_SCHEMA.md` (moved to DGSS-ASR on 2026-10-23;
+here at tag `pre-asr-removal-2026-10-23`) — the equivalent doc for the
 ASR pipeline's fragment-level sweep CSVs. This one covers the *training-side*
 run ledger instead: one row per training run (any model architecture), not
 per (config, fragment).

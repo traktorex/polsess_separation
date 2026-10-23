@@ -6,7 +6,7 @@ Dwa renderingi tej samej topologii:
     ścieżkę całego nagrania i ścieżkę nakładań); ma pozostać czytelny przy
     szerokości druku ~13,5 cm,
   * rys_ch6_pipeline_full  — wersja pełna: potok tak, jak działa w
-    konfiguracji `v41_merge` (`asr_pipeline/configs/sweep_best_e31_refineplus.yaml`),
+    konfiguracji `v41_merge` (`asr_pipeline/configs/sweep_best_e31_refineplus.yaml` w tagu `pre-asr-removal-2026-10-23`),
     z nazwami użytych modeli, kluczowymi parametrami i mechanizmami, które
     faktycznie się wykonują.
 
