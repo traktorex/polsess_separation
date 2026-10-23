@@ -12,6 +12,8 @@ Thesis prose and experiment logs live in `thesis/` — a symlink to an Obsidian 
 
 The on-device browser demo lives on branch `experiment/webapp-ondevice`, is not in the thesis, and must not be re-added to `main`.
 
+Thesis-era local artifacts (old evaluation CSVs, the legacy `checkpoints_for_eval*.csv` lists, raw W&B exports, superseded benchmark tables, the June deep-research notes) live in `archive/thesis_era/` — ignored by git, indexed by its `README.md`. New result files go to an explicit `--output` path, not the repository root.
+
 ## Style
 
 Reply in English unless the user specifies otherwise.
@@ -85,7 +87,7 @@ wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml   # sweep YAML point
 python scripts/benchmark_inference.py --cross-check   # MACs, latency+IQR, RTF, peak infer VRAM
 python scripts/benchmark_training.py                  # train-only throughput @ trained bs AND bs=1, peak train VRAM
 ```
-Both read the shared architecture list in `scripts/benchmark_models.py` and write `docs/generated/benchmark_{inference,training}.csv` with provenance columns. ptflops needs four corrections (MHA double count, `einsum`, `F.scaled_dot_product_attention` incl. banded cost under a boolean mask, Mamba scan FLOPs-vs-MACs) — documented in the inference script's docstring, tested in `tests/test_benchmark_macs.py`, audited in `thesis/thesis-log/sweep_plan/ch5_test_evals/BENCHMARK_AUDIT.md`. Counting is device-independent (`--device cpu` for non-Mamba); everything timed must run on one machine in one session. The 2026-04 CSVs in `scripts/` are superseded.
+Both read the shared architecture list in `scripts/benchmark_models.py` and write `docs/generated/benchmark_{inference,training}.csv` with provenance columns. ptflops needs four corrections (MHA double count, `einsum`, `F.scaled_dot_product_attention` incl. banded cost under a boolean mask, Mamba scan FLOPs-vs-MACs) — documented in the inference script's docstring, tested in `tests/test_benchmark_macs.py`, audited in `thesis/thesis-log/sweep_plan/ch5_test_evals/BENCHMARK_AUDIT.md`. Counting is device-independent (`--device cpu` for non-Mamba); everything timed must run on one machine in one session. The superseded 2026-04 CSVs moved to the local `archive/thesis_era/`.
 
 **Thesis audit artifacts (citable, CPU-only unless noted):**
 ```bash
