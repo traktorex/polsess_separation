@@ -72,7 +72,8 @@
 #   `separation.separator_sample_rate: 16000` AND
 #   `post_separation_processing.backend: naive` in the pipeline config. AP-BWE
 #   decimates to 8 kHz and interpolates back, which would destroy the real
-#   4-8 kHz band of a full-band separator; the pipeline (DGSS-ASR) reads the rate from the exported bundle.
+#   4-8 kHz band of a full-band separator. The pipeline now lives in DGSS-ASR;
+#   its preflight refuses a separator_sample_rate that disagrees with the bundle.
 
 data:
   dataset_type: polsess

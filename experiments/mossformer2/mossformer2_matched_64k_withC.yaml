@@ -13,8 +13,8 @@
 # other C_new_64 arm. This is NOT the with-C control; that is the separate
 # `mossformer2-matched-64k-withC-fixed` run (curriculum_learning: null, i.e. all eight
 # variants including C), which has no config file of its own because it was launched
-# by resuming a checkpoint. See scripts/sweep_pipeline.py (arms `v41_mf2_matched64k_r2`
-# and `v41_withc_*`) for how both are used.
+# by resuming a checkpoint. See scripts/sweep_pipeline.py at tag pre-asr-removal-2026-10-23
+# (arms `v41_mf2_matched64k_r2` and `v41_withc_*`) for how both are used.
 #
 # `save_all_checkpoints: true` — every improvement is kept, because the downstream
 # probe reads an epoch ladder rather than a single best checkpoint.

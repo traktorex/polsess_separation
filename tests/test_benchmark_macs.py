@@ -191,7 +191,10 @@ def test_tf_mossformer_attention_cores_are_counted():
 
     D, heads, num_blocks = 8, 2, 2
     window_t, window_f = 5, 3
-    n_fft, hop, n_samples = 16, 8, 64
+    # F = 9 bins, T = 13 frames: the two axes must differ, otherwise the
+    # expectation is symmetric in (window_f, window_t) and a swap of the two
+    # windows between the paths would still pass.
+    n_fft, hop, n_samples = 16, 8, 96
     head_dim = D // heads  # attention_dim == D in TF-MossFormer
 
     model = TFMossFormer(

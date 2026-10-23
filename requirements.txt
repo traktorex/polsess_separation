@@ -33,5 +33,7 @@ seaborn>=0.13.0      # sweep analysis plots
 # from-source build (nvcc). Install separately; the model registry skips the
 # Mamba models when this import is missing:
 #   pip install mamba-ssm>=2.3.1
+# Figure and deck-build scripts only (fig_ch2_mel_spectrograms.py, build_prezentacja.py):
+#   pip install librosa lxml pillow python-pptx
 # The ASR pipeline (thesis chapter 6) and its showcase webapp moved to DGSS-ASR
 # on 2026-10-23 and own their dependencies there.
