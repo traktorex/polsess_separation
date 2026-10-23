@@ -173,44 +173,55 @@ def test_patch_forwards_keyword_calls_unchanged():
 
 
 # --------------------------------------------------------------------------- #
-# the real consumer: the vendored TF-Locoformer (and, by construction,
-# TF-MossFormer, whose block is the same one with a different `attn`)
+# the real consumer: TF-MossFormer (models/tf_mossformer)
 # --------------------------------------------------------------------------- #
 
-def test_tf_locoformer_attention_cores_are_counted():
-    """Every block's frequency and temporal attention must reach the collector.
+def test_tf_mossformer_attention_cores_are_counted():
+    """Every block's four attention cores must reach the collector at the right cost.
 
-    TF-Locoformer runs one SDPA per (block, path): the frequency path attends
-    over F bins for each of B*T frames, the temporal path over T frames for each
-    of B*F bins. WHAMR-medium constructor kwargs, with `n_layers` trimmed to 2 so
-    the test builds in a second on CPU — the layer count is the one thing the
-    expectation is linear in, so trimming it tests the multiplication rather than
-    hiding it.
+    A TF-MossFormer block runs a frequency module and a temporal module; each is
+    a `LocalGlobalMHSA` = one windowed SDPA (banded boolean mask) followed by one
+    dense SDPA. The frequency path attends over F bins for each of B*T frames,
+    the temporal path over T frames for each of B*F bins — so per block: two
+    banded cores and two dense cores. Size-S knobs are shrunk so the model builds
+    and runs in a second on CPU; `num_blocks` is the one thing the expectation is
+    linear in, so the test exercises that multiplication rather than hiding it.
     """
-    from asr_pipeline.vendor.tf_locoformer import WHAMR_MEDIUM_KWARGS
-    from asr_pipeline.vendor.tf_locoformer.tflocoformer_separator import (
-        TFLocoformerSeparator,
-    )
+    from models.tf_mossformer import TFMossFormer
 
-    n_layers, batch, frames, freqs = 2, 1, 6, 5
-    kwargs = dict(WHAMR_MEDIUM_KWARGS, n_layers=n_layers)
-    head_dim = kwargs["attention_dim"] // kwargs["n_heads"]
-    heads = kwargs["n_heads"]
+    D, heads, num_blocks = 8, 2, 2
+    window_t, window_f = 5, 3
+    # F = 9 bins, T = 13 frames: the two axes must differ, otherwise the
+    # expectation is symmetric in (window_f, window_t) and a swap of the two
+    # windows between the paths would still pass.
+    n_fft, hop, n_samples = 16, 8, 96
+    head_dim = D // heads  # attention_dim == D in TF-MossFormer
 
-    model = TFLocoformerSeparator(**kwargs).eval()
-    spec = torch.zeros(batch, frames, freqs, dtype=torch.complex64)
+    model = TFMossFormer(
+        C=2, D=D, num_blocks=num_blocks, ffn_hidden_dim=16, conv_kernel_size=4,
+        conv_stride=1, n_heads=heads, num_groups=2, window_t=window_t,
+        window_f=window_f, gate_kernel_size=4, n_fft=n_fft, hop_length=hop,
+    ).eval()
+    mixture = torch.zeros(1, 1, n_samples)
 
     collected: list = []
     patched = _patch_sdpa(collected)
     try:
         with torch.no_grad():
-            model(spec)
+            model(mixture)
     finally:
         _unpatch_sdpa(patched)
 
+    freqs = n_fft // 2 + 1
+    frames = n_samples // hop + 1  # center=True STFT
+    batch = 1
+    kept_f = int(band_mask(freqs, window_f).sum())
+    kept_t = int(band_mask(frames, window_t).sum())
     per_block = (
-        batch * frames * heads * freqs * freqs * 2 * head_dim   # frequency path
-        + batch * freqs * heads * frames * frames * 2 * head_dim  # temporal path
+        batch * frames * heads * kept_f * 2 * head_dim          # frequency, local (banded)
+        + batch * frames * heads * freqs * freqs * 2 * head_dim  # frequency, global
+        + batch * freqs * heads * kept_t * 2 * head_dim          # temporal, local (banded)
+        + batch * freqs * heads * frames * frames * 2 * head_dim  # temporal, global
     )
-    assert len(collected) == 2 * n_layers  # one attention per path per block
-    assert sum(collected) == n_layers * per_block
+    assert len(collected) == 4 * num_blocks  # local + global, per path, per block
+    assert sum(collected) == num_blocks * per_block

@@ -27,9 +27,6 @@ htmlcov/
 # Checkpoints
 checkpoints/*
 
-# asr_pipeline outputs
-/runs
-
 # Wandb
 wandb/
 *.wandb
@@ -51,7 +48,6 @@ Thumbs.db
 
 
 /archive
-/asr/archive
 
 /venv_mamba3
 /venv_backup
@@ -70,9 +66,6 @@ Thumbs.db
 # - append-only sweep run ledger across both training PCs (see
 #   sweeps/RESULTS_SCHEMA.md / sweeps/EXPERIMENT_LOG_monolithic.md).
 !sweeps/all_runs.csv
-# - frozen CLARIN dev/test fragment split assignment (see
-#   asr_pipeline/SCOPE.md).
-!asr_pipeline/eval/clarin_split.csv
 # - generated thesis artifacts (param-count manifest etc.) written by
 #   scripts under docs/generated/ (see scripts/model_manifest.py).
 !docs/generated/*.csv
@@ -94,9 +87,6 @@ Thumbs.db
 
 /docs/deep_research
 /docs/sweep_plan
-
-# webapp build artifact (regenerable via webapp/examples_build.py; machine-absolute paths)
-webapp/examples_manifest.json
 
 # On-device browser demo: an experiment that nothing else depends on. Moved off
 # main on 2026-09-04; the full tree lives on branch `experiment/webapp-ondevice`.

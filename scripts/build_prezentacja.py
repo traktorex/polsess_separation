@@ -43,7 +43,7 @@ MD = VAULT / "my-writing" / "Prezentacja.md"
 OUT = VAULT / "my-writing" / "Prezentacja.pptx"
 FIG_DIRS = [VAULT / "my-writing" / "figures", VAULT / "attachments"]
 LOGO = VAULT / "attachments" / "Pasted image 20260909175405.png"
-WEBAPP_URL = "http://localhost:8871"          # the demo slide links here (webapp/run.sh default port)
+WEBAPP_URL = "http://localhost:8871"          # the demo slide links here (DGSS-ASR webapp/run.sh default port)
 
 # --- design tokens: the same ink and greys as the figures, DejaVu Sans everywhere ------------------
 FONT = "DejaVu Sans"
