@@ -66,13 +66,11 @@
 #      narrower; setting it to 13 keeps the relative span. Neither is obviously right
 #      — it is a cheap ablation once the corpus exists, and 7 is kept here only
 #      because it is the paper's value.
-#   3. ASR-PIPELINE HANDOFF. A 16 kHz checkpoint needs BOTH
-#      `separation.separator_sample_rate: 16000` AND
-#      `post_separation_processing.backend: naive` in the pipeline config. AP-BWE
-#      decimates its input to 8 kHz and interpolates back, so on a genuine full-band
-#      separator output it destroys the real 4-8 kHz band and replaces it with
-#      synthesis. `asr_pipeline/configs/default.yaml` ships `ap_bwe`, so this must be
-#      overridden explicitly, not assumed.
+#   3. ASR-PIPELINE HANDOFF (DGSS-ASR's question now, not this repository's). A
+#      16 kHz separator bundle must not be followed by AP-BWE bandwidth extension:
+#      AP-BWE decimates to 8 kHz and resynthesises the 4-8 kHz band, destroying the
+#      real one. The pipeline reads the rate from the bundle's `separator.json`;
+#      the config-side rule is documented in DGSS-ASR's `asr_pipeline/CLAUDE.md`.
 
 data:
   dataset_type: polsess

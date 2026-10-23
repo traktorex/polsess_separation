@@ -3,12 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Vendored from TF-Locoformer (merlresearch/tf-locoformer):
-# standalone/tflocoformer_separator.py — copied from the in-repo byte-identical
-# vendored copy at asr_pipeline/vendor/tf_locoformer/tflocoformer_separator.py,
-# fetched 2026-07-18. This is a SECOND copy on purpose: models/ must never import
-# from asr_pipeline/, which is designed to be lifted out of this repository, and
-# the asr_pipeline/vendor/ copy stays byte-identical to upstream (its checkpoints
-# are sha256-pinned). Local edits live here only.
+# standalone/tflocoformer_separator.py, upstream revision fetched 2026-07-18
+# (via the byte-identical vendored copy that lived in this repository's
+# asr_pipeline/vendor/ until 2026-10-23 and now lives in DGSS-ASR). models/ owns
+# its own copy so that the published polsess-models package depends on nothing
+# outside models/. Local edits live here only.
 #
 # Local edits (nothing removed):
 #   1. The block's self-attention module is pluggable. LocoformerBlock takes an

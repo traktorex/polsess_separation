@@ -1,23 +1,26 @@
 # PolSESS Speech Separation for Polish ASR Preprocessing
 
 Codebase for a master's thesis on monaural speech separation and its use as a
-front end for Polish automatic speech recognition. Two halves:
+front end for Polish automatic speech recognition. This repository is the
+**separation-training half**: PyTorch implementations of ConvTasNet, DPRNN,
+SepFormer, MossFormer2, TF-MossFormer, SPMamba, Mamba-TasNet and DPMamba,
+trained on the PolSESS corpus, which simulates realistic acoustic conditions
+(reverberation, background scenes, event sounds). Thesis chapters 4–5. The
+`models/` directory is also published as the pip-installable `polsess-models`
+package so other projects can load the trained separators.
 
-1. **Separation training** — PyTorch implementations of ConvTasNet, DPRNN,
-   SepFormer, MossFormer2, TF-MossFormer, SPMamba, Mamba-TasNet and DPMamba,
-   trained on the PolSESS corpus, which simulates realistic acoustic conditions
-   (reverberation, background scenes, event sounds). Thesis chapters 4–5.
-2. **ASR pipeline** — `asr_pipeline/`: diarization → routing → enhancement →
-   separation → post-processing → assembly → transcription, evaluated on real
-   conversational Polish speech from the CLARIN corpus, plus two demonstration
-   front-ends. Thesis chapter 6.
+The other half — the diarization-guided ASR pipeline evaluated on CLARIN
+conversational speech (thesis chapter 6) and its showcase webapp (chapter 7) —
+lived here until 2026-10-23 and now develops in
+[DGSS-ASR](https://github.com/traktorex/DGSS-ASR). The thesis-era instrument is
+preserved at tag `pre-asr-removal-2026-10-23` (hand-in state: `handin-2026-09-05`).
 
-**Results are reported in the thesis, not here** (chapter 5 for separation,
-chapter 6 for the pipeline). This repository holds the code that produced them:
+**Results are reported in the thesis, not here.** This repository holds the
+code that produced the separation results:
 model implementations, experiment configurations, W&B sweep definitions,
 generated benchmark and parameter-count artifacts (`docs/generated/`), the
 thesis figure scripts (`scripts/thesis_figures/`) and the test suite. Datasets
-(PolSESS, CLARIN, Libri2Mix) and trained checkpoints are **not distributed with
+(PolSESS, Libri2Mix) and trained checkpoints are **not distributed with
 the repository** — they are available from the author, and nothing here runs
 end-to-end without them. `CLAUDE.md`, the Claude Code instruction file, doubles
 as the detailed technical map.
@@ -33,6 +36,7 @@ polsess_separation/
 ├── CLAUDE.md                  # Detailed technical map (Claude Code instruction file)
 ├── THIRD_PARTY.md             # Vendored code, model weights and audio excerpts: licences
 ├── requirements.txt, requirements-freeze.txt   # Installable core set / exact dev-env versions
+├── pyproject.toml             # Packages models/ as `polsess-models` (import name polsess_models)
 ├── models/                    # Architectures + registry (`get_model` in models/__init__.py)
 │   ├── conv_tasnet.py, dprnn.py, sepformer.py, factory.py
 │   ├── spmamba.py, mamba_tasnet.py, dpmamba.py   # require mamba-ssm (Linux + CUDA)
@@ -44,12 +48,9 @@ polsess_separation/
 ├── utils/                     # common, model_utils, metrics, wandb_logger, logger, warning_filters
 ├── experiments/               # YAML training configs, one directory per architecture
 ├── sweeps/                    # W&B sweep definitions + historical run ledger
-├── tests/                     # pytest suite (58 files, 1495 tests)
-├── docs/                      # MM-IPC notes, sweep-CSV schema, generated/ artifacts
-├── scripts/                   # Benchmarks, audits, CLARIN helpers, thesis_figures/
-├── asr_pipeline/              # Pipeline package: stages/, eval/, configs/, vendor/, SCOPE.md
-├── asr/                       # Notebooks driving asr_pipeline/ (explore, evaluate, CLARIN)
-└── webapp/                    # FastAPI showcase UI over asr_pipeline (read-only consumer)
+├── tests/                     # pytest suite (29 files, 468 tests)
+├── docs/                      # MM-IPC notes, plans, generated/ artifacts
+└── scripts/                   # Benchmarks, audits, export_separator.py, thesis_figures/
 ```
 
 Registries are dict-based: `get_model("sepformer")`, `get_dataset("polsess")`.
@@ -58,13 +59,11 @@ Measured parameter counts per configuration: `docs/generated/model_manifest.md`.
 
 ## Installation
 
-Create a virtualenv named `venv/` at the repository root (the webapp launcher
-and some commands assume that exact path), then
-`venv/bin/pip install -r requirements.txt`. That file covers the main
-environment only (`requirements-freeze.txt` records the exact versions used for
-the thesis experiments); the ASR pipeline reaches some backends (Sortformer, CohereX,
-Brouhaha) through separate isolated venvs whose pins conflict with it — see
-`CLAUDE.md`.
+Create a virtualenv named `venv/` at the repository root, then
+`venv/bin/pip install -r requirements.txt`. `requirements-freeze.txt` records
+the exact versions used for the thesis experiments (it still lists the ASR
+pipeline's packages, which nothing here imports any more). Optional extras
+(Mamba models) are commented blocks at the end of `requirements.txt`.
 
 ## Training
 
@@ -104,7 +103,7 @@ Metrics: SI-SDR / SI-SDRi (dB), PESQ-WB (1–5), STOI (0–1).
 ```bash
 wandb sweep sweeps/3-hyperparam-opt/dprnn/stage1/dprnn.yaml   # returns a sweep id
 wandb agent <sweep_id>                                        # run inside tmux
-pytest                                                        # 58 files, 1495 tests
+pytest                                                        # 29 files, 468 tests
 pytest tests/test_model.py -v
 pytest --cov=. --cov-report=html
 ```
@@ -113,44 +112,8 @@ Sweep YAMLs point at `train_sweep.py`. `sweeps/EXPERIMENT_LOG_monolithic.md` is
 a **historical log frozen in April 2026** covering the early baseline and HPO
 series; most of its W&B links are dead (the original project was deleted in
 February 2026). `sweeps/all_runs.csv` is a partial recovery of that ledger,
-documented in `sweeps/RESULTS_SCHEMA.md`. The test suite last passed in full on
-2026-09-03; roughly half of it covers `asr_pipeline/`, and Mamba, GPU and
-dataset-dependent tests skip automatically on a CPU-only machine without the
-corpora.
-
-## ASR pipeline
-
-Read `asr_pipeline/SCOPE.md` before changing anything in this package — it is
-the scope contract (purpose, error philosophy, fallback ledger). The CLI front
-door preflights the environment and checkpoints before loading any model:
-
-```bash
-python -m asr_pipeline run --config asr_pipeline/configs/sweep_best_e31_refineplus.yaml \
-    --input rec.wav --write-outputs <eval_root>
-python -m asr_pipeline batch --split clarin_dev --mode no_enh
-python -m asr_pipeline score --eval-root <eval_root> --out-dir <csv_dir>
-```
-
-`--set stage.knob=value` (repeatable) overrides any config knob and
-`--mode full|no_sep|no_enh|minimal` selects an ablation preset. Evaluation is
-two-layer: **L2** audio quality (SI-SDR / PESQ / STOI against oracle channels,
-plus non-intrusive TorchAudio-SQUIM) and **L3** ASR accuracy (cpWER, tcpWER,
-cpCER via `meeteval`). An earlier one-shot REAL-M / LibriMix evaluation flow was
-removed; this pipeline supersedes it. The notebooks in `asr/` drive it
-interactively and score its output.
-
-## Front-end
-
-```bash
-./webapp/run.sh                                   # FastAPI showcase UI, port ${WEBAPP_PORT:-8871}
-venv/bin/python -m webapp.dev_server --port 8899  # GPU-free dev harness (replays a fake run)
-```
-
-`webapp/` is a read-only consumer of the pipeline: it runs it server-side, one
-job at a time, and its HTTP contract is `webapp/API.md`. A second, experimental
-front-end that ran overlap detection, routing and separation entirely in the
-browser (ONNX Runtime Web) is not part of this branch — nothing depends on it and
-it is kept on branch `experiment/webapp-ondevice`.
+documented in `sweeps/RESULTS_SCHEMA.md`. Mamba, GPU and dataset-dependent tests skip
+automatically on a CPU-only machine without the corpora.
 
 ## Technical notes
 
@@ -200,17 +163,6 @@ across architectures. Mamba architectures additionally require Linux and CUDA.
 | Variable | Purpose |
 |---|---|
 | `POLSESS_DATA_ROOT` | PolSESS dataset root (falls back to the default in `config.py`) |
-| `HF_TOKEN` | HuggingFace token for the pyannote diarization stage |
-| `HF_HUB_OFFLINE` | Set to `1` for reproducible offline evaluation runs (webapp default) |
-| `AP_BWE_CHECKPOINT` | AP-BWE bandwidth-extension checkpoint (post-separation stage) |
-| `SORTFORMER_VENV_PY` | Python of the isolated NeMo venv (Sortformer diarization backend) |
-| `COHEREX_VENV_PY` | Python of the isolated CohereX venv (Cohere transcription backend) |
-| `BROUHAHA_VENV_PY` | Python of the isolated Brouhaha venv (fragment-acoustics scoring) |
-| `ASR_PIPELINE_DEBUG_LOG` | Debug log path (default `/tmp/asr_pipeline_debug.log`) |
-| `WEBAPP_PORT`, `WEBAPP_JOBS_ROOT` | Showcase webapp port and job output root |
-
-Missing venv paths fail loudly at preflight rather than falling back silently —
-a deliberate rule of `asr_pipeline/SCOPE.md`.
 
 ## Troubleshooting
 
@@ -247,13 +199,8 @@ pulling in a whole framework:
 - `models/tf_mossformer/` — TF-MossFormer ([arXiv:2607.21128](https://arxiv.org/abs/2607.21128)),
   re-implemented from the paper on a copy of [TF-Locoformer](https://github.com/merlresearch/tf-locoformer), MERL (Apache-2.0) — no upstream code was released
 - `models/mamba/` — BiMamba blocks adapted from [xi-j/Mamba-TasNet](https://github.com/xi-j/Mamba-TasNet) (GPL-3.0), on top of `mamba-ssm` (Apache-2.0)
-- `asr_pipeline/vendor/ap_bwe/` — [AP-BWE](https://github.com/yxlu-0102/AP-BWE) (MIT)
-- `asr_pipeline/vendor/tiger/` — [TIGER](https://github.com/JusperLee/TIGER) (MIT)
-- `asr_pipeline/vendor/tf_locoformer/` — [TF-Locoformer](https://github.com/merlresearch/tf-locoformer), MERL (Apache-2.0)
-- `asr_pipeline/vendor/mossformer2_dp/` — [MossFormer2 standalone](https://github.com/alibabasglab/MossFormer2) (MIT)
 
 SpeechBrain (Apache-2.0) supplies the ConvTasNet and SepFormer lobes. Each
 vendored module's docstring records its upstream source, revision and any local
 patch; the upstream licence text sits next to each vendored tree, and
-`THIRD_PARTY.md` lists all vendored code, runtime model weights and audio
-excerpts with their licences.
+`THIRD_PARTY.md` lists all vendored code and audio excerpts with their licences.

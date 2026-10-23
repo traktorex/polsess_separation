@@ -362,3 +362,5 @@ parent suite keeps appending to `/tmp/asr_pipeline_debug.log`.
 5. `scripts/sweep_pipeline.py` in DGSS-ASR still carries the campaign's
    checkpoint-swap arms (`checkpoints/...pt`); they fail preflight there by design
    and stay runnable here. Export a bundle for any arm that should live on.
+
+**Removal (2026-10-23).** The author ruled that the paper's experiments are redone from scratch in DGSS-ASR, so the frozen copy here lost its job. `asr_pipeline/`, `webapp/`, `asr/`, the pipeline tests and the campaign scripts were removed from `main`; the last state is tag `pre-asr-removal-2026-10-23`, the hand-in state tag `handin-2026-09-05`. Plan and inventory: `asr_pipeline_removal.md`.
