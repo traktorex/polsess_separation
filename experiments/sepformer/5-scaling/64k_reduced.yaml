@@ -1,0 +1,90 @@
+# SepFormer-reduced (4.86M) @ 64k — CROSS-FAMILY CAPACITY CONTROL for RQ3.
+#
+# Why this run exists. The reduced SPMamba (1.16M) saturates between 32k and 64k
+# while SepFormer keeps climbing; `experiments/spmamba/5-scaling/64k_full.yaml`
+# tests that from one side (does 5.2x more capacity rescue the SSM?). This run
+# tests it from the other: does a *transformer* also flatten at 64k once it is
+# shrunk to the same fraction of its own full size? Without it, a tie in the
+# SPMamba full-vs-reduced pair is ambiguous between "SSM family trait" and
+# "small models saturate at 64k regardless of family".
+#
+# Sizing (author ruling 2026-07-30): 0.19x of FULL SepFormer's 25,679,361 params
+# — the same fraction SPMamba-reduced (1.16M) is of SPMamba-full (6.09M) — via
+# depth and model dim, NOT parameter-matched to SPMamba-reduced. Measured here:
+# 4,863,745 = 0.189x. The reduction copies SPMamba-reduced's own pattern (width
+# and attention halved, depth cut by a third):
+#     num_layers 8 -> 6      (x0.75, cf. SPMamba n_layers 6 -> 4)
+#     d_model  256 -> 128    (x0.50, cf. attn_approx_qk_dim 512 -> 256)
+#     nhead      8 -> 4      (x0.50, cf. attn_n_head 4 -> 2)
+#     d_ffn   1024 -> 512    (x0.50, holds the paper's d_ffn = 4 * d_model)
+#     N        256 -> 128    (x0.50, encoder width tracks the transformer)
+# Both of the paper's internal ratios are preserved exactly: d_ffn/d_model = 4
+# and head dim = d_model/nhead = 32. Only scale changes.
+#
+# THE TRAINING RECIPE IS BYTE-IDENTICAL TO 64k_baseline_posenc.yaml (run
+# bym7223m, 13.62 all-8 test / 8.75 {SER,SE} val 3-seed mean) — same lr, batch
+# size, decay, clipping, scheduler, patience, validation variants, curriculum
+# and seed. Capacity is the ONLY variable. This deliberately mirrors the
+# MossFormer2 depth-11-vs-24 design (see thesis ch5): do not re-tune the optimizer for
+# the smaller model, or capacity gets confounded with optimizer settings. NB an
+# earlier, since-removed "sepformer-small" variant did exactly that (bs 8, lr 1e-3,
+# HPO'd HPs, 3-stage curriculum with C) — it is not usable as this control.
+#
+# Read: reduced flattens 32k -> 64k like reduced-SPMamba did => the ceiling is
+# capacity, not family. Reduced keeps climbing => saturation is an SSM trait and
+# the SPMamba result stands on its own.
+
+data:
+  dataset_type: polsess
+  batch_size: 4
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 64000
+
+model:
+  model_type: sepformer
+  sepformer:
+    N: 128          # Encoder channels      (full: 256)
+    kernel_size: 16
+    stride: 8
+    C: 2            # Number of speakers
+    causal: false
+    num_blocks: 2   # Number of times to repeat SepFormer block (unchanged)
+    num_layers: 6   # Transformer layers in both IntraT and InterT (full: 8)
+    d_model: 128    # Transformer dimension (full: 256)
+    nhead: 4        # Attention heads       (full: 8; head dim stays 32)
+    d_ffn: 512      # Feed-forward dimension (full: 1024; stays 4 * d_model)
+    dropout: 0.0
+    chunk_size: 250 # Dual-path chunk size (unchanged — data-path, not capacity)
+    hop_size: 125   # Unused by SpeechBrain's Dual_Path_Model; kept for config parity
+    use_positional_encoding: True
+
+training:
+  # ---- Identical to 64k_baseline_posenc.yaml; do not tune for the smaller model ----
+  seed: 42
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 2
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+  early_stopping_patience: 15
+
+  use_wandb: true
+  wandb_project: polsess-separation-64k
+  wandb_run_name: 64k_sepformer_reduced_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  # No curriculum: all seven non-C variants from epoch 1 — the 64k scaling
+  # protocol, matching 64k_baseline_posenc.yaml.
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

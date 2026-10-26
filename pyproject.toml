@@ -1,0 +1,50 @@
+# Packaging of models/ as the pip-installable `polsess-models` distribution.
+#
+# This repository is not a package; only its models/ directory is. The wheel
+# contains that directory under the import name `polsess_models`, so another
+# project can load separators trained here without copying architecture code.
+# Code in this repository keeps importing `models` from the working directory
+# and needs no installation. Maintenance rules: models/README.md.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "polsess-models"
+dynamic = ["version"]
+description = "Speech-separation architectures trained on PolSESS, with loaders for their checkpoints"
+readme = "models/README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.8.0",
+    "speechbrain>=1.0.3",          # ConvTasNet, DPRNN, SepFormer lobes
+    "einops>=0.6.0",               # MossFormer2, TF-MossFormer
+    "rotary-embedding-torch>=0.5.3",   # MossFormer2, TF-MossFormer; `cache_if_possible` needs 0.5.3
+    "numpy",
+    "packaging",
+    "safetensors>=0.4.0",          # inference bundles
+]
+
+[project.urls]
+Repository = "https://github.com/traktorex/polsess_separation"
+
+[tool.hatch.version]
+path = "models/__init__.py"
+
+[tool.hatch.build]
+only-include = ["models"]
+exclude = [
+    # Mamba family: models/mamba/ derives from GPL-3.0 code (THIRD_PARTY.md) and
+    # needs a CUDA build of mamba-ssm. Left out of the distribution. Shipping it
+    # would put the whole wheel under GPL-3.0: see models/README.md, "What ships".
+    "models/mamba",
+    "models/mamba_tasnet.py",
+    "models/dpmamba.py",
+    "models/spmamba.py",
+    # Training side: imports this repository's config.py.
+    "models/factory.py",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"models" = "polsess_models"

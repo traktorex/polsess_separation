@@ -1,0 +1,51 @@
+# MossFormer2 configuration for PolSESS — SepFormer-matched (~26M params).
+# Based on "MossFormer2: Combining Transformer and RNN-Free Recurrent Network
+# for Enhanced Time-Domain Monaural Speech Separation" (Zhao et al. 2023,
+# arXiv:2312.11825). Vendored from ClearerVoice-Studio (see models/mossformer2/).
+#
+# This config trims the GFSMN depth from the paper's 24 blocks to 11 so the param
+# count (~26.4M) matches SepFormer (~26M) for an apples-to-apples comparison. The
+# data + training blocks mirror the SepFormer baseline.
+
+data:
+  dataset_type: polsess
+  batch_size: 2  # Large transformer — keep batch small
+  num_workers: 1
+  prefetch_factor: 1
+  task: SB  # Speaker separation
+  train_max_samples: 64000  # Initial validation subset (full-scale runs deferred)
+  val_max_samples: null
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2             # Number of speakers
+    num_blocks: 11   # GFSMN depth — trimmed from 24 to match SepFormer's ~26M
+
+training:
+  lr: 0.0003
+  weight_decay: 0.0
+  grad_clip_norm: 5.0
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 200
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  use_wandb: true
+  wandb_project: polsess-separation-64k
+  wandb_entity: null
+  wandb_run_name: mossformer2-matched
+  log_file: null
+  log_level: INFO
+  resume_from: null
+
+  validation_variants: ["SER", "SE"]
+
+  # Curriculum learning schedule (mirrors the SepFormer baseline)
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "S", "SR", "E", "ER", "SE", "SER"]
+      lr_scheduler: start

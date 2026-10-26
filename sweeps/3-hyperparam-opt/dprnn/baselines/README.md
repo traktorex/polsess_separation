@@ -6,6 +6,11 @@ These experiments provide **control baselines** to demonstrate the effectiveness
 
 **Research Question**: Does progressive data scaling (2K→4K→8K→16K) find better hyperparameters more efficiently than simpler approaches?
 
+> **Status**: both baseline experiments below were run to completion. The
+> planning language in this file ("Expected Outcome", "Prediction", the
+> Quick-Start options) is kept as the original design record; the results are in
+> [`EXPERIMENT_LOG_monolithic.md`](../../../EXPERIMENT_LOG_monolithic.md) and in the thesis.
+
 ---
 
 ## Experiments
@@ -25,7 +30,7 @@ These experiments provide **control baselines** to demonstrate the effectiveness
 
 **To Run**:
 ```bash
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_onestage_8k.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_onestage_8k.yaml
 wandb agent <sweep-id>
 ```
 
@@ -59,7 +64,7 @@ wandb agent <sweep-id>
 
 **To Run**:
 ```bash
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k_proxy.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_fulldata_16k_proxy.yaml
 wandb agent <sweep-id>
 ```
 
@@ -78,8 +83,8 @@ wandb agent <sweep-id>
 | Approach | Dataset Progression | Epochs/Proxy | Runs | Total Compute | Best Expected SI-SDR |
 |----------|---------------------|--------------|------|---------------|----------------------|
 | **Multi-Stage** (Main) | 2K→4K→8K→16K | Full (varied) | 347 (170 finished) | 322h | **4.67 dB** ✅ |
-| **Experiment A** | 8K only | Full (80) | ~120 | ~100-120h | TBD 🔄 |
-| **Experiment B (Proxy)** | 16K only | **20 epochs** | ~70 | ~51-64h | TBD |
+| **Experiment A** | 8K only | Full (80) | ~120 | ~100-120h | completed — see thesis |
+| **Experiment B (Proxy)** | 16K only | **20 epochs** | ~70 | ~51-64h | completed — see thesis |
 | Experiment B (Full) | 16K only | Full (80) | ~80 | ~120-160h | ❌ Not recommended |
 
 ---
@@ -170,7 +175,7 @@ Based on hyperparameter optimization literature:
 ### Option 1: Run Experiment A only
 If compute-limited, run Experiment A as the main baseline:
 ```bash
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_onestage_8k.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_onestage_8k.yaml
 wandb agent <sweep-id>
 # Let run for ~100-120 runs, then analyze
 ```
@@ -179,8 +184,8 @@ wandb agent <sweep-id>
 For comprehensive thesis evidence:
 ```bash
 # Start both sweeps in parallel (if you have multiple GPUs)
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_onestage_8k.yaml
-wandb sweep sweeps/3-hyperparam-opt/baselines/dprnn_fulldata_16k.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_onestage_8k.yaml
+wandb sweep sweeps/3-hyperparam-opt/dprnn/baselines/dprnn_fulldata_16k.yaml
 
 # Then launch agents for each sweep
 wandb agent <sweep-id-a>  # On GPU 1

@@ -41,11 +41,12 @@ def mock_polsess_data(tmp_path):
         create_audio(0.04, "ev_reverb_reverb.wav", "ev_reverb")
 
         # Sample without reverb (outdoor)
-        create_audio(2.0, "mix_no_reverb.wav", "mix")
-        create_audio(0.5, "sp1_no_reverb.wav", "clean")
-        create_audio(0.6, "sp2_no_reverb.wav", "clean")
-        create_audio(0.7, "scene_no_reverb.wav", "scene")
-        create_audio(0.8, "event_no_reverb.wav", "event")
+        # Values kept within [-1, 1] for 16-bit PCM WAV compatibility
+        create_audio(0.9, "mix_no_reverb.wav", "mix")
+        create_audio(0.15, "sp1_no_reverb.wav", "clean")
+        create_audio(0.25, "sp2_no_reverb.wav", "clean")
+        create_audio(0.2, "scene_no_reverb.wav", "scene")
+        create_audio(0.3, "event_no_reverb.wav", "event")
 
         # Create CSV metadata
         metadata = pd.DataFrame([
@@ -352,7 +353,7 @@ class TestApplyMMIPC:
         # Expected: mix - speaker2 - sp2_reverb
         # With mock values: 1.0 - 0.2 - 0.02 = 0.78
         expected = torch.ones(int(8000 * 4.0)) * 0.78
-        assert torch.allclose(mix, expected, atol=1e-5), \
+        assert torch.allclose(mix, expected, atol=1e-3), \
             f"ES+SER should subtract speaker2 and sp2_reverb, expected {expected[0]}, got {mix[0]}"
 
     def test_apply_mmipc_es_c_indoor(self, mock_polsess_data):
@@ -373,7 +374,7 @@ class TestApplyMMIPC:
         # Expected: mix - sp1_reverb - sp2_reverb - speaker2 - scene - event - ev_reverb
         # 1.0 - 0.01 - 0.02 - 0.2 - 0.3 - 0.4 - 0.04 = 0.03
         expected = torch.ones(int(8000 * 4.0)) * 0.03
-        assert torch.allclose(mix, expected, atol=1e-5), \
+        assert torch.allclose(mix, expected, atol=1e-3), \
             f"ES+C (indoor) should remove all components, expected {expected[0]}, got {mix[0]}"
 
     def test_apply_mmipc_eb_c_indoor(self, mock_polsess_data):
@@ -394,7 +395,7 @@ class TestApplyMMIPC:
         # Expected: mix - sp1_reverb - sp2_reverb - scene - event - ev_reverb
         # 1.0 - 0.01 - 0.02 - 0.3 - 0.4 - 0.04 = 0.23
         expected = torch.ones(int(8000 * 4.0)) * 0.23
-        assert torch.allclose(mix, expected, atol=1e-5), \
+        assert torch.allclose(mix, expected, atol=1e-3), \
             f"EB+C (indoor) should remove background only, expected {expected[0]}, got {mix[0]}"
 
     def test_apply_mmipc_es_se_outdoor(self, mock_polsess_data):
@@ -413,9 +414,9 @@ class TestApplyMMIPC:
         mix = dataset._apply_mmipc(audio, has_reverb)
 
         # Expected: mix - speaker2
-        # 2.0 - 0.6 = 1.4
-        expected = torch.ones(int(8000 * 4.0)) * 1.4
-        assert torch.allclose(mix, expected, atol=1e-5), \
+        # 0.9 - 0.25 = 0.65
+        expected = torch.ones(int(8000 * 4.0)) * 0.65
+        assert torch.allclose(mix, expected, atol=1e-3), \
             f"ES+SE (outdoor) should remove speaker2 only, expected {expected[0]}, got {mix[0]}"
 
 
@@ -438,7 +439,7 @@ class TestComputeClean:
         clean = dataset._compute_clean(audio)
 
         expected = torch.ones(int(8000 * 4.0)) * 0.1
-        assert torch.allclose(clean, expected, atol=1e-5), \
+        assert torch.allclose(clean, expected, atol=1e-3), \
             "ES task should return speaker1 only"
 
     def test_compute_clean_eb(self, mock_polsess_data):
@@ -458,7 +459,7 @@ class TestComputeClean:
 
         # speaker1 + speaker2 = 0.1 + 0.2 = 0.3
         expected = torch.ones(int(8000 * 4.0)) * 0.3
-        assert torch.allclose(clean, expected, atol=1e-5), \
+        assert torch.allclose(clean, expected, atol=1e-3), \
             "EB task should return sum of speaker1 and speaker2"
 
     def test_compute_clean_sb(self, mock_polsess_data):
@@ -477,9 +478,9 @@ class TestComputeClean:
         clean = dataset._compute_clean(audio)
 
         assert clean.shape[0] == 2, "SB task should return 2 channels"
-        assert torch.allclose(clean[0], torch.ones(int(8000 * 4.0)) * 0.1, atol=1e-5), \
+        assert torch.allclose(clean[0], torch.ones(int(8000 * 4.0)) * 0.1, atol=1e-3), \
             "SB task channel 0 should be speaker1"
-        assert torch.allclose(clean[1], torch.ones(int(8000 * 4.0)) * 0.2, atol=1e-5), \
+        assert torch.allclose(clean[1], torch.ones(int(8000 * 4.0)) * 0.2, atol=1e-3), \
             "SB task channel 1 should be speaker2"
 
 

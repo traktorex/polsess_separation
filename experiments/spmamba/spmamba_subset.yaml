@@ -28,7 +28,6 @@ model:
     emb_hs: 1
     activation: "prelu"
     eps: 1.0e-4
-    sample_rate: 8000
 
 training:
   lr: 0.001

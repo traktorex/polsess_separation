@@ -2,11 +2,13 @@
 
 from .polsess_dataset import PolSESSDataset, polsess_collate_fn
 from .libri2mix_dataset import Libri2MixDataset, libri2mix_collate_fn
+from .echoset_dataset import EchoSetDataset, echoset_collate_fn
 
 # Dataset registry for easy switching between datasets
 DATASETS = {
     "polsess": PolSESSDataset,
     "libri2mix": Libri2MixDataset,
+    "echoset": EchoSetDataset,
 }
 
 
@@ -26,6 +28,8 @@ __all__ = [
     "polsess_collate_fn",
     "Libri2MixDataset",
     "libri2mix_collate_fn",
+    "EchoSetDataset",
+    "echoset_collate_fn",
     "DATASETS",
     "get_dataset",
 ]

@@ -8,14 +8,17 @@ Uses reduced config parameters for memory efficiency (spmamba_sb_reduced.yaml).
 
 import pytest
 import torch
-from models import SPMamba
 
+from models.mamba import MAMBA_AVAILABLE
 
-# SPMamba requires CUDA (mamba-ssm uses Triton)
+# SPMamba requires CUDA and mamba-ssm; the class is only registered when
+# mamba-ssm imports, so guard the import as well as the tests.
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(),
-    reason="SPMamba requires CUDA (mamba-ssm dependency)",
+    not torch.cuda.is_available() or not MAMBA_AVAILABLE,
+    reason="SPMamba requires CUDA and mamba-ssm",
 )
+if MAMBA_AVAILABLE:
+    from models import SPMamba
 
 
 @pytest.fixture(autouse=True)

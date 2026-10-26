@@ -1,0 +1,76 @@
+# MossFormer2 (SepFormer-matched ~26.4M) 128k — MM-IPC diversity ablation: C-ONLY arm.
+#
+# Identical to 128k_matched_final.yaml (same architecture, hyperparameters, 128k
+# samples, seed 42) EXCEPT training is restricted to the single clean variant {C}
+# (no scene, no event, no reverb) — anechoic 2-speaker mixtures regardless of the
+# source sample's reverb (C removes all reverb; see _lazy_load). This is the floor
+# of the MM-IPC training-diversity ladder: the WSJ0-2mix / Libri2Mix-clean regime.
+#
+# MM-IPC training-diversity ablation ladder (each arm clones this base, varying
+# ONLY the training variant set; validation + selection protocol held identical):
+#   full   — all 8 variants   → reuse run 6xuv1tob (128k_matched_final.yaml, curriculum: null)
+#   no-E   — {C, S, R, SR}    → 128k_matched_noE_final.yaml
+#   C-only — {C}              → THIS FILE
+#
+# C is in both INDOOR and OUTDOOR variant lists, so {C} renders every training
+# sample (reverb and non-reverb alike) and the full 128k set is retained.
+#
+# Caveat for this arm: validation/selection is on the all-8 avg SI-SDRi (held
+# identical across arms). A clean-only model may peak on the all-8 avg early before
+# specializing; the per-variant val curves are logged each epoch so the choice can
+# be diagnosed against C-val-best post hoc. save_all_checkpoints stays false to
+# match the full arm — flip to true here if you want to retain C-val-best on disk.
+
+data:
+  dataset_type: polsess
+  batch_size: 2
+  num_workers: 1
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set.
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 16  # Encoder kernel (decoder stride = kernel_size // 2 = 8)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.07030979282783663   # fast-sweep-7 winner (sweep key `dropout`)
+
+training:
+  # ---- Winner of sweep 1bzguteg (fast-sweep-7); identical to 128k_matched_final ----
+  lr: 0.00021453268112520653
+  weight_decay: 0.0000002411171709120079
+  grad_clip_norm: 3.069697862323048
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 100
+  early_stopping_patience: 10
+  use_amp: true
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-128k
+  wandb_run_name: mossformer2_matched_128k_Conly_42
+
+  log_level: INFO
+
+  # MM-IPC diversity ablation: restrict training to the clean variant only.
+  # A single-entry curriculum is the only path to pin the training variant set
+  # (train.py:51-53 reads variants from curriculum_learning[0]); lr_scheduler:start
+  # makes the LR schedule behave identically to the curriculum:null full arm from
+  # epoch 1 (ReduceLROnPlateau cannot act before the first epoch's validation).
+  curriculum_learning:
+    - epoch: 1
+      variants: ["C"]
+      lr_scheduler: start
+
+  # Identical to the full arm: validate on all 8 variants; best checkpoint on the
+  # all-8 avg SI-SDRi. Keeping selection identical isolates the training variant set
+  # as the single changed variable.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

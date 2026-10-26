@@ -1,0 +1,98 @@
+# MossFormer2 (SepFormer-matched ~26.4M) — 16 kHz PolSESS 128k FINAL training.   [num_blocks=11]
+#
+# WHY THIS EXISTS: a native 16 kHz twin of the deployed separator. With the 8 kHz
+# matched final (6xuv1tob, 17.04 dB all-8 val SI-SDRi) the ASR pipeline resamples
+# 16 -> 8 kHz before separation and rebuilds the 4-8 kHz band with AP-BWE afterwards;
+# a 16 kHz model removes that round trip. Sits beside the TF-MossFormer S 16 kHz
+# final (experiments/tf_mossformer/s_128k_16kHz_final.yaml) in the same W&B project.
+# Corpus: PolSESS_C_128_16kHz — the 16 kHz twin of PolSESS_C_final_128_v2 (same
+# six-run recipe, 128,000 train rows, 1,000-item stratified val/). Launch with
+#   python train.py --config experiments/mossformer2/6-final-training/128k_matched_16kHz_final.yaml \
+#       --data-root ~/datasets/PolSESS_C_128_16kHz
+# unless the config.py default data_root already points there (the 3080 since
+# commit a8f099d; the 4070 keeps the 8 kHz default). The loader reads the first mix
+# header and raises on a rate mismatch. On the 4070 run it from venv_t214/.
+#
+# Twin of `128k_matched_final.yaml` (the 8 kHz matched final AS IT RAN: seed 42,
+# bs 2, sweep-1bzguteg winner, lr_patience 1, ES 10, all-8 no-curriculum protocol)
+# EXCEPT:
+#   - data.sample_rate 8000 -> 16000 (a guard, not a resampler).
+#   - encoder kernel_size 16 -> 32 (stride kernel_size // 2 = 8 -> 16). This holds
+#     the FRAME rate: still a 2 ms window / 1 ms hop, so the masking network sees the
+#     same sequence length per second of audio as at 8 kHz (same attention/FSMN cost,
+#     same memory profile) and each frame simply covers twice the samples. Keeping
+#     kernel 16 would halve the window to 1 ms and double the sequence length — this
+#     is what ClearerVoice's MossFormer2_SS_16K does (their 16 kHz checkpoint keeps
+#     encoder_kernel_size 16), at ~2x the per-step cost; cheap ablation, open.
+#     Params: +16,384 (512 x 16 extra taps in each of the encoder conv and the
+#     decoder deconv) — measured 26,425,406, unchanged at the reported ~26.4M.
+#   - num_workers 1 -> 2: a 16 kHz clip is 2x the bytes to read. IO knob only.
+#   - W&B target: its own project, polsess-separation-16kHz-128k. SI-SDR at 16 kHz
+#     is a different number on a different signal, so this run must not sit beside
+#     the 8 kHz rows of polsess-separation-128k as if comparable.
+#
+# RECIPE: the 8 kHz matched sweep winner, transplanted unchanged (the HPO ran at
+# 8 kHz on this exact architecture; the frame-rate-preserving encoder keeps the
+# optimisation problem as close as possible). No 16 kHz sweep.
+#
+# PATIENCE: lr_patience 1 / early_stopping_patience 10, copied as the 8 kHz twin ran.
+# The 2026-09-08 LR-schedule rule (ES = 2*(lr_patience+1) = 4) would stop sooner;
+# 10 is kept so the pair differs only in sample rate.
+#
+# COST: the 8 kHz matched final took ~3.4 h/epoch on the 4070 at bs 2. At equal
+# frame rate the masknet cost is unchanged; only the encoder/decoder convs and
+# data loading double. Probe 2026-09-23 (4070, venv_t214, eager bf16, bs 2, 4 s):
+# peak 6.13 GiB vs 6.12 GiB for the 8 kHz build, 321 vs 290 ms/step (+~10 %), so
+# expect ~3.5-3.8 h/epoch. Plan on --resume across interruptions
+# (NB --resume ADDS num_epochs — see CLAUDE.md pitfall 5).
+#
+# ASR-PIPELINE HANDOFF: a 16 kHz checkpoint needs BOTH
+#   `separation.separator_sample_rate: 16000` AND
+#   `post_separation_processing.backend: naive` in the pipeline config.
+
+data:
+  dataset_type: polsess
+  batch_size: 2          # As the 8 kHz twin; equal frame rate keeps the memory profile.
+  num_workers: 2         # IO knob only — 16 kHz clips are 2x the bytes.
+  prefetch_factor: 2
+  task: SB
+  sample_rate: 16000     # PolSESS_C_128_16kHz is a 16 kHz render; guard, not a resampler.
+  train_max_samples: 128000
+  # val_max_samples omitted -> full validation set (1,000 items x 8 variants).
+
+model:
+  model_type: mossformer2
+  mossformer2:
+    N: 512           # Encoder feature dim = transformer/GFSMN working dim
+    kernel_size: 32  # DOUBLED for 16 kHz: still a 2 ms window, stride 16 = 1 ms hop (8 kHz twin: 16)
+    C: 2
+    num_blocks: 11   # SepFormer-matched (~26.4M params)
+    attn_dropout: 0.07030979282783663   # fast-sweep-7 winner (sweep key `dropout`)
+
+training:
+  # ---- Winner of sweep 1bzguteg (fast-sweep-7); identical to 128k_matched_final ----
+  seed: 42
+  lr: 0.00021453268112520653
+  weight_decay: 0.0000002411171709120079
+  grad_clip_norm: 3.069697862323048
+  # ---- Pinned for final training ----
+  lr_factor: 0.5
+  lr_patience: 1
+  num_epochs: 100
+  early_stopping_patience: 10   # As the 8 kHz twin ran (see PATIENCE in the header).
+  use_amp: true                 # bf16 without GradScaler (trainer dispatches on model_type).
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-16kHz-128k   # Own project: 16 kHz SI-SDR is not comparable with the 8 kHz rows.
+  wandb_run_name: mossformer2_matched_128k_16kHz_final_42
+  log_level: INFO
+
+  # No curriculum: all 8 MM-IPC variants (incl. C) from epoch 1.
+
+  # Per-variant validation drives the LR scheduler and best-checkpoint logic
+  # via avg SI-SDRi; all 8 variants are evaluated each epoch.
+  per_variant_validation: true
+  validation_variants: null   # null = all 8 MM-IPC variants.

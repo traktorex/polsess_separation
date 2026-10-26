@@ -113,18 +113,26 @@ class TestSetupFunctions:
     """Test setup utility functions."""
 
     def test_setup_warnings_suppresses_warnings(self):
-        """Test that setup_warnings configures warning filters."""
+        """Test that setup_warnings configures warning filters.
+
+        Was asserting a blanket ``PYTHONWARNINGS=ignore::UserWarning`` env var;
+        that blanket suppression was removed (survey gap 17) in favor of the
+        targeted filters in ``warning_filters.apply()`` alone. Updated to check
+        the env var setup_warnings still does own (TORCHINDUCTOR_WARNINGS) and
+        that the targeted filters are actually registered.
+        """
         import warnings
         import os
-        
+
         # Clear existing filters
         warnings.resetwarnings()
-        
+
         setup_warnings()
-        
-        # Check environment variable is set
-        assert "PYTHONWARNINGS" in os.environ
-        
+
+        # setup_warnings no longer sets a blanket PYTHONWARNINGS (removed, see
+        # docstring above); it still mutes torch inductor SM warnings.
+        assert os.environ.get("TORCHINDUCTOR_WARNINGS") == "0"
+
         # Verify some warnings are filtered
         # (We can't easily test all filters without triggering actual warnings)
         assert len(warnings.filters) > 0

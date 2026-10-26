@@ -324,6 +324,77 @@ class TestCheckpointLoading:
             )
 
 
+class TestResumeOptimizerStepDevice:
+    """Regression test: Adam `step` counters must stay on CPU after resume.
+
+    load_checkpoint used to torch.load with map_location="cuda", which parked
+    the per-param `step` tensors on the GPU; optimizer.load_state_dict leaves
+    `step` wherever it arrives (it only re-homes it for capturable/fused
+    optimizers), and CUDA step tensors cost a GPU->CPU sync per parameter on
+    every optimizer.step() — measured as a 7-25% permanent slowdown of every
+    resumed run vs. the same run fresh (2026-07-12).
+    """
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+    def test_resume_keeps_step_counters_on_cpu(self):
+        config = Config(
+            data=DataConfig(task="ES"),
+            model=ModelConfig(model_type="convtasnet"),
+            training=TrainingConfig(),
+        )
+
+        class SimpleModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = torch.nn.Linear(10, 5)
+
+            def forward(self, x):
+                return self.layer(x)
+
+        def make_trainer():
+            mock_train_loader = Mock()
+            mock_train_loader.batch_size = 4
+            return Trainer(
+                model=SimpleModel(),
+                train_loader=mock_train_loader,
+                val_loader=Mock(),
+                config=config,
+                device="cuda",
+                logger=Mock(),
+                wandb_logger=None,
+            )
+
+        # Train one step so the optimizer state (incl. `step`) exists, then save.
+        trainer = make_trainer()
+        loss = trainer.model(torch.randn(4, 10, device="cuda")).sum()
+        loss.backward()
+        trainer.optimizer.step()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            save_dir = Path(tmpdir)
+            trainer._save_checkpoint(epoch=1, val_sisdr=5.0, save_dir=save_dir)
+            run_dir = _find_run_dir(save_dir / "convtasnet" / "ES")
+            checkpoint_file = next(run_dir.glob("*_best.pt"))
+
+            resumed = make_trainer()
+            resumed.load_checkpoint(str(checkpoint_file))
+
+        states = list(resumed.optimizer.state.values())
+        assert states, "optimizer state should be populated after resume"
+        for state in states:
+            step = state.get("step")
+            if torch.is_tensor(step):
+                assert step.device.type == "cpu", (
+                    f"Adam `step` counter on {step.device} — CUDA step tensors "
+                    "make every optimizer.step() sync per-param (slow resume bug)"
+                )
+            # The moment tensors must still land on the param device.
+            for key in ("exp_avg", "exp_avg_sq"):
+                assert state[key].device.type == "cuda", (
+                    f"{key} should be moved to the param device on resume"
+                )
+
+
 class TestCheckpointIntegration:
     """Integration tests for save/load cycle."""
 

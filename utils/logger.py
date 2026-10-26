@@ -1,9 +1,8 @@
 """Logger setup for consistent formatting."""
 
-import os
 import logging
 from pathlib import Path
-from typing import Union, Optional
+from typing import Optional
 from .common import ensure_dir
 
 try:

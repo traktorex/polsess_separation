@@ -1,0 +1,61 @@
+# SPMamba paper-faithful scaling run — 32k.   [full 6/256, emb_ks=8, paper optimizer]
+#
+# HEADER REWRITTEN 2026-07-29 — see 16k_full.yaml for the full rationale. Same recipe
+# scaled to 32k: paper architecture + optimizer (Adam lr 1e-3 / wd 0 / factor 0.5,
+# patience 2 / clip 5.0), harness matched to the reduced config-1 runs (3-stage
+# curriculum, {SER,SE} validation, early-stop 6) so the full-vs-reduced overlay is
+# direct. NOT comparable to the 128k finals (all-8 SI-SDRi, different corpus+val set).
+# Cost: ~5.4 h/epoch (4070-extrapolated from measured 2.70 @16k; 3080 ≈ +10%).
+
+data:
+  dataset_type: polsess
+  batch_size: 1
+  num_workers: 2
+  prefetch_factor: 2
+  task: SB
+  train_max_samples: 32000
+
+model:
+  model_type: spmamba
+  spmamba:
+    input_dim: 64
+    n_srcs: 2
+    n_fft: 256
+    stride: 64
+    window: "hann"
+    n_layers: 6              # FULL (reduced config-1 used 4)
+    lstm_hidden_units: 256   # FULL (reduced used 192)
+    attn_n_head: 4           # FULL (reduced used 2)
+    attn_approx_qk_dim: 512  # FULL (reduced used 256)
+    emb_dim: 16
+    emb_ks: 8                # paper kernel (reduced runs used 4; see header)
+    emb_hs: 1
+    activation: "prelu"
+    eps: 1.0e-5
+
+training:
+  # ---- Paper recipe (verbatim from 6-final-training/128k_full_final.yaml / spmamba-wsj0.yml) ----
+  seed: 42
+  lr: 0.001                # Paper (Adam).
+  weight_decay: 4.885301855720965e-06  
+  lr_factor: 0.5           # Paper ReduceLROnPlateau factor.
+  lr_patience: 1          # Paper ReduceLROnPlateau patience.
+  grad_clip_norm: 5.0      # Harness: trainer always clips; paper yaml has none.
+  num_epochs: 500          # Paper cap; early stopping ends it far sooner.
+  early_stopping_patience: 6   # Paper.
+  use_amp: true            # bf16 (validated safe/better) — set false for literal fp32.
+  amp_eps: 0.0001
+  save_dir: checkpoints
+  save_all_checkpoints: false
+
+  use_wandb: true
+  wandb_project: polsess-separation-32k
+  wandb_run_name: 32k_spmamba_full_42
+  log_level: INFO
+
+  validation_variants: ["SER", "SE"]
+
+  curriculum_learning:
+    - epoch: 1
+      variants: ["R", "SR", "S", "SE", "ER", "E", "SER"]
+      lr_scheduler: start
